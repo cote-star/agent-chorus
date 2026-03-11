@@ -77,7 +77,7 @@ This guide tells AI agents how to fill in the context pack templates.
 ## Process
 1. Read each file in \`.agent-context/current/\` in numeric order.
 2. For each \`<!-- AGENT: ... -->\` block, replace it with repository-derived content.
-3. After filling all sections, run \`bridge context-pack seal\` to finalize (manifest + snapshot).
+3. After filling all sections, run \`chorus context-pack seal\` to finalize (manifest + snapshot).
 
 ## Quality Criteria
 - Content must be factual and verifiable from the repository.
@@ -89,7 +89,7 @@ This guide tells AI agents how to fill in the context pack templates.
 ## When to Update
 - After significant architectural or contract changes.
 - After adding new commands/APIs/features.
-- When \`bridge context-pack check-freshness\` reports stale content.
+- When \`chorus context-pack check-freshness\` reports stale content.
 `;
 }
 
@@ -176,15 +176,15 @@ function templateOperations() {
 <!-- AGENT: Describe how releases are triggered and what they produce. -->
 
 ## Context Pack Maintenance
-1. Initialize scaffolding: \`bridge context-pack init\`
+1. Initialize scaffolding: \`chorus context-pack init\`
 2. Have your agent fill in the template sections.
-3. Seal the pack: \`bridge context-pack seal\`
-4. Install pre-push hook: \`bridge context-pack install-hooks\`
-5. When freshness warnings appear, update content then run \`bridge context-pack seal\`
+3. Seal the pack: \`chorus context-pack seal\`
+4. Install pre-push hook: \`chorus context-pack install-hooks\`
+5. When freshness warnings appear, update content then run \`chorus context-pack seal\`
 
 ## Rollback/Recovery
-- Restore latest snapshot: \`bridge context-pack rollback\`
-- Restore named snapshot: \`bridge context-pack rollback --snapshot <snapshot_id>\`
+- Restore latest snapshot: \`chorus context-pack rollback\`
+- Restore named snapshot: \`chorus context-pack rollback --snapshot <snapshot_id>\`
 `;
 }
 
@@ -238,7 +238,7 @@ function main() {
     `[context-pack] init completed: ${relPath(currentDir, repoRoot)}`
   );
   console.log(
-    '[context-pack] next: ask your agent to fill AGENT sections, then run `bridge context-pack seal`'
+    '[context-pack] next: ask your agent to fill AGENT sections, then run `chorus context-pack seal`'
   );
 }
 

@@ -1,7 +1,7 @@
 # Context Pack: Start Here
 
 ## Snapshot
-- Repo: `agent-bridge`
+- Repo: `agent-chorus`
 - Branch at generation: `feat/context-pack-agent-driven-v2`
 - HEAD commit: `d402091b6c0f0511b5e3399f455b5fb631f7fc4b`
 - Generated at: `2026-02-15T14:43:45.732Z`

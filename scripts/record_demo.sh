@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# Record the Agent Bridge demo as an animated WebP.
+# Record the Agent Chorus demo as an animated WebP.
 #
 # Prerequisites:
 #   - Node.js >= 18

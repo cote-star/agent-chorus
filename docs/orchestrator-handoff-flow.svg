@@ -17,7 +17,7 @@
 
   <!-- Title -->
   <text x="540" y="115" font-family="DejaVu Sans, sans-serif" font-size="40" font-weight="700" fill="#1A1A1A" text-anchor="middle">The Handoff Moment</text>
-  <text x="540" y="155" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#4A4A4A" text-anchor="middle">Codex reads Claude's session via bridge, detects the stall, continues the work</text>
+  <text x="540" y="155" font-family="DejaVu Sans, sans-serif" font-size="18" fill="#4A4A4A" text-anchor="middle">Codex reads Claude's session via chorus, detects the stall, continues the work</text>
 
   <!-- Timeline flow (top to bottom) -->
 
@@ -57,13 +57,13 @@
   <line x1="540" y1="550" x2="540" y2="590" stroke="#F37021" stroke-width="1.5"/>
   <polygon points="536,585 540,595 544,585" fill="#F37021"/>
 
-  <!-- Step 4: Codex reads via bridge (ACCENT) -->
+  <!-- Step 4: Codex reads via chorus (ACCENT) -->
   <rect x="140" y="600" width="800" height="100" rx="8" fill="#FEF0E5" stroke="#F37021" stroke-width="2.5"/>
   <text x="180" y="630" font-family="DejaVu Sans, sans-serif" font-size="13" font-weight="700" fill="#F37021">STEP 4</text>
-  <text x="180" y="655" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#1A1A1A">Codex reads Claude's session via bridge</text>
+  <text x="180" y="655" font-family="DejaVu Sans, sans-serif" font-size="16" fill="#1A1A1A">Codex reads Claude's session via chorus</text>
   <!-- CLI command -->
   <rect x="200" y="668" width="360" height="24" rx="4" fill="#1A1A1A"/>
-  <text x="210" y="685" font-family="monospace" font-size="12" fill="#F37021">bridge read --agent claude --json</text>
+  <text x="210" y="685" font-family="monospace" font-size="12" fill="#F37021">chorus read --agent claude --json</text>
   <!-- What Codex sees -->
   <text x="590" y="670" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#4A4A4A">→ Sees what was completed</text>
   <text x="590" y="688" font-family="DejaVu Sans, sans-serif" font-size="11" fill="#4A4A4A">→ Sees what was left unfinished</text>

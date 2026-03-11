@@ -305,25 +305,25 @@ function makeManagedBlock(provider, snippetRelPath) {
     `<!-- ${marker}:start -->`,
     '## Agent Chorus Integration',
     '',
-    `This project is wired for cross-agent coordination via \`bridge\`.`,
+    `This project is wired for cross-agent coordination via \`chorus\`.`,
     `Provider snippet: \`${snippetRelPath}\``,
     '',
     'When a user asks for another agent status (for example "What is Claude doing?"),',
-    'run Agent Bridge commands first and answer with evidence from session output.',
+    'run Agent Chorus commands first and answer with evidence from session output.',
     '',
     'Session routing and defaults:',
-    '1. Start with `bridge read --agent <target-agent> --cwd <project-path> --json` (omit `--id` for latest).',
+    '1. Start with `chorus read --agent <target-agent> --cwd <project-path> --json` (omit `--id` for latest).',
     '2. "past session" means previous session: list 2 and read the second session ID.',
     '3. "past N sessions" means exclude latest: list N+1 and read the older N session IDs.',
     '4. "last N sessions" means include latest: list N and read/summarize those sessions.',
     '5. Ask for a session ID only after an initial read/list attempt fails or when exact ID is requested.',
     '',
     'Support commands:',
-    '- `bridge list --agent <agent> --cwd <project-path> --json`',
-    '- `bridge search "<query>" --agent <agent> --cwd <project-path> --json`',
-    '- `bridge compare --source codex --source gemini --source claude --cwd <project-path> --json`',
+    '- `chorus list --agent <agent> --cwd <project-path> --json`',
+    '- `chorus search "<query>" --agent <agent> --cwd <project-path> --json`',
+    '- `chorus compare --source codex --source gemini --source claude --cwd <project-path> --json`',
     '',
-    'If command syntax is unclear, run `bridge --help`.',
+    'If command syntax is unclear, run `chorus --help`.',
     `<!-- ${marker}:end -->`,
   ].join('\n');
 }
@@ -398,7 +398,7 @@ function upsertManagedBlock(filePath, block, markerPrefix, force, dryRun) {
 
 function defaultSetupIntents() {
   return [
-    '# Agent Bridge Intents',
+    '# Agent Chorus Intents',
     '',
     'Use these triggers consistently across agents and providers:',
     '',
@@ -410,8 +410,8 @@ function defaultSetupIntents() {
     'Canonical response behavior:',
     '1. Default to latest session in current project (`--cwd`) when no session is specified.',
     '2. "past session" means previous session; "past N sessions" excludes latest; "last N sessions" includes latest.',
-    '3. Fetch evidence with `bridge read` first, then `bridge list/search` only if needed.',
-    '4. For multi-source checks use `bridge compare` or `bridge report`.',
+    '3. Fetch evidence with `chorus read` first, then `chorus list/search` only if needed.',
+    '4. For multi-source checks use `chorus compare` or `chorus report`.',
     '5. Do not ask for session ID before first fetch unless user requested exact ID.',
     '6. Do not invent missing context; explicitly call out missing sessions.',
     '',
@@ -1287,7 +1287,7 @@ function renderReport(result, asJson) {
   }
 
   const lines = [];
-  lines.push('### Agent Bridge Coordinator Report');
+  lines.push('### Agent Chorus Coordinator Report');
   lines.push('');
   lines.push(`**Mode:** ${result.mode}`);
   lines.push(`**Task:** ${result.task}`);
@@ -1438,9 +1438,9 @@ function runSetup(inputArgs) {
     const snippetPath = path.join(providersDir, `${provider.agent}.md`);
     const snippetRelPath = path.relative(cwd, snippetPath) || snippetPath;
     const snippetContent = [
-      `# Agent Bridge Provider Snippet (${provider.agent})`,
+      `# Agent Chorus Provider Snippet (${provider.agent})`,
       '',
-      'When the user asks cross-agent questions, run Agent Bridge first.',
+      'When the user asks cross-agent questions, run Agent Chorus first.',
       '',
       'Primary trigger examples:',
       '- "What is Claude doing?"',
@@ -1449,9 +1449,9 @@ function runSetup(inputArgs) {
       '- "Show the past 3 sessions from Claude"',
       '',
       'Intent router:',
-      '- "What is Claude doing?" -> `bridge read --agent claude --cwd <project-path> --json`',
-      '- "What did Gemini say?" -> `bridge read --agent gemini --cwd <project-path> --json`',
-      '- "Compare Codex and Claude outputs" -> `bridge compare --source codex --source claude --cwd <project-path> --json`',
+      '- "What is Claude doing?" -> `chorus read --agent claude --cwd <project-path> --json`',
+      '- "What did Gemini say?" -> `chorus read --agent gemini --cwd <project-path> --json`',
+      '- "Compare Codex and Claude outputs" -> `chorus compare --source codex --source claude --cwd <project-path> --json`',
       '',
       'Session timing defaults:',
       '- No session ID means latest session in scope.',
@@ -1461,10 +1461,10 @@ function runSetup(inputArgs) {
       '- Ask for session ID only after first fetch fails or exact ID is requested.',
       '',
       'Commands:',
-      '- `bridge read --agent <target-agent> --cwd <project-path> --json`',
-      '- `bridge list --agent <agent> --cwd <project-path> --json`',
-      '- `bridge search "<query>" --agent <agent> --cwd <project-path> --json`',
-      '- `bridge compare --source codex --source gemini --source claude --cwd <project-path> --json`',
+      '- `chorus read --agent <target-agent> --cwd <project-path> --json`',
+      '- `chorus list --agent <agent> --cwd <project-path> --json`',
+      '- `chorus search "<query>" --agent <agent> --cwd <project-path> --json`',
+      '- `chorus compare --source codex --source gemini --source claude --cwd <project-path> --json`',
       '',
       'Use evidence from command output and explicitly report missing session data.',
     ].join('\n');
@@ -1543,7 +1543,7 @@ function runSetup(inputArgs) {
       console.log('');
       console.log('Next steps:');
       console.log('1. Ask your agent to fill the context pack template sections.');
-      console.log('2. Run `bridge context-pack seal` to finalize the pack.');
+      console.log('2. Run `chorus context-pack seal` to finalize the pack.');
     }
   }
 
@@ -1562,7 +1562,7 @@ function runSetup(inputArgs) {
     return;
   }
 
-  console.log(`Agent Bridge setup ${dryRun ? '(dry run) ' : ''}complete for ${cwd}`);
+  console.log(`Agent Chorus setup ${dryRun ? '(dry run) ' : ''}complete for ${cwd}`);
   for (const warning of setupWarnings) {
     console.log(`- [warn] ${warning}`);
   }
@@ -1662,9 +1662,9 @@ function runDoctor(inputArgs) {
   );
 
   if (packState === 'UNINITIALIZED') {
-    addCheck('context_pack_guidance', 'warn', 'Run `bridge context-pack init` to start');
+    addCheck('context_pack_guidance', 'warn', 'Run `chorus context-pack init` to start');
   } else if (packState === 'TEMPLATE') {
-    addCheck('context_pack_guidance', 'warn', 'Context pack in template mode. Fill sections then run `bridge context-pack seal`');
+    addCheck('context_pack_guidance', 'warn', 'Context pack in template mode. Fill sections then run `chorus context-pack seal`');
   }
 
   // Update check wiring (defensive)
@@ -1712,7 +1712,7 @@ function runDoctor(inputArgs) {
       prePushExists ? 'pass' : 'warn',
       prePushExists
         ? `Found: ${prePushPath}`
-        : `Missing: ${prePushPath} (run: bridge context-pack install-hooks)`
+        : `Missing: ${prePushPath} (run: chorus context-pack install-hooks)`
     );
   } else {
     addCheck('context_pack_hooks_path', 'warn', 'Git hooks path not configured');
@@ -1733,7 +1733,7 @@ function runDoctor(inputArgs) {
     return;
   }
 
-  console.log(`Agent Bridge doctor: ${overall.toUpperCase()} (${cwd})`);
+  console.log(`Agent Chorus doctor: ${overall.toUpperCase()} (${cwd})`);
   for (const check of checks) {
     const prefix = check.status === 'pass' ? 'PASS' : (check.status === 'warn' ? 'WARN' : 'FAIL');
     console.log(`- ${prefix} ${check.id}: ${check.detail}`);

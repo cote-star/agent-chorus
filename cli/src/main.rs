@@ -414,7 +414,7 @@ fn main() {
                 let msg = e.to_string();
                 // Detect unsupported agent from clap's error message
                 let code = if msg.contains("invalid value") && msg.contains("--agent") {
-                    agents::BridgeErrorCode::UnsupportedAgent
+                    agents::ChorusErrorCode::UnsupportedAgent
                 } else {
                     agents::classify_error(&msg)
                 };

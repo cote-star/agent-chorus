@@ -157,7 +157,7 @@ pub fn init(options: InitOptions) -> Result<()> {
         rel_path(&current_dir, &repo_root)
     );
     println!(
-        "[context-pack] next: ask your agent to fill AGENT sections, then run `bridge context-pack seal`"
+        "[context-pack] next: ask your agent to fill AGENT sections, then run `chorus context-pack seal`"
     );
 
     Ok(())
@@ -362,7 +362,7 @@ pub fn sync_main(
     // Advisory-only: warn but never block the push or auto-build
     eprintln!(
         "[context-pack] ADVISORY: context-relevant files changed on main push. \
-         Update pack content with your agent, then run 'bridge context-pack seal'."
+         Update pack content with your agent, then run 'chorus context-pack seal'."
     );
 
     Ok(())
@@ -440,7 +440,7 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
     };
 
     let pre_push_path = hooks_dir.join("pre-push");
-    let bridge_section = format!(
+    let chorus_section = format!(
         "{}\n{}\n{}",
         HOOK_SENTINEL_START,
         build_pre_push_hook_section(),
@@ -459,7 +459,7 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
                 (false, "", "")
             };
         if has_sentinel {
-            // Replace existing chorus/bridge section
+            // Replace existing chorus section
             let start_idx = existing.find(sentinel_start).unwrap();
             let end_idx = existing.find(sentinel_end_str).unwrap() + sentinel_end_str.len();
             // Trim trailing newline after end sentinel if present
@@ -468,21 +468,21 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
             } else {
                 end_idx
             };
-            format!("{}{}\n{}", &existing[..start_idx], bridge_section, &existing[end_idx..])
+            format!("{}{}\n{}", &existing[..start_idx], chorus_section, &existing[end_idx..])
         } else {
-            // Append bridge section to existing hook
+            // Append chorus section to existing hook
             let mut content = existing;
             if !content.ends_with('\n') {
                 content.push('\n');
             }
             content.push('\n');
-            content.push_str(&bridge_section);
+            content.push_str(&chorus_section);
             content.push('\n');
             content
         }
     } else {
         // Create new hook file with shebang
-        format!("#!/usr/bin/env bash\nset -euo pipefail\n\n{}\n", bridge_section)
+        format!("#!/usr/bin/env bash\nset -euo pipefail\n\n{}\n", chorus_section)
     };
 
     let content_unchanged = if pre_push_path.exists() {
@@ -652,7 +652,7 @@ pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
         println!("  - {}", file_path);
     }
     println!();
-    println!("Consider running: bridge context-pack build");
+    println!("Consider running: chorus context-pack build");
     Ok(())
 }
 
@@ -1214,7 +1214,7 @@ fn build_start_here(
     };
 
     format!(
-        "# Context Pack: Start Here\n\nThis context pack is the first-stop index for agent work in this repository.\n\n## Snapshot\n- Repo: `{repo_name}`\n- Branch at generation: `{branch}`\n- HEAD commit: `{head_sha}`\n- Node package version: `{package_version}`\n- Rust crate version: `{cargo_version}`\n- Generated at: `{generated_at}`\n\n## Read Order (Token-Efficient)\n1. Read this file.\n2. Read `10_SYSTEM_OVERVIEW.md` for architecture and execution paths.\n3. Read `30_BEHAVIORAL_INVARIANTS.md` before changing behavior.\n4. Use `20_CODE_MAP.md` to deep dive only relevant files.\n5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.\n\n## Fast Facts\n- Product: Local-first cross-agent session bridge CLI.\n- Implementations: Node (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`).\n- Quality gate: Node/Rust parity + schema validation + edge-case checks.\n- Core risk: behavior drift between Node and Rust command/output contracts.\n\n## Last Change Range Input\n{changed_summary}\n\n## Scope Rule\nFor \"understand this repo end-to-end\" requests:\n- Start with this pack only.\n- Open source files only after this pack identifies a precise target.\n- Treat this pack as the source of navigation and invariants.\n"
+        "# Context Pack: Start Here\n\nThis context pack is the first-stop index for agent work in this repository.\n\n## Snapshot\n- Repo: `{repo_name}`\n- Branch at generation: `{branch}`\n- HEAD commit: `{head_sha}`\n- Node package version: `{package_version}`\n- Rust crate version: `{cargo_version}`\n- Generated at: `{generated_at}`\n\n## Read Order (Token-Efficient)\n1. Read this file.\n2. Read `10_SYSTEM_OVERVIEW.md` for architecture and execution paths.\n3. Read `30_BEHAVIORAL_INVARIANTS.md` before changing behavior.\n4. Use `20_CODE_MAP.md` to deep dive only relevant files.\n5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.\n\n## Fast Facts\n- Product: Local-first cross-agent session chorus CLI.\n- Implementations: Node (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`).\n- Quality gate: Node/Rust parity + schema validation + edge-case checks.\n- Core risk: behavior drift between Node and Rust command/output contracts.\n\n## Last Change Range Input\n{changed_summary}\n\n## Scope Rule\nFor \"understand this repo end-to-end\" requests:\n- Start with this pack only.\n- Open source files only after this pack identifies a precise target.\n- Treat this pack as the source of navigation and invariants.\n"
     )
 }
 
@@ -1256,7 +1256,7 @@ fn build_system_overview(
     };
 
     format!(
-        "# System Overview\n\n## Product Shape\n- Package version: `{package_version}`\n- Crate version: `{cargo_version}`\n- Tracked files: `{tracked_file_count}`\n- Delivery: npm package (`bridge`) + Rust binary (`bridge`).\n\n## Runtime Architecture\n1. User asks a provider agent for cross-agent status.\n2. Agent invokes bridge command (`read`, `list`, `search`, `compare`, `report`, `setup`, `doctor`, `trash-talk`, `context-pack`).\n3. Bridge resolves session stores (Codex/Claude/Gemini/Cursor), applies redaction, and returns terminal text or JSON.\n4. Agent answers user with evidence from bridge output.\n\n## Dual-Implementation Contract\n- Node path: `scripts/read_session.cjs` + `scripts/adapters/*.cjs`.\n- Rust path: `cli/src/main.rs`, `cli/src/agents.rs`, `cli/src/report.rs`, `cli/src/adapters/*.rs`.\n- Protocol authority: `PROTOCOL.md` and `schemas/*.json`.\n- Parity guard: `scripts/conformance.sh`.\n\n## Command Surface\n| Command | Intent | Primary Paths |\n| --- | --- | --- |\n{command_rows}\n\n## Tracked Path Density\n{path_lines}\n"
+        "# System Overview\n\n## Product Shape\n- Package version: `{package_version}`\n- Crate version: `{cargo_version}`\n- Tracked files: `{tracked_file_count}`\n- Delivery: npm package (`chorus`) + Rust binary (`chorus`).\n\n## Runtime Architecture\n1. User asks a provider agent for cross-agent status.\n2. Agent invokes chorus command (`read`, `list`, `search`, `compare`, `report`, `diff`, `relevance`, `send`, `messages`, `setup`, `doctor`, `trash-talk`, `context-pack`).\n3. Chorus resolves session stores (Codex/Claude/Gemini/Cursor), applies redaction, and returns terminal text or JSON.\n4. Agent answers user with evidence from chorus output.\n\n## Dual-Implementation Contract\n- Node path: `scripts/read_session.cjs` + `scripts/adapters/*.cjs`.\n- Rust path: `cli/src/main.rs`, `cli/src/agents.rs`, `cli/src/report.rs`, `cli/src/adapters/*.rs`.\n- Protocol authority: `PROTOCOL.md` and `schemas/*.json`.\n- Parity guard: `scripts/conformance.sh`.\n\n## Command Surface\n| Command | Intent | Primary Paths |\n| --- | --- | --- |\n{command_rows}\n\n## Tracked Path Density\n{path_lines}\n"
     )
 }
 
@@ -1349,15 +1349,15 @@ cargo test --manifest-path cli/Cargo.toml
 4. Build/upload Rust binaries and publish crate when tokens are configured.
 
 ## Context Pack Maintenance Contract
-1. Build pack manually: `bridge context-pack build`.
-2. Install branch-aware pre-push hook: `bridge context-pack install-hooks`.
+1. Build pack manually: `chorus context-pack build`.
+2. Install branch-aware pre-push hook: `chorus context-pack install-hooks`.
 3. On `main` push, hook runs `context-pack:sync-main`.
 4. Sync updates the pack only when changed files are context-relevant.
 5. Snapshots are saved under `.agent-context/snapshots/` for rollback/recovery.
 
 ## Rollback/Recovery
-- Restore latest snapshot: `bridge context-pack rollback`
-- Restore named snapshot: `bridge context-pack rollback --snapshot <snapshot_id>`
+- Restore latest snapshot: `chorus context-pack rollback`
+- Restore named snapshot: `chorus context-pack rollback --snapshot <snapshot_id>`
 "#
     .to_string()
 }
@@ -1473,15 +1473,15 @@ fn build_template_operations() -> String {
 <!-- AGENT: Describe how releases are triggered and what they produce. -->
 
 ## Context Pack Maintenance
-1. Initialize scaffolding: `bridge context-pack init`
+1. Initialize scaffolding: `chorus context-pack init`
 2. Have your agent fill in the template sections.
-3. Seal the pack: `bridge context-pack seal`
-4. Install pre-push hook: `bridge context-pack install-hooks`
-5. When freshness warnings appear, update content then run `bridge context-pack seal`
+3. Seal the pack: `chorus context-pack seal`
+4. Install pre-push hook: `chorus context-pack install-hooks`
+5. When freshness warnings appear, update content then run `chorus context-pack seal`
 
 ## Rollback/Recovery
-- Restore latest snapshot: `bridge context-pack rollback`
-- Restore named snapshot: `bridge context-pack rollback --snapshot <snapshot_id>`
+- Restore latest snapshot: `chorus context-pack rollback`
+- Restore named snapshot: `chorus context-pack rollback --snapshot <snapshot_id>`
 "#
     .to_string()
 }
@@ -1494,7 +1494,7 @@ This guide tells AI agents how to fill in the context pack templates.
 ## Process
 1. Read each file in `.agent-context/current/` in numeric order.
 2. For each `<!-- AGENT: ... -->` block, replace it with repository-derived content.
-3. After filling all sections, run `bridge context-pack seal` to finalize (manifest + snapshot).
+3. After filling all sections, run `chorus context-pack seal` to finalize (manifest + snapshot).
 
 ## Quality Criteria
 - Content must be factual and verifiable from the repository.
@@ -1506,7 +1506,7 @@ This guide tells AI agents how to fill in the context pack templates.
 ## When to Update
 - After significant architectural or contract changes.
 - After adding new commands/APIs/features.
-- When `bridge context-pack check-freshness` reports stale content.
+- When `chorus context-pack check-freshness` reports stale content.
 "#
     .to_string()
 }
@@ -1521,8 +1521,8 @@ run_context_sync() {
   local remote_ref="$3"
   local remote_sha="$4"
 
-  if command -v bridge >/dev/null 2>&1; then
-    bridge context-pack sync-main \
+  if command -v chorus >/dev/null 2>&1; then
+    chorus context-pack sync-main \
       --local-ref "$local_ref" \
       --local-sha "$local_sha" \
       --remote-ref "$remote_ref" \
@@ -1539,7 +1539,7 @@ run_context_sync() {
     return
   fi
 
-  echo "[context-pack] WARN: bridge command not found; skipping context-pack sync"
+  echo "[context-pack] WARN: chorus command not found; skipping context-pack sync"
 }
 
 while read -r local_ref local_sha remote_ref remote_sha; do

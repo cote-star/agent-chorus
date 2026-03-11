@@ -10,7 +10,7 @@ const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
 const MAX_SCAN_FILES: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeErrorCode {
+pub enum ChorusErrorCode {
     NotFound,
     ParseFailed,
     InvalidHandoff,
@@ -20,7 +20,7 @@ pub enum BridgeErrorCode {
     EmptySession,
 }
 
-impl BridgeErrorCode {
+impl ChorusErrorCode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::NotFound => "NOT_FOUND",
@@ -34,22 +34,22 @@ impl BridgeErrorCode {
     }
 }
 
-pub fn classify_error(message: &str) -> BridgeErrorCode {
+pub fn classify_error(message: &str) -> ChorusErrorCode {
     let lower = message.to_ascii_lowercase();
     if lower.contains("unsupported agent") || lower.contains("unknown agent") {
-        BridgeErrorCode::UnsupportedAgent
+        ChorusErrorCode::UnsupportedAgent
     } else if lower.contains("unsupported mode") {
-        BridgeErrorCode::UnsupportedMode
+        ChorusErrorCode::UnsupportedMode
     } else if lower.contains("no") && lower.contains("session found") || lower.contains("not found") {
-        BridgeErrorCode::NotFound
+        ChorusErrorCode::NotFound
     } else if lower.contains("failed to parse") || lower.contains("failed to read") {
-        BridgeErrorCode::ParseFailed
+        ChorusErrorCode::ParseFailed
     } else if lower.contains("missing required") || lower.contains("invalid handoff") || lower.contains("must provide session_id") {
-        BridgeErrorCode::InvalidHandoff
+        ChorusErrorCode::InvalidHandoff
     } else if lower.contains("has no messages") || lower.contains("history is empty") {
-        BridgeErrorCode::EmptySession
+        ChorusErrorCode::EmptySession
     } else {
-        BridgeErrorCode::IoError
+        ChorusErrorCode::IoError
     }
 }
 

@@ -51,7 +51,7 @@ function runGit(args, cwd, allowFailure = false) {
   }
 }
 
-function buildBridgeSection() {
+function buildChorusSection() {
   return `remote_name="\${1:-origin}"
 remote_url="\${2:-unknown}"
 
@@ -61,8 +61,8 @@ run_context_sync() {
   local remote_ref="$3"
   local remote_sha="$4"
 
-  if command -v bridge >/dev/null 2>&1; then
-    bridge context-pack sync-main \\
+  if command -v chorus >/dev/null 2>&1; then
+    chorus context-pack sync-main \\
       --local-ref "$local_ref" \\
       --local-sha "$local_sha" \\
       --remote-ref "$remote_ref" \\
@@ -79,7 +79,7 @@ run_context_sync() {
     return
   fi
 
-  echo "[context-pack] WARN: bridge command not found; skipping context-pack sync"
+  echo "[context-pack] WARN: chorus command not found; skipping context-pack sync"
 }
 
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -106,7 +106,7 @@ function main() {
   let hooksDir;
   if (existingHooksPath) {
     if (existingHooksPath !== '.githooks') {
-      process.stdout.write(`[context-pack] NOTE: core.hooksPath is '${existingHooksPath}'; appending bridge hook there.\n`);
+      process.stdout.write(`[context-pack] NOTE: core.hooksPath is '${existingHooksPath}'; appending chorus hook there.\n`);
     }
     hooksDir = path.join(repoRoot, existingHooksPath);
   } else {
@@ -114,7 +114,7 @@ function main() {
   }
 
   const prePushPath = path.join(hooksDir, 'pre-push');
-  const chorusSection = `${SENTINEL_START}\n${buildBridgeSection()}\n${SENTINEL_END}`;
+  const chorusSection = `${SENTINEL_START}\n${buildChorusSection()}\n${SENTINEL_END}`;
 
   let finalContent;
   if (fs.existsSync(prePushPath)) {
@@ -129,7 +129,7 @@ function main() {
       sentStart = null; sentEnd = null;
     }
     if (sentStart && sentEnd) {
-      // Replace existing chorus/bridge section
+      // Replace existing chorus section
       const startIdx = existing.indexOf(sentStart);
       let endIdx = existing.indexOf(sentEnd) + sentEnd.length;
       if (existing[endIdx] === '\n') endIdx++;

@@ -196,7 +196,7 @@
 
             // === INIT ===
             line('claude', '');
-            html('claude', '<span class="dim">Claude Code v1.0 &mdash; ~/projects/bridge</span>');
+            html('claude', '<span class="dim">Claude Code v1.0 &mdash; ~/projects/chorus</span>');
             line('claude', '');
             line('codex', '');
             html('codex', '<span class="dim">Codex CLI &mdash; Agent Chorus</span>');
@@ -205,14 +205,14 @@
             await wait(1100);
 
             // === SCENE 1: Setup context pack ===
-            html('claude', '<span class="claude-prompt">~/bridge</span> <span class="dim">$</span> <span class="user-input">Enable context-pack automation</span>');
+            html('claude', '<span class="claude-prompt">~/chorus</span> <span class="dim">$</span> <span class="user-input">Enable context-pack automation</span>');
             line('claude', '');
             await wait(700);
             toolCall('claude', 'chorus setup --context-pack');
             line('claude', '');
             await wait(1100);
             html('claude', [
-                'Agent Chorus setup complete for ~/projects/bridge',
+                'Agent Chorus setup complete for ~/projects/chorus',
                 '- [created] .agent-chorus/INTENTS.md (Created intent contract)',
                 '- [created] .agent-chorus/providers/codex.md (Created provider snippet)',
                 '- [updated] AGENTS.md (Managed block written)',
@@ -257,7 +257,7 @@
             await wait(1400);
 
             // === SCENE 3: Main push updates pack ===
-            html('claude', '<span class="claude-prompt">~/bridge</span> <span class="dim">$</span> <span class="user-input">git push origin main</span>');
+            html('claude', '<span class="claude-prompt">~/chorus</span> <span class="dim">$</span> <span class="user-input">git push origin main</span>');
             line('claude', '');
             await wait(500);
             html('claude', '<span class="dim">[context-pack] validating main push for origin (...)</span>');

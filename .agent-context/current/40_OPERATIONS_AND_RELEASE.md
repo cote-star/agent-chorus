@@ -10,12 +10,12 @@
 <!-- AGENT: Describe how releases are triggered and what they produce. -->
 
 ## Context Pack Maintenance
-1. Initialize scaffolding: `bridge context-pack init`
+1. Initialize scaffolding: `chorus context-pack init`
 2. Have your agent fill in the template sections.
-3. Seal the pack: `bridge context-pack seal`
-4. Install pre-push hook: `bridge context-pack install-hooks`
-5. When freshness warnings appear, update content then run `bridge context-pack seal`
+3. Seal the pack: `chorus context-pack seal`
+4. Install pre-push hook: `chorus context-pack install-hooks`
+5. When freshness warnings appear, update content then run `chorus context-pack seal`
 
 ## Rollback/Recovery
-- Restore latest snapshot: `bridge context-pack rollback`
-- Restore named snapshot: `bridge context-pack rollback --snapshot <snapshot_id>`
+- Restore latest snapshot: `chorus context-pack rollback`
+- Restore named snapshot: `chorus context-pack rollback --snapshot <snapshot_id>`

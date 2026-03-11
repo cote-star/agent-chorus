@@ -97,7 +97,7 @@ function main() {
   }
   process.stdout.write('\n');
   process.stdout.write(
-    'Consider: update pack content with your agent, then run bridge context-pack seal\n'
+    'Consider: update pack content with your agent, then run chorus context-pack seal\n'
   );
 }
 

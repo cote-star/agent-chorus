@@ -191,7 +191,7 @@ function main() {
   // Advisory-only: warn but never block the push or auto-build
   process.stderr.write(
     "[context-pack] ADVISORY: context-relevant files changed on main push. " +
-    "Update pack content with your agent, then run 'bridge context-pack seal'.\n"
+    "Update pack content with your agent, then run 'chorus context-pack seal'.\n"
   );
 }
 
