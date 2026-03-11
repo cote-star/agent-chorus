@@ -15,16 +15,20 @@ Define a lightweight, local-first standard for reading and coordinating cross-ag
 - `analyze`
 - `feedback`
 
-## CLI Contract (stable since v0.4)
+## CLI Contract (stable since v0.4, extended in v0.7)
 Both implementations must support:
 
 ```bash
-chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json] [--metadata-only]
+chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json] [--metadata-only] [--audit-redactions]
 chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--normalize] [--json]
 chorus report --handoff <path-to-handoff.json> [--cwd=<path>] [--json]
 chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
 chorus search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
-chorus context-pack <init|seal|build|sync-main|install-hooks|rollback|check-freshness>
+chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<path>] [--last=<N>] [--json]
+chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
+chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
+chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
+chorus context-pack <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify>
 ```
 
 Rules:
@@ -37,6 +41,11 @@ Rules:
 7. `list` and `search` apply cwd scoping when `--cwd` is provided.
 8. Hard failures must exit non-zero. With `--json`, failures must emit structured error JSON.
 9. `read --metadata-only` returns session metadata without content. JSON output sets `content` to `null`. Text output omits the content block.
+10. `read --audit-redactions` includes a `redactions` array in JSON output showing pattern names and counts. In text mode, a summary is appended after content.
+11. `diff` reads two sessions by ID substring and computes line-level diff with added/removed/equal hunks.
+12. `relevance` introspects context-pack filtering patterns. `--list` shows patterns, `--test` checks a path, `--suggest` recommends patterns.
+13. `send` appends a message to the target agent's JSONL queue in `.agent-chorus/messages/`.
+14. `messages` reads (and optionally clears with `--clear`) the message queue for an agent.
 
 ## JSON Output Contract (`chorus read --json`)
 
@@ -62,6 +71,16 @@ Errors with `--json` are defined by `schemas/error.schema.json`.
 
 `chorus report --json` outputs the coordinator report object defined by `schemas/report.schema.json`.
 `chorus report --handoff` consumes packets defined by `schemas/handoff.schema.json`.
+`chorus messages --json` outputs an array of message objects defined by `schemas/message.schema.json`.
+
+## Agent-to-Agent Messaging
+
+Chorus provides a local JSONL message queue for lightweight agent-to-agent coordination.
+
+- **Storage**: `.agent-chorus/messages/<target-agent>.jsonl`, one JSON object per line.
+- **Schema**: `schemas/message.schema.json` — required fields: `from`, `to`, `timestamp`, `content`, `cwd`.
+- **Privacy**: Messages never leave the local machine.
+- **Clearing**: `chorus messages --agent X --clear` removes the file after reading.
 
 ## Trust Model
 
@@ -105,4 +124,4 @@ Implementations must redact likely secrets from returned content before printing
 ```
 
 ## Conformance
-Any release must pass `scripts/conformance.sh`, which runs both implementations against shared fixtures and verifies equivalent JSON output for `read`, `compare`, `report`, `list`, and `search`.
+Any release must pass `scripts/conformance.sh`, which runs both implementations against shared fixtures and verifies equivalent JSON output for `read`, `compare`, `report`, `list`, `search`, `diff`, `relevance`, `send`, and `messages`.

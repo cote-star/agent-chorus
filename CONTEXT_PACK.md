@@ -75,6 +75,16 @@ Relevant paths are configurable in `.agent-context/relevance.json`. Defaults inc
 - release/CI wiring (`.github/workflows/`, package metadata, Cargo metadata)
 - fixture/golden data used by behavior tests
 
+### Relevance Introspection
+
+Use `chorus relevance` to inspect and test the filtering patterns:
+
+```bash
+chorus relevance --list --cwd .              # Show current include/exclude patterns
+chorus relevance --test src/main.rs --cwd .  # Test if a file matches
+chorus relevance --suggest --cwd .           # Suggest patterns for this project
+```
+
 ## Non-Goals
 - Context pack is not a source-of-truth replacement for behavior-critical edits.
 - Context pack does not write or mutate agent sessions.

@@ -22,7 +22,7 @@ chorus read --agent claude --json
 ## How It Works
 
 1. **Ask naturally** - "What is Claude doing?" / "Did Gemini finish the API?"
-2. **Agent runs chorus** - Your agent calls `chorus read`, `chorus compare`, etc. behind the scenes.
+2. **Agent runs chorus** - Your agent calls `chorus read`, `chorus compare`, `chorus diff`, `chorus send`, etc. behind the scenes.
 3. **Evidence-backed answer** - Sources cited, divergences flagged, no hallucination.
 
 **Tenets:**
@@ -159,14 +159,17 @@ Recovery matrix:
 
 ## Supported Agents
 
-| Feature            | Codex | Gemini | Claude | Cursor |
-| :----------------- | :---: | :----: | :----: | :----: |
-| **Read Content**   |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Auto-Discovery** |  Yes  |  Yes   |  Yes   |  Yes   |
-| **CWD Scoping**    |  Yes  |   No   |  Yes   |   No   |
-| **List Sessions**  |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Search**         |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Comparisons**    |  Yes  |  Yes   |  Yes   |  Yes   |
+| Feature              | Codex | Gemini | Claude | Cursor |
+| :------------------- | :---: | :----: | :----: | :----: |
+| **Read Content**     |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Auto-Discovery**   |  Yes  |  Yes   |  Yes   |  Yes   |
+| **CWD Scoping**      |  Yes  |   No   |  Yes   |   No   |
+| **List Sessions**    |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Search**           |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Comparisons**      |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Session Diff**     |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Redaction Audit**  |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Messaging**        |  Yes  |  Yes   |  Yes   |  Yes   |
 
 ## How It Compares
 
@@ -179,6 +182,7 @@ Recovery matrix:
 | **Privacy** | Local-first, auto-redaction | Cloud-optional | Varies |
 | **Cold-start solution** | Context Pack (5-doc briefing) | None | None |
 | **Language** | Node.js + Rust (conformance-tested) | Python or TypeScript | Single language |
+| **Agent messaging** | Built-in JSONL queue | Framework-specific | None |
 | **Philosophy** | Visibility first, orchestration optional | Orchestration first | Task spawning |
 
 ## Visibility Without Orchestration
@@ -187,12 +191,53 @@ The default workflow is evidence-first: one agent reads another agent's session 
 
 ![Claude to Codex handoff via read-only evidence](https://raw.githubusercontent.com/cote-star/agent-bridge/ecd1314a70427f9c33f8d053a5007fd30f2f55da/docs/orchestrator-handoff-flow.svg)
 
+## v0.7.0 Innovations
+
+### Relevance Introspection
+
+Inspect and test the context-pack filtering patterns that decide which files matter.
+
+```bash
+chorus relevance --list --cwd .              # Show current include/exclude patterns
+chorus relevance --test src/main.rs --cwd .  # Test if a file matches
+chorus relevance --suggest --cwd .           # Suggest patterns for this project
+```
+
+### Redaction Audit Trail
+
+See exactly what was redacted and why in any `chorus read` output.
+
+```bash
+chorus read --agent claude --audit-redactions --json
+```
+
+The JSON response includes a `redactions` array with pattern names and counts.
+
+### Session Diff
+
+Compare two sessions from the same agent with line-level precision.
+
+```bash
+chorus diff --agent codex --from session-abc --to session-def --cwd . --json
+```
+
+### Agent-to-Agent Messaging
+
+Agents can leave messages for each other through a local JSONL queue.
+
+```bash
+chorus send --from claude --to codex --message "auth module ready for review" --cwd .
+chorus messages --agent codex --cwd . --json
+chorus messages --agent codex --cwd . --clear
+```
+
+Messages are stored in `.agent-chorus/messages/` and never leave your machine.
+
 ## Current Boundaries (v0.7.0)
 
 - No orchestration control plane: no task router, scheduler, or work queues.
 - No autonomous agent chaining by default; handoffs are human-directed.
 - No live synchronization stream; reads are snapshot-based from local session logs.
-- Agent-to-agent messaging and cross-agent context sharing are roadmap items, not default behavior today.
 
 ## Architecture
 
@@ -233,7 +278,6 @@ sequenceDiagram
 - **Context Pack customization** - user-defined doc structure, custom sections, team templates.
 - **Windows installation** - native Windows support (currently macOS/Linux).
 - **Cross-agent context sharing** - agents share context snippets (still read-only, still local).
-- **Agent-to-agent messaging** - agents leave messages for each other via chorus.
 
 ## Update Notifications
 

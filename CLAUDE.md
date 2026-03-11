@@ -59,6 +59,11 @@ Support commands:
 - `chorus list --agent <agent> --cwd <project-path> --json`
 - `chorus search "<query>" --agent <agent> --cwd <project-path> --json`
 - `chorus compare --source codex --source gemini --source claude --cwd <project-path> --json`
+- `chorus diff --agent <agent> --from <id1> --to <id2> --cwd <project-path> --json`
+- `chorus read --agent <agent> --cwd <project-path> --audit-redactions --json`
+- `chorus relevance --list --cwd <project-path> --json`
+- `chorus send --from <agent> --to <agent> --message "<text>" --cwd <project-path>`
+- `chorus messages --agent <agent> --cwd <project-path> --json`
 
 If command syntax is unclear, run `chorus --help`.
 
@@ -68,6 +73,11 @@ If command syntax is unclear, run `chorus --help`.
 - "What did Gemini say?"
 - "Compare Codex and Claude outputs."
 - "Read session <id> from Cursor."
+- "How did that session change?"
+- "Send a message to Codex."
+- "Any messages for me?"
+- "What was redacted?"
+- "Which files are relevant?"
 
 ## Intent Router
 
@@ -77,6 +87,11 @@ If command syntax is unclear, run `chorus --help`.
 - "Compare Codex and Claude outputs." -> `chorus compare --source codex --source claude --cwd <project-path> --json`
 - "Show the past session from Claude." -> `chorus list --agent claude --cwd <project-path> --limit 2 --json`, then read the second session ID
 - "Show past 3 Gemini sessions." -> `chorus list --agent gemini --cwd <project-path> --limit 4 --json`, then read the 3 older session IDs
+- "How did Codex's session change?" -> `chorus diff --agent codex --from <id1> --to <id2> --cwd <project-path> --json`
+- "What secrets were redacted?" -> `chorus read --agent claude --cwd <project-path> --audit-redactions --json`
+- "Send a message to Codex." -> `chorus send --from claude --to codex --message "<text>" --cwd <project-path>`
+- "Any messages for me?" -> `chorus messages --agent claude --cwd <project-path> --json`
+- "Which files are relevant?" -> `chorus relevance --list --cwd <project-path> --json`
 
 ## Easter Egg
 

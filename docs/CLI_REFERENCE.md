@@ -5,14 +5,18 @@ Use this page for full command syntax, examples, output contracts, and operation
 ## Command Contract
 
 ```bash
-chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json]
+chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json] [--metadata-only] [--audit-redactions]
 chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--normalize] [--json]
 chorus report --handoff <handoff.json> [--cwd=<path>] [--json]
 chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
 chorus search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
+chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<path>] [--last=<N>] [--json]
+chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
+chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
+chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
 chorus setup [--cwd=<path>] [--dry-run] [--force] [--context-pack] [--json]
 chorus doctor [--cwd=<path>] [--json]
-chorus context-pack <build|sync-main|install-hooks|rollback|check-freshness> [...]
+chorus context-pack <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [...]
 ```
 
 ## Reading a Session
@@ -117,7 +121,16 @@ chorus report --handoff ./handoff_packet.json --json
 ## Context Pack
 
 ```bash
-# Build or refresh context pack files
+# Scaffold template files for agent-driven content
+chorus context-pack init
+
+# Validate and lock the pack after agents fill in content
+chorus context-pack seal
+
+# Verify manifest checksums against actual file content
+chorus context-pack verify
+
+# Build or refresh context pack files (backward-compatible wrapper)
 chorus context-pack build
 
 # Install pre-push hook to auto-sync context pack for main pushes
@@ -150,7 +163,103 @@ chorus compare --source codex --source claude --json
 chorus setup --context-pack
 chorus context-pack build
 chorus context-pack check-freshness --base origin/main
+
+# Track session evolution: compare two sessions from the same agent
+chorus diff --agent codex --from session-v1 --to session-v2 --json
+
+# Security audit: check what secrets were redacted
+chorus read --agent claude --audit-redactions --json
+
+# Agent coordination: leave a message for another agent
+chorus send --from claude --to codex --message "migration script is ready" --cwd .
+chorus messages --agent codex --cwd . --json
+
+# Context-pack filtering: check if a file is relevant
+chorus relevance --test src/api/routes.ts --cwd .
 ```
+
+## Session Diff
+
+Compare two sessions from the same agent with line-level precision.
+
+```bash
+# Compare two Codex sessions
+chorus diff --agent codex --from session-abc --to session-def --cwd . --json
+
+# Compare with more message context
+chorus diff --agent claude --from fix-auth --to fix-auth-v2 --last 5 --json
+```
+
+**JSON output:**
+
+```json
+{
+  "agent": "codex",
+  "session_a": "session-abc",
+  "session_b": "session-def",
+  "hunks": [
+    { "tag": "removed", "lines": ["old line content"] },
+    { "tag": "added", "lines": ["new line content"] },
+    { "tag": "equal", "lines": ["unchanged content"] }
+  ],
+  "added_lines": 5,
+  "removed_lines": 3,
+  "summary": "5 lines added, 3 lines removed"
+}
+```
+
+## Relevance Introspection
+
+Inspect and test the context-pack filtering patterns that control which files are considered relevant.
+
+```bash
+# Show current include/exclude patterns and their source
+chorus relevance --list --cwd .
+
+# Test if a specific file path matches the patterns
+chorus relevance --test src/main.rs --cwd .
+
+# Suggest patterns based on detected project conventions
+chorus relevance --suggest --cwd .
+
+# Machine-readable output
+chorus relevance --list --cwd . --json
+```
+
+Patterns are configured in `.agent-context/relevance.json`. When no config exists, built-in defaults are used.
+
+## Agent-to-Agent Messaging
+
+A simple JSONL message queue for agents to leave messages for each other.
+
+```bash
+# Send a message from one agent to another
+chorus send --from claude --to codex --message "auth module ready for review" --cwd .
+
+# Read messages for an agent
+chorus messages --agent codex --cwd . --json
+
+# Read and clear messages after reading
+chorus messages --agent codex --cwd . --clear
+```
+
+Messages are stored in `.agent-chorus/messages/<target-agent>.jsonl` and never leave your machine.
+
+**JSON output for `chorus messages`:**
+
+```json
+[
+  {
+    "from": "claude",
+    "to": "codex",
+    "timestamp": "2026-03-11T10:30:00Z",
+    "content": "auth module ready for review",
+    "cwd": "/workspace/project"
+  }
+]
+```
+
+Message schema: `schemas/message.schema.json`.
 
 ## Error Codes
 
@@ -196,3 +305,26 @@ Chorus automatically redacts sensitive data before output:
 | Secret assignments    | `api_key="super-secret"` | `api_key=[REDACTED]` |
 
 Redaction is applied to `api_key`, `apikey`, `token`, `secret`, and `password` assignments with `=` or `:` separators.
+
+### Redaction Audit Trail
+
+Use `--audit-redactions` with `chorus read` to see what was redacted and why:
+
+```bash
+chorus read --agent claude --audit-redactions --json
+```
+
+The JSON response includes a `redactions` array:
+
+```json
+{
+  "agent": "claude",
+  "content": "...",
+  "redactions": [
+    { "pattern": "openai_api_key", "count": 2 },
+    { "pattern": "bearer_token", "count": 1 }
+  ]
+}
+```
+
+In text mode, a redaction summary is printed after the session content.
