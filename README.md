@@ -1,9 +1,9 @@
 # Agent Chorus
 
-![CI Status](https://github.com/cote-star/agent-chorus/actions/workflows/ci.yml/badge.svg)
+![CI Status](https://github.com/cote-star/agent-bridge/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Version](https://img.shields.io/badge/version-0.7.0-green.svg)
-[![Star History](https://img.shields.io/github/stars/cote-star/agent-chorus?style=social)](https://github.com/cote-star/agent-chorus)
+[![Star History](https://img.shields.io/github/stars/cote-star/agent-bridge?style=social)](https://github.com/cote-star/agent-bridge)
 
 **Let your AI agents talk about each other.**
 
@@ -37,13 +37,13 @@ chorus read --agent claude --json
 
 Switch from Gemini to Claude mid-task. Claude picks up where Gemini left off.
 
-![Handoff Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-handoff.webp)
+![Handoff Demo](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/demo-handoff.webp)
 
 ### The Status Check
 
 Three agents working on checkout. You ask Codex what the others are doing.
 
-![Status Check Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-status.webp)
+![Status Check Demo](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/demo-status.webp)
 
 ## Quick Start
 
@@ -64,7 +64,7 @@ chorus doctor # Checks health, context pack state, and updates
 
 From zero to a working skill query in under a minute:
 
-![Setup Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-setup.webp)
+![Setup Demo](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/demo-setup.webp)
 
 This wires skill triggers into your agent configs (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) so agents know how to use chorus.
 
@@ -124,9 +124,9 @@ Ask your agent explicitly:
 
 Create and wire a context pack for token-efficient repo understanding:
 
-![Context Pack Read-Order](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/cold-start-context-pack-hero.webp)
+![Context Pack Read-Order](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/cold-start-context-pack-hero.webp)
 
-![Context Pack Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-context-pack.webp)
+![Context Pack Demo](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/demo-context-pack.webp)
 
 ### Main Push Sync Policy
 
@@ -185,7 +185,7 @@ Recovery matrix:
 
 The default workflow is evidence-first: one agent reads another agent's session evidence and continues with a local decision, without a central control plane.
 
-![Claude to Codex handoff via read-only evidence](https://raw.githubusercontent.com/cote-star/agent-chorus/ecd1314a70427f9c33f8d053a5007fd30f2f55da/docs/orchestrator-handoff-flow.svg)
+![Claude to Codex handoff via read-only evidence](https://raw.githubusercontent.com/cote-star/agent-bridge/ecd1314a70427f9c33f8d053a5007fd30f2f55da/docs/orchestrator-handoff-flow.svg)
 
 ## Current Boundaries (v0.7.0)
 
@@ -198,7 +198,7 @@ The default workflow is evidence-first: one agent reads another agent's session 
 
 Chorus sits between your agent and other agents' session logs. You talk to your agent - your agent talks to chorus.
 
-![Before/after workflow animation](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/silo-tax-before-after.webp)
+![Before/after workflow animation](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/silo-tax-before-after.webp)
 
 ```mermaid
 sequenceDiagram
@@ -218,7 +218,7 @@ sequenceDiagram
 
 <details><summary>Diagram not rendering? View as image</summary>
 
-![Architecture sequence diagram](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/architecture.svg)
+![Architecture sequence diagram](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/architecture.svg)
 
 </details>
 
@@ -226,7 +226,7 @@ sequenceDiagram
 
 `chorus trash-talk` roasts your agents based on their session content.
 
-![Trash Talk Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-trash-talk.webp)
+![Trash Talk Demo](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/demo-trash-talk.webp)
 
 ## Roadmap
 
