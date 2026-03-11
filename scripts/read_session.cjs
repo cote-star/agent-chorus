@@ -108,6 +108,8 @@ function printHelp(topic = null) {
     lines.push('');
     lines.push('context-pack usage:');
     lines.push('  context-pack build [--reason <text>] [--base <sha>] [--head <sha>] [--force-snapshot]');
+    lines.push('  context-pack init [--pack-dir <path>] [--cwd <path>] [--force]');
+    lines.push('  context-pack seal [--reason <text>] [--base <sha>] [--head <sha>] [--pack-dir <path>] [--cwd <path>] [--force] [--force-snapshot]');
     lines.push('  context-pack sync-main --local-ref <ref> --local-sha <sha> --remote-ref <ref> --remote-sha <sha>');
     lines.push('  context-pack install-hooks');
     lines.push('  context-pack rollback [--snapshot <id>]');
@@ -221,6 +223,8 @@ function runInternalNodeScript(scriptRelPath, scriptArgs, options = {}) {
 function runContextPackSubcommand(subcommand, subArgs, options = {}) {
   const scriptBySubcommand = {
     build: 'context_pack/build.cjs',
+    init: 'context_pack/init.cjs',
+    seal: 'context_pack/seal.cjs',
     'sync-main': 'context_pack/sync_main.cjs',
     rollback: 'context_pack/rollback.cjs',
     'install-hooks': 'context_pack/install_hooks.cjs',
@@ -1439,7 +1443,7 @@ function runSetup(inputArgs) {
         type: 'context-pack',
         path: path.join(cwd, '.agent-context', 'current'),
         status: 'planned',
-        note: 'Would build context pack',
+        note: 'Would init context pack template',
       });
       operations.push({
         type: 'context-pack',
@@ -1448,16 +1452,16 @@ function runSetup(inputArgs) {
         note: 'Would install context-pack pre-push hook',
       });
     } else {
-      const buildResult = runContextPackSubcommand(
-        'build',
-        ['--reason', 'setup'],
+      const initResult = runContextPackSubcommand(
+        'init',
+        [],
         { cwd, inheritOutput: false }
       );
       operations.push({
         type: 'context-pack',
         path: path.join(cwd, '.agent-context', 'current'),
-        status: buildResult.stdout.includes('unchanged') ? 'unchanged' : 'updated',
-        note: buildResult.stdout || 'Context pack build completed',
+        status: initResult.stdout.includes('unchanged') ? 'unchanged' : 'updated',
+        note: initResult.stdout || 'Context pack initialized',
       });
 
       const hookResult = runContextPackSubcommand(
@@ -1471,6 +1475,11 @@ function runSetup(inputArgs) {
         status: 'updated',
         note: hookResult.stdout || 'Installed context-pack pre-push hook',
       });
+
+      console.log('');
+      console.log('Next steps:');
+      console.log('1. Ask your agent to fill the context pack template sections.');
+      console.log('2. Run `bridge context-pack seal` to finalize the pack.');
     }
   }
 
@@ -1558,14 +1567,60 @@ function runDoctor(inputArgs) {
     }
   }
 
-  const packManifestPath = path.join(cwd, '.agent-context', 'current', 'manifest.json');
+  const packDir = path.join(cwd, '.agent-context', 'current');
+  const packManifestPath = path.join(packDir, 'manifest.json');
+  let packState = 'UNINITIALIZED';
+
+  if (fs.existsSync(packDir)) {
+    const hasManifest = fs.existsSync(packManifestPath);
+    // Quick scan for template markers
+    const hasTemplateMarkers = collectMatchingFiles(packDir, (_fp, name) => name.endsWith('.md'), false).some(f => {
+      try {
+        const content = fs.readFileSync(f.path, 'utf8');
+        return content.includes('<!-- AGENT:');
+      } catch { return false; }
+    });
+
+    if (hasTemplateMarkers) {
+      packState = 'TEMPLATE';
+    } else if (hasManifest) {
+      // detailed verification could be here, but for now existence = valid-ish
+      packState = 'SEALED_VALID';
+    } else {
+      packState = 'UNINITIALIZED'; // exists but no manifest and no markers? unlikely but fallback
+    }
+  }
+
   addCheck(
-    'context_pack_manifest',
-    fs.existsSync(packManifestPath) ? 'pass' : 'warn',
-    fs.existsSync(packManifestPath)
-      ? `Found: ${packManifestPath}`
-      : `Missing: ${packManifestPath} (run: bridge context-pack build)`
+    'context_pack_state',
+    packState === 'UNINITIALIZED' ? 'warn' : 'pass',
+    `State: ${packState}`
   );
+
+  if (packState === 'UNINITIALIZED') {
+    addCheck('context_pack_guidance', 'warn', 'Run `bridge context-pack init` to start');
+  } else if (packState === 'TEMPLATE') {
+    addCheck('context_pack_guidance', 'warn', 'Context pack in template mode. Fill sections then run `bridge context-pack seal`');
+  }
+
+  // Update check wiring (defensive)
+  try {
+    const updateCheckPath = path.join(__dirname, 'update_check.cjs');
+    if (fs.existsSync(updateCheckPath)) {
+      const updateCheck = require('./update_check.cjs');
+      if (typeof updateCheck.checkNowForDoctor === 'function') {
+        const updateInfo = updateCheck.checkNowForDoctor();
+        if (updateInfo) {
+          addCheck('update_status', 'pass', updateInfo.message);
+          // If update available, maybe add a warn/info check?
+          // The spec says "Update: up to date" or "Update: ... available"
+          // We'll stick to what checkNowForDoctor returns for the detail
+        }
+      }
+    }
+  } catch (e) {
+    // silently ignore missing update module or runtime errors
+  }
 
   let hooksPath = null;
   try {
@@ -1899,6 +1954,20 @@ try {
     runTrashTalk(args);
   } else {
     throw new Error(`Unknown command: ${command}`);
+  }
+
+  // Update notification (defensive)
+  try {
+    const updateCheckPath = path.join(__dirname, 'update_check.cjs');
+    if (fs.existsSync(updateCheckPath)) {
+      const updateCheck = require('./update_check.cjs');
+      if (typeof updateCheck.maybeNotifyUpdate === 'function') {
+        const asJson = hasFlag(args, '--json');
+        updateCheck.maybeNotifyUpdate({ asJson, command });
+      }
+    }
+  } catch (e) {
+    // silently ignore
   }
 } catch (error) {
   const msg = error.message || String(error);

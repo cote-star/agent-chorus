@@ -2,7 +2,7 @@
 
 ![CI Status](https://github.com/cote-star/agent-bridge/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.6.2-green.svg)
+![Version](https://img.shields.io/badge/version-0.7.0-green.svg)
 [![Star History](https://img.shields.io/github/stars/cote-star/agent-bridge?style=social)](https://github.com/cote-star/agent-bridge)
 
 **Let your AI agents talk about each other.**
@@ -59,7 +59,7 @@ cargo install agent-bridge
 
 ```bash
 bridge setup
-bridge doctor
+bridge doctor # Checks health, context pack state, and updates
 ```
 
 From zero to a working skill query in under a minute:
@@ -104,13 +104,15 @@ At a glance:
 ### Recommended Workflow
 
 ```bash
-# One-shot setup (recommended for new installs)
-bridge setup --context-pack
+# Recommended workflow:
+bridge context-pack init    # Creates .agent-context/current/ with templates
+# ...agent fills in <!-- AGENT: ... --> sections...
+bridge context-pack seal    # Validates content and locks the pack
 
-# Manual build/refresh
+# Manual rebuild (backward-compatible wrapper)
 bridge context-pack build
 
-# Install pre-push hook (syncs only for main pushes when relevant)
+# Install pre-push hook (advisory-only check on main push)
 bridge context-pack install-hooks
 ```
 
@@ -130,7 +132,7 @@ Create and wire a context pack for token-efficient repo understanding:
 
 - Pushes that do not target `main`: skipped.
 - Pushes to `main` with no context-relevant changes: skipped.
-- Pushes to `main` with context-relevant changes: rebuilds pack and creates local recovery snapshot.
+- Pushes to `main` with context-relevant changes: advisory warning printed (no auto-build).
 
 Optional pre-PR guard:
 
@@ -185,7 +187,7 @@ The default workflow is evidence-first: one agent reads another agent's session 
 
 ![Claude to Codex handoff via read-only evidence](https://raw.githubusercontent.com/cote-star/agent-bridge/ecd1314a70427f9c33f8d053a5007fd30f2f55da/docs/orchestrator-handoff-flow.svg)
 
-## Current Boundaries (v0.6.2)
+## Current Boundaries (v0.7.0)
 
 - No orchestration control plane: no task router, scheduler, or work queues.
 - No autonomous agent chaining by default; handoffs are human-directed.
@@ -230,10 +232,15 @@ sequenceDiagram
 
 - **Context Pack customization** - user-defined doc structure, custom sections, team templates.
 - **Windows installation** - native Windows support (currently macOS/Linux).
-- **Auto-generated instruction wiring** - `bridge setup` creates/updates `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`, plus `.agent-bridge/INTENTS.md` and provider snippets.
-- **Non-intrusive update notifications** - once-per-version update hints with fail-silent behavior and structured status in `bridge doctor` (`BRIDGE_SKIP_UPDATE_CHECK=1` opt-out).
 - **Cross-agent context sharing** - agents share context snippets (still read-only, still local).
 - **Agent-to-agent messaging** - agents leave messages for each other via bridge.
+
+## Update Notifications
+
+Bridge checks for updates once per version.
+- **Privacy**: Only contacts `registry.npmjs.org`.
+- **Fail-silent**: If the check fails, it says nothing.
+- **Opt-out**: Set `BRIDGE_SKIP_UPDATE_CHECK=1`.
 
 ## Choose Your Path
 

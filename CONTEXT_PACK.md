@@ -15,10 +15,12 @@ This repo includes a context-pack system for token-efficient agent onboarding.
 
 ## Storage Model
 - Active pack: `.agent-context/current/` — **tracked in git** so all contributors share the same context.
+- Configuration: `.agent-context/relevance.json` — defines which files trigger updates.
+- Guide: `.agent-context/GUIDE.md` — human-written high-level map (optional).
 - Snapshots: `.agent-context/snapshots/<timestamp>_<sha>/` — git-ignored, local-only recovery.
 - Build history: `.agent-context/history.jsonl` — git-ignored, local-only audit log.
 
-Only `current/` is committed. Snapshots and history stay local.
+Only `current/` and `relevance.json` are committed. Snapshots and history stay local.
 
 ## Naming Convention
 Inside `.agent-context/current/`:
@@ -40,10 +42,18 @@ Numeric prefixes keep deterministic read order for agents.
 
 ## Commands
 ```bash
-# Build/update context pack manually
+# 1. Initialize template scaffolding
+bridge context-pack init
+
+# 2. Agent fills in content...
+
+# 3. Seal the pack (validate & snapshot)
+bridge context-pack seal
+
+# Manual build (backward-compatible wrapper around seal)
 bridge context-pack build
 
-# Install branch-aware pre-push hook
+# Install advisory-only pre-push hook
 bridge context-pack install-hooks
 
 # Sync context pack for a main push event (used by pre-push hook)
@@ -56,9 +66,9 @@ bridge context-pack rollback
 ## Update Policy
 - For pushes that do not target `main`: no sync.
 - For pushes to `main` with non-relevant file changes: no update.
-- For pushes to `main` with relevant changes: regenerate pack + snapshot.
+- For pushes to `main` with relevant changes: **Advisory Warning**. The hook prints a warning if the pack is stale, but does not auto-build or block the push.
 
-Relevant paths include:
+Relevant paths are configurable in `.agent-context/relevance.json`. Defaults include:
 - command/runtime sources (`scripts/`, `cli/src/`)
 - contracts (`schemas/`, `PROTOCOL.md`)
 - docs that define behavior (`README.md`, `CONTRIBUTING.md`, `SKILL.md`)

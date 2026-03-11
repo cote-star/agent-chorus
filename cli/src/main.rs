@@ -1,8 +1,12 @@
 mod adapters;
 mod agents;
 mod context_pack;
+#[cfg(feature = "relevance")]
+pub mod relevance;
 mod report;
 mod utils;
+pub mod update_check;
+
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -135,6 +139,10 @@ enum Commands {
         #[command(subcommand)]
         command: ContextPackCommand,
     },
+
+    #[cfg(feature = "update-check")]
+    #[command(hide = true)]
+    UpdateWorker,
 }
 
 #[derive(Subcommand)]
@@ -216,6 +224,52 @@ enum ContextPackCommand {
         #[arg(long)]
         cwd: Option<String>,
     },
+
+    /// Initialize context pack templates
+    Init {
+        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Overwrite existing template files
+        #[arg(long)]
+        force: bool,
+    },
+
+    /// Validate and seal an agent-authored context pack
+    Seal {
+        /// Seal reason (metadata only)
+        #[arg(long)]
+        reason: Option<String>,
+
+        /// Base SHA for changed-file computation
+        #[arg(long)]
+        base: Option<String>,
+
+        /// Head SHA for changed-file computation
+        #[arg(long)]
+        head: Option<String>,
+
+        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Seal even if template markers remain
+        #[arg(long)]
+        force: bool,
+
+        /// Force creating a new snapshot even when unchanged
+        #[arg(long)]
+        force_snapshot: bool,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -290,6 +344,8 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::Search { json, .. } => *json,
         Commands::TrashTalk { .. } => false,
         Commands::ContextPack { .. } => false,
+        #[cfg(feature = "update-check")]
+        Commands::UpdateWorker => false,
     }
 }
 
@@ -451,9 +507,46 @@ fn run(cli: Cli) -> Result<()> {
                         &target_cwd,
                     )?;
                 }
+                ContextPackCommand::Init {
+                    pack_dir,
+                    cwd,
+                    force,
+                } => {
+                    context_pack::init(context_pack::InitOptions {
+                        pack_dir,
+                        cwd,
+                        force,
+                    })?;
+                }
+                ContextPackCommand::Seal {
+                    reason,
+                    base,
+                    head,
+                    pack_dir,
+                    cwd,
+                    force,
+                    force_snapshot,
+                } => {
+                    context_pack::seal(context_pack::SealOptions {
+                        reason,
+                        base,
+                        head,
+                        pack_dir,
+                        cwd,
+                        force,
+                        force_snapshot,
+                    })?;
+                }
             }
         }
+        #[cfg(feature = "update-check")]
+        Commands::UpdateWorker => {
+            update_check::run_worker();
+        }
     }
+
+    #[cfg(feature = "update-check")]
+    update_check::maybe_notify(&cli.command);
 
     Ok(())
 }

@@ -13,10 +13,18 @@ When asked to understand this repository (or any "what does this repo do?" inten
    `40_OPERATIONS_AND_RELEASE.md`).
 3. Only open project files when the context pack identifies a specific target.
 
-If the context pack is missing or stale, run:
+If the context pack is missing, run:
 
 ```bash
-bridge context-pack build
+bridge context-pack init
+# ...fill in template sections...
+bridge context-pack seal
+```
+
+If the context pack is stale (already initialized), run:
+
+```bash
+bridge context-pack seal
 ```
 
 ## Context Pack Maintenance
@@ -26,7 +34,7 @@ needs updating. If the changes affect architecture, commands, behavioral
 invariants, or the code map, run:
 
 ```bash
-bridge context-pack build
+bridge context-pack seal
 ```
 
 Skip for typo-only, comment-only, or test-only changes.

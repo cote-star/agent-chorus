@@ -13,7 +13,9 @@ When asked to understand this repository end-to-end:
 Run:
 
 ```bash
-bridge context-pack build
+bridge context-pack init
+# ...fill details...
+bridge context-pack seal
 ```
 
 ## Main Push Context Sync
@@ -23,4 +25,4 @@ Install hook once:
 bridge context-pack install-hooks
 ```
 
-The pre-push hook updates the context pack only when a push targets `main` and changes context-relevant files.
+The pre-push hook prints an advisory warning when a push targets `main` and changes context-relevant files. It never auto-builds or blocks the push.

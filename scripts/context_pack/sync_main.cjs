@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
@@ -73,9 +74,58 @@ function getChangedFiles(repoRoot, baseSha, headSha) {
     .filter(Boolean);
 }
 
-function isContextRelevant(filePath) {
+/**
+ * Load relevance rules from .agent-context/relevance.json if it exists.
+ * Returns null if the file is missing or contains invalid JSON.
+ * Expected format: { "include": ["pattern", ...], "exclude": ["pattern", ...] }
+ */
+function loadRelevanceRules(repoRoot) {
+  const rulesPath = path.join(repoRoot, '.agent-context', 'relevance.json');
+  try {
+    const raw = fs.readFileSync(rulesPath, 'utf8');
+    const rules = JSON.parse(raw);
+    if (rules && typeof rules === 'object' && (Array.isArray(rules.include) || Array.isArray(rules.exclude))) {
+      return rules;
+    }
+    return null;
+  } catch (_err) {
+    return null;
+  }
+}
+
+/**
+ * Check if a file path matches a glob-like prefix pattern.
+ * Supports patterns like "scripts/", "*.md", and exact matches.
+ */
+function matchesPattern(normalized, pattern) {
+  if (pattern.endsWith('/')) {
+    return normalized.startsWith(pattern);
+  }
+  if (pattern.startsWith('*.')) {
+    return normalized.endsWith(pattern.slice(1));
+  }
+  return normalized === pattern;
+}
+
+/**
+ * Determine if a file is context-relevant using loaded rules or hardcoded defaults.
+ */
+function isContextRelevant(filePath, rules) {
   const normalized = filePath.replace(/\\/g, '/');
 
+  if (rules) {
+    const excludes = rules.exclude || [];
+    for (const pattern of excludes) {
+      if (matchesPattern(normalized, pattern)) return false;
+    }
+    const includes = rules.include || [];
+    for (const pattern of includes) {
+      if (matchesPattern(normalized, pattern)) return true;
+    }
+    return false;
+  }
+
+  // Hardcoded default fallback
   if (
     normalized.startsWith('blog/') ||
     normalized.startsWith('notes/') ||
@@ -114,11 +164,6 @@ function isContextRelevant(filePath) {
   );
 }
 
-function shortSha(sha) {
-  if (!sha || ZERO_SHA_RE.test(sha)) return 'none';
-  return sha.slice(0, 12);
-}
-
 function main() {
   const args = parseArgs(process.argv);
   const repoRoot = runGit(['rev-parse', '--show-toplevel'], process.cwd(), true) || process.cwd();
@@ -134,29 +179,19 @@ function main() {
   }
 
   const changedFiles = getChangedFiles(repoRoot, args.remoteSha, args.localSha);
-  const relevant = changedFiles.filter(isContextRelevant);
+  const rules = loadRelevanceRules(repoRoot);
+  const relevant = changedFiles.filter((f) => isContextRelevant(f, rules));
 
   if (relevant.length === 0) {
     process.stdout.write('[context-pack] skipped (no context-relevant file changes)\n');
     return;
   }
 
-  const buildScript = path.join(__dirname, 'build.cjs');
-  const buildArgs = [
-    buildScript,
-    '--reason',
-    `main-push:${shortSha(args.remoteSha)}..${shortSha(args.localSha)}`,
-    '--base',
-    args.remoteSha || '',
-    '--head',
-    args.localSha,
-  ];
-
-  for (const filePath of changedFiles) {
-    buildArgs.push('--changed-file', filePath);
-  }
-
-  execFileSync('node', buildArgs, { cwd: repoRoot, stdio: 'inherit' });
+  // Advisory-only: warn but never block the push or auto-build
+  process.stderr.write(
+    "[context-pack] ADVISORY: context-relevant files changed on main push. " +
+    "Update pack content with your agent, then run 'bridge context-pack seal'.\n"
+  );
 }
 
 main();

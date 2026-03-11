@@ -2,6 +2,8 @@
 'use strict';
 
 const { execFileSync } = require('child_process');
+const path = require('path');
+const relevance = require('./relevance.cjs');
 
 function parseArgs(argv) {
   const options = {
@@ -57,50 +59,11 @@ function getChangedFiles(base, cwd) {
   return fallback.split('\n').map((line) => line.trim()).filter(Boolean);
 }
 
-function isContextRelevant(filePath) {
-  const normalized = filePath.replace(/\\/g, '/');
-
-  if (
-    normalized.startsWith('blog/') ||
-    normalized.startsWith('notes/') ||
-    normalized.startsWith('drafts/') ||
-    normalized.startsWith('scratch/') ||
-    normalized.startsWith('tmp/') ||
-    normalized.startsWith('.agent-context/') ||
-    normalized.startsWith('docs/demo-')
-  ) {
-    return false;
-  }
-
-  if (
-    normalized === 'README.md' ||
-    normalized === 'PROTOCOL.md' ||
-    normalized === 'CONTRIBUTING.md' ||
-    normalized === 'SKILL.md' ||
-    normalized === 'AGENTS.md' ||
-    normalized === 'package.json' ||
-    normalized === 'package-lock.json' ||
-    normalized === 'cli/Cargo.toml' ||
-    normalized === 'cli/Cargo.lock' ||
-    normalized === 'docs/architecture.svg' ||
-    normalized === 'docs/silo-tax-before-after.webp'
-  ) {
-    return true;
-  }
-
-  return (
-    normalized.startsWith('scripts/') ||
-    normalized.startsWith('cli/src/') ||
-    normalized.startsWith('schemas/') ||
-    normalized.startsWith('fixtures/golden/') ||
-    normalized.startsWith('fixtures/session-store/') ||
-    normalized.startsWith('.github/workflows/')
-  );
-}
 
 function main() {
   const options = parseArgs(process.argv);
   const changedFiles = getChangedFiles(options.base, options.cwd);
+  const config = relevance.loadRelevanceConfig(options.cwd);
 
   let packTouched = false;
   const relevant = [];
@@ -111,7 +74,7 @@ function main() {
       continue;
     }
 
-    if (isContextRelevant(filePath)) {
+    if (relevance.isRelevant(filePath, config)) {
       relevant.push(filePath);
     }
   }
@@ -133,7 +96,9 @@ function main() {
     process.stdout.write(`  - ${filePath}\n`);
   }
   process.stdout.write('\n');
-  process.stdout.write('Consider running: bridge context-pack build\n');
+  process.stdout.write(
+    'Consider: update pack content with your agent, then run bridge context-pack seal\n'
+  );
 }
 
 main();

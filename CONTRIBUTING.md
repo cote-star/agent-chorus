@@ -27,7 +27,7 @@ You can also run the Node test bundle with `npm run check`.
 3. Update README and schemas when public CLI or JSON output changes.
 4. Include tests for adapter changes and edge cases.
 5. Keep changes scoped and explain tradeoffs in the PR description.
-6. If core behavior/docs/contracts change, refresh the local context pack with `bridge context-pack build`.
+6. If core behavior/docs/contracts change, refresh the local context pack with `bridge context-pack seal` (or `build`).
 
 ## Release Safety
 

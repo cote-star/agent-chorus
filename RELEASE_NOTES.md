@@ -1,8 +1,49 @@
 # Release Notes
 
-## Unreleased
+## v0.7.0 (2026-02-15)
 
-No entries yet.
+### Highlights
+- Context-pack v2: agent-driven content model with `init` → agent fill → `seal` workflow.
+- Non-intrusive update notifications with `bridge doctor` integration.
+- Generic relevance engine with configurable `.agent-context/relevance.json`.
+- Advisory-only `sync-main` and fail-open pre-push hooks.
+- Shared Node utilities (`cp_utils.cjs`) with symlink protection and stale lock recovery.
+- Pure Rust timestamp generation and `globset`-based pattern matching.
+- CLI smoke test suite (`scripts/test_smoke.sh`).
+
+### Added
+- `bridge context-pack init` — scaffolds template files, `GUIDE.md`, and `relevance.json`.
+- `bridge context-pack seal` — validates canonical files, generates manifest, snapshot, and history.
+- `scripts/update_check.cjs` + `cli/src/update_check.rs` — once-per-version update banner on stderr.
+- `scripts/context_pack/relevance.cjs` + `cli/src/relevance.rs` — configurable include/exclude relevance matcher.
+- `scripts/context_pack/cp_utils.cjs` — shared utilities (symlink checks, atomic writes, stale lock recovery).
+- `scripts/test_smoke.sh` — CLI smoke tests for `doctor`, `init`, `seal`, `build`.
+- `bridge doctor` now reports context pack state (`UNINITIALIZED`, `TEMPLATE`, `SEALED_VALID`, `SEALED_STALE`) and update status.
+- `BRIDGE_SKIP_UPDATE_CHECK=1` environment variable to disable update checks.
+
+### Changed
+- `bridge context-pack build` is now a backward-compatible wrapper that routes to `init` or `seal` based on pack state.
+- `bridge context-pack sync-main` is advisory-only — prints a warning, never auto-builds.
+- Pre-push hook is fail-open — context-pack errors never block push.
+- `bridge setup --context-pack` runs `init` + `install-hooks` instead of `build`.
+- Relevance detection uses configurable `.agent-context/relevance.json` instead of hardcoded paths.
+- Rust `now_stamp()` uses pure `SystemTime` calculation instead of shelling out to `date`.
+- Rust pattern matching uses `globset` crate for proper `**` glob support.
+- All documentation updated from "build generates content" to "agent authors + seal finalizes".
+
+### Fixes
+- Fixed `collectMatchingFiles.search` crash in `bridge doctor` and legacy `build`.
+- Fixed `--pack-dir` flag extraction bug in `build.cjs`.
+- Fixed `--cwd` passthrough in `build.cjs` subprocess calls.
+- Added stale lockfile recovery (Node + Rust) for interrupted `seal` operations.
+- Added symlink protection for all context-pack file writes.
+- Gated unused Rust content-generator functions with `#[allow(dead_code)]` and doc comments.
+- Reduced clippy warnings from 21 to ≤5.
+
+### Upgrade Notes
+- `bridge context-pack build` continues to work — no breaking changes for existing automation.
+- New recommended workflow: `init` → agent fills content → `seal`.
+- The `--changed-file` flag on `build` is deprecated (accepted with warning, will be removed in next major).
 
 ## v0.6.2 (2026-02-11)
 

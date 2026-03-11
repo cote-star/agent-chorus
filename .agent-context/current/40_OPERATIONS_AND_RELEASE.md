@@ -1,30 +1,20 @@
 # Operations And Release
 
 ## Standard Validation
-```bash
-npm run check
-cargo test --manifest-path cli/Cargo.toml
-```
+<!-- AGENT: Add local validation commands (tests, linters, etc.). -->
 
-## Main CI Checks
-- `scripts/conformance.sh`
-- `scripts/test_edge_cases.sh`
-- `scripts/check_readme_examples.sh`
-- `scripts/check_package_contents.sh`
-- `scripts/validate_schemas.sh`
+## CI Checks
+<!-- AGENT: List CI workflows/steps that gate merges. -->
 
 ## Release Flow
-1. Push tag `v*` to trigger `.github/workflows/release.yml`.
-2. Verify phase runs conformance/docs/schema/version checks.
-3. Package/publish Node artifact.
-4. Build/upload Rust binaries and publish crate when tokens are configured.
+<!-- AGENT: Describe how releases are triggered and what they produce. -->
 
-## Context Pack Maintenance Contract
-1. Build pack manually: `bridge context-pack build`.
-2. Install branch-aware pre-push hook: `bridge context-pack install-hooks`.
-3. On `main` push, hook runs `context-pack:sync-main`.
-4. Sync updates the pack only when changed files are context-relevant.
-5. Snapshots are saved under `.agent-context/snapshots/` for rollback/recovery.
+## Context Pack Maintenance
+1. Initialize scaffolding: `bridge context-pack init`
+2. Have your agent fill in the template sections.
+3. Seal the pack: `bridge context-pack seal`
+4. Install pre-push hook: `bridge context-pack install-hooks`
+5. When freshness warnings appear, update content then run `bridge context-pack seal`
 
 ## Rollback/Recovery
 - Restore latest snapshot: `bridge context-pack rollback`

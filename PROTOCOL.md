@@ -1,4 +1,4 @@
-# Agent Bridge Protocol v0.6.1
+# Agent Bridge Protocol v0.7.0
 
 ## Purpose
 Define a lightweight, local-first standard for reading and coordinating cross-agent session evidence across Codex, Gemini, Claude, and Cursor.
@@ -24,6 +24,7 @@ bridge compare --source <agent[:session-substring]>... [--cwd=<path>] [--normali
 bridge report --handoff <path-to-handoff.json> [--cwd=<path>] [--json]
 bridge list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
 bridge search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
+bridge context-pack <init|seal|build|sync-main|install-hooks|rollback|check-freshness>
 ```
 
 Rules:
@@ -73,6 +74,25 @@ Implementations must redact likely secrets from returned content before printing
 - `BRIDGE_GEMINI_TMP_DIR`
 - `BRIDGE_CLAUDE_PROJECTS_DIR`
 - `BRIDGE_CURSOR_DATA_DIR`
+- `BRIDGE_SKIP_UPDATE_CHECK`
+
+## Doctor Contract
+`bridge doctor --json` may include:
+
+```json
+{
+  "update": {
+    "available": true,
+    "current": "0.7.0",
+    "latest": "0.7.1",
+    "checked_at": "2026-02-15T..."
+  },
+  "context_pack_state": {
+    "valid": true,
+    "last_modified": "..."
+  }
+}
+```
 
 ## Conformance
 Any release must pass `scripts/conformance.sh`, which runs both implementations against shared fixtures and verifies equivalent JSON output for `read`, `compare`, `report`, `list`, and `search`.

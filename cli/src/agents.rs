@@ -1633,7 +1633,7 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
         } else if let Some(text) = json.get("content").and_then(|c| c.as_str()) {
             text.to_string()
         } else {
-            format!("{}", serde_json::to_string_pretty(&json).unwrap_or_default())
+            json.to_string()
         }
     } else {
         // JSONL format

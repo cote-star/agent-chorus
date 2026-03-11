@@ -82,7 +82,9 @@ run_context_sync() {
 while read -r local_ref local_sha remote_ref remote_sha; do
   if [[ "$local_ref" == "refs/heads/main" || "$remote_ref" == "refs/heads/main" ]]; then
     echo "[context-pack] validating main push for \${remote_name} (\${remote_url})"
-    run_context_sync "$local_ref" "$local_sha" "$remote_ref" "$remote_sha"
+    run_context_sync "$local_ref" "$local_sha" "$remote_ref" "$remote_sha" 2>&1 || {
+      echo "[context-pack] WARN: sync-main failed; push is continuing (fail-open)" >&2
+    }
   fi
 done
 `;
