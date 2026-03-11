@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::IsTerminal;
 
-const REGISTRY_URL: &str = "https://registry.npmjs.org/agent-bridge/latest";
+const REGISTRY_URL: &str = "https://registry.npmjs.org/agent-chorus/latest";
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
 
 #[derive(Debug)]
@@ -27,14 +27,16 @@ pub fn maybe_notify_update(is_json: bool, command: &str) {
     if is_json
         || !std::io::stderr().is_terminal()
         || std::env::var("CI").is_ok()
-        || std::env::var("BRIDGE_SKIP_UPDATE_CHECK").unwrap_or_default() == "1"
+        || std::env::var("CHORUS_SKIP_UPDATE_CHECK")
+            .or_else(|_| std::env::var("BRIDGE_SKIP_UPDATE_CHECK"))
+            .unwrap_or_default() == "1"
         || command == "context-pack"
     {
         return;
     }
 
     let cache_dir = match dirs::cache_dir() {
-        Some(d) => d.join("agent-bridge"),
+        Some(d) => d.join("agent-chorus"),
         None => return,
     };
     let cache_file = cache_dir.join("update-check.json");
@@ -54,7 +56,7 @@ pub fn maybe_notify_update(is_json: bool, command: &str) {
                 && !cache.latest.contains('-')
             {
                 eprintln!(
-                    "\nUpdate available: {} → {} — run `npm update -g agent-bridge`\n",
+                    "\nUpdate available: {} → {} — run `npm update -g agent-chorus`\n",
                     current, cache.latest
                 );
                 
@@ -94,7 +96,7 @@ pub fn check_now_for_doctor() -> UpdateStatus {
             let up_to_date = compare_versions(&current, &latest) < 1;
             
             // Update cache
-            let cache_dir = dirs::cache_dir().map(|d| d.join("agent-bridge"));
+            let cache_dir = dirs::cache_dir().map(|d| d.join("agent-chorus"));
             if let Some(dir) = cache_dir {
                 let cache_file = dir.join("update-check.json");
                 let last_notified = read_cache(&cache_file).ok().and_then(|c| c.last_notified_version);
@@ -130,7 +132,7 @@ pub fn run_worker() {
     });
 
     let cache_dir = match dirs::cache_dir() {
-        Some(d) => d.join("agent-bridge"),
+        Some(d) => d.join("agent-chorus"),
         None => return,
     };
     let lock_file = cache_dir.join("update-check.lock");

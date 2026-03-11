@@ -1,6 +1,6 @@
 {
   "agent": "codex",
-  "bridge_output_version": 1,
+  "chorus_output_version": 1,
   "content": "Codex fixture assistant output.",
   "cwd": "/workspace/demo",
   "message_count": 1,

@@ -1,7 +1,8 @@
 mod adapters;
 mod agents;
 mod context_pack;
-#[cfg(feature = "relevance")]
+pub mod diff;
+pub mod messaging;
 pub mod relevance;
 mod report;
 mod utils;
@@ -13,8 +14,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::json;
 
 #[derive(Parser)]
-#[command(name = "bridge")]
-#[command(about = "Agent Bridge CLI", long_about = None)]
+#[command(name = "chorus")]
+#[command(about = "Agent Chorus CLI", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -51,6 +52,10 @@ enum Commands {
         /// Return session metadata only (no content)
         #[arg(long)]
         metadata_only: bool,
+
+        /// Include redaction audit trail in output
+        #[arg(long)]
+        audit_redactions: bool,
     },
 
     /// Compare sources and return an analyze-mode report
@@ -144,6 +149,98 @@ enum Commands {
         command: ContextPackCommand,
     },
 
+    /// Compare two sessions from the same agent
+    Diff {
+        /// Agent to diff sessions for
+        #[arg(long, value_enum)]
+        agent: AgentType,
+
+        /// First session ID (substring match)
+        #[arg(long)]
+        from: String,
+
+        /// Second session ID (substring match)
+        #[arg(long)]
+        to: String,
+
+        /// Working directory to scope search
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Number of last assistant messages per session
+        #[arg(long, default_value = "1")]
+        last: usize,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Inspect relevance patterns for context-pack filtering
+    Relevance {
+        /// List current include/exclude patterns
+        #[arg(long)]
+        list: bool,
+
+        /// Test whether a specific file path is relevant
+        #[arg(long)]
+        test: Option<String>,
+
+        /// Suggest patterns based on detected project conventions
+        #[arg(long)]
+        suggest: bool,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Send a message from one agent to another
+    Send {
+        /// Sending agent
+        #[arg(long)]
+        from: String,
+
+        /// Target agent
+        #[arg(long)]
+        to: String,
+
+        /// Message content
+        #[arg(long)]
+        message: String,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Read messages for an agent
+    Messages {
+        /// Agent whose messages to read
+        #[arg(long)]
+        agent: String,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Clear messages after reading
+        #[arg(long)]
+        clear: bool,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
     #[cfg(feature = "update-check")]
     #[command(hide = true)]
     UpdateWorker,
@@ -165,7 +262,7 @@ enum ContextPackCommand {
         #[arg(long)]
         head: Option<String>,
 
-        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
         #[arg(long)]
         pack_dir: Option<String>,
 
@@ -212,14 +309,14 @@ enum ContextPackCommand {
         #[arg(long)]
         snapshot: Option<String>,
 
-        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
         #[arg(long)]
         pack_dir: Option<String>,
     },
 
     /// Verify context pack integrity (checksums)
     Verify {
-        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
         #[arg(long)]
         pack_dir: Option<String>,
 
@@ -242,7 +339,7 @@ enum ContextPackCommand {
 
     /// Initialize context pack templates
     Init {
-        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
         #[arg(long)]
         pack_dir: Option<String>,
 
@@ -269,7 +366,7 @@ enum ContextPackCommand {
         #[arg(long)]
         head: Option<String>,
 
-        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
         #[arg(long)]
         pack_dir: Option<String>,
 
@@ -358,6 +455,10 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::List { json, .. } => *json,
         Commands::Search { json, .. } => *json,
         Commands::TrashTalk { .. } => false,
+        Commands::Diff { json, .. } => *json,
+        Commands::Relevance { json, .. } => *json,
+        Commands::Send { json, .. } => *json,
+        Commands::Messages { json, .. } => *json,
         Commands::ContextPack { .. } => false,
         #[cfg(feature = "update-check")]
         Commands::UpdateWorker => false,
@@ -374,6 +475,7 @@ fn run(cli: Cli) -> Result<()> {
             last,
             json,
             metadata_only,
+            audit_redactions,
         } => {
             let effective_cwd = effective_cwd(cwd);
             let last_n = last.max(1);
@@ -386,14 +488,22 @@ fn run(cli: Cli) -> Result<()> {
                 last_n,
             )?;
 
+            // If audit mode requested, re-run redaction with audit on the raw content
+            let redaction_audit = if audit_redactions {
+                let (_, audit) = agents::redact_sensitive_text_with_audit(&session.content);
+                Some(audit)
+            } else {
+                None
+            };
+
             if json {
                 let content_value = if metadata_only {
                     serde_json::Value::Null
                 } else {
                     serde_json::Value::String(session.content.clone())
                 };
-                let report = json!({
-                    "bridge_output_version": 1,
+                let mut report = json!({
+                    "chorus_output_version": 1,
                     "agent": session.agent,
                     "source": session.source,
                     "content": content_value,
@@ -404,18 +514,33 @@ fn run(cli: Cli) -> Result<()> {
                     "message_count": session.message_count,
                     "messages_returned": session.messages_returned,
                 });
+                if let Some(ref audit) = redaction_audit {
+                    report.as_object_mut().unwrap().insert(
+                        "redactions".to_string(),
+                        serde_json::to_value(audit)?,
+                    );
+                }
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
                 for warning in &session.warnings {
                     eprintln!("{}", utils::sanitize_for_terminal(warning));
                 }
-                println!("--- BEGIN BRIDGE OUTPUT ---");
+                println!("--- BEGIN CHORUS OUTPUT ---");
                 println!("SOURCE: {} Session ({})", format_agent_name(session.agent), utils::sanitize_for_terminal(&session.source));
                 if !metadata_only {
                     println!("---");
                     println!("{}", utils::sanitize_for_terminal(&session.content));
                 }
-                println!("--- END BRIDGE OUTPUT ---");
+                if let Some(ref audit) = redaction_audit {
+                    if !audit.is_empty() {
+                        println!("---");
+                        println!("Redaction audit:");
+                        for entry in audit {
+                            println!("  {} — {} occurrence(s)", entry.pattern, entry.count);
+                        }
+                    }
+                }
+                println!("--- END CHORUS OUTPUT ---");
             }
         }
         Commands::Compare { sources, cwd, normalize, json } => {
@@ -486,6 +611,101 @@ fn run(cli: Cli) -> Result<()> {
         Commands::TrashTalk { cwd } => {
             let effective = effective_cwd(cwd);
             agents::trash_talk(&effective);
+        }
+        Commands::Diff { agent, from, to, cwd, last, json } => {
+            let effective_cwd = effective_cwd(cwd);
+            let last_n = last.max(1);
+            let result = diff::diff_sessions(agent.as_str(), &from, &to, &effective_cwd, last_n)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("Diff: {} session {} vs {}", result.agent, result.session_a, result.session_b);
+                println!("  +{} added, -{} removed\n", result.added_lines, result.removed_lines);
+                for hunk in &result.hunks {
+                    match hunk.tag.as_str() {
+                        "add" => println!("+ {}", hunk.content),
+                        "remove" => println!("- {}", hunk.content),
+                        _ => println!("  {}", hunk.content),
+                    }
+                }
+            }
+        }
+        Commands::Relevance { list, test, suggest, cwd, json } => {
+            let effective = std::path::PathBuf::from(effective_cwd(cwd));
+
+            if let Some(file_path) = test {
+                let result = relevance::test_file(&effective, &file_path);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                } else {
+                    let status = if result.relevant { "RELEVANT" } else { "NOT RELEVANT" };
+                    println!("{}: {}", result.path, status);
+                    if let Some(ref matched) = result.matched_by {
+                        println!("  matched by: {}", matched);
+                    }
+                }
+            } else if suggest {
+                let suggestions = relevance::suggest_patterns(&effective);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&suggestions)?);
+                } else if suggestions.is_empty() {
+                    println!("No additional pattern suggestions for this project.");
+                } else {
+                    for s in &suggestions {
+                        println!("[{}] {} — {}", s.suggestion_type, s.pattern, s.reason);
+                    }
+                }
+            } else if list {
+                let info = relevance::list_patterns(&effective);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&info)?);
+                } else {
+                    println!("Source: {}", info.source);
+                    println!("\nInclude:");
+                    for p in &info.include {
+                        println!("  {}", p);
+                    }
+                    println!("\nExclude:");
+                    for p in &info.exclude {
+                        println!("  {}", p);
+                    }
+                }
+            } else {
+                println!("Usage: chorus relevance --list | --test <path> | --suggest");
+                println!("  Add --json for structured output");
+                println!("  Add --cwd <dir> to specify working directory");
+            }
+        }
+        Commands::Send { from, to, message, cwd, json } => {
+            let effective = effective_cwd(cwd);
+            let msg = messaging::send_message(&from, &to, &message, &effective)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&msg)?);
+            } else {
+                println!("Message sent from {} to {} at {}", msg.from, msg.to, msg.timestamp);
+            }
+        }
+        Commands::Messages { agent, cwd, clear, json } => {
+            let effective = effective_cwd(cwd);
+            let messages = messaging::read_messages(&agent, &effective)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&messages)?);
+            } else if messages.is_empty() {
+                println!("No messages for {}.", agent);
+            } else {
+                for msg in &messages {
+                    println!("[{}] from={} → to={}: {}", msg.timestamp, msg.from, msg.to, msg.content);
+                }
+            }
+
+            if clear {
+                let count = messaging::clear_messages(&agent, &effective)?;
+                if !json {
+                    println!("Cleared {} message(s).", count);
+                }
+            }
         }
         Commands::ContextPack { command } => {
             match command {

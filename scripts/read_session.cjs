@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const { getAdapter } = require('./adapters/registry.cjs');
 
 const rawArgs = process.argv.slice(2);
-const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'doctor', 'trash-talk', 'context-pack']);
+const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'doctor', 'trash-talk', 'context-pack', 'relevance', 'diff', 'send', 'messages']);
 const command = commandNames.has(rawArgs[0]) ? rawArgs[0] : 'read';
 const args = commandNames.has(rawArgs[0]) ? rawArgs.slice(1) : rawArgs;
 
@@ -22,9 +22,9 @@ function getPackageVersion() {
 }
 
 function printHelp(topic = null) {
-  const binName = path.basename(process.argv[1] || 'bridge');
+  const binName = path.basename(process.argv[1] || 'chorus');
   const lines = [
-    `Agent Bridge CLI v${getPackageVersion()}`,
+    `Agent Chorus CLI v${getPackageVersion()}`,
     '',
     'Usage:',
     `  ${binName} <command> [options]`,
@@ -38,6 +38,10 @@ function printHelp(topic = null) {
     '  setup     Install cross-provider instruction scaffolding in this project',
     '  doctor    Check session paths and provider instruction wiring',
     '  context-pack  Build/sync/install context-pack automation',
+    '  relevance     Inspect relevance patterns for context-pack filtering',
+    '  diff          Compare two sessions from the same agent',
+    '  send          Send a message from one agent to another',
+    '  messages      Read messages for an agent',
     '',
     'Global Flags:',
     '  -h, --help       Show help',
@@ -114,6 +118,38 @@ function printHelp(topic = null) {
     lines.push('  context-pack install-hooks');
     lines.push('  context-pack rollback [--snapshot <id>]');
     lines.push('  context-pack check-freshness [--base <git-ref>]');
+  } else if (topic === 'send') {
+    lines.push('');
+    lines.push('send options:');
+    lines.push('  --from <agent>        Sending agent');
+    lines.push('  --to <agent>          Target agent');
+    lines.push('  --message <text>      Message content');
+    lines.push('  --cwd <path>          Working directory');
+    lines.push('  --json                Emit structured JSON');
+  } else if (topic === 'messages') {
+    lines.push('');
+    lines.push('messages options:');
+    lines.push('  --agent <name>        Agent whose messages to read');
+    lines.push('  --clear               Clear messages after reading');
+    lines.push('  --cwd <path>          Working directory');
+    lines.push('  --json                Emit structured JSON');
+  } else if (topic === 'diff') {
+    lines.push('');
+    lines.push('diff options:');
+    lines.push('  --agent <codex|gemini|claude|cursor>');
+    lines.push('  --from <session-id>   First session ID (substring match)');
+    lines.push('  --to <session-id>     Second session ID (substring match)');
+    lines.push('  --last <n>            Messages per session (default: 1)');
+    lines.push('  --cwd <path>          Working directory');
+    lines.push('  --json                Emit structured JSON');
+  } else if (topic === 'relevance') {
+    lines.push('');
+    lines.push('relevance options:');
+    lines.push('  --list              List current include/exclude patterns');
+    lines.push('  --test <path>       Test whether a file path is relevant');
+    lines.push('  --suggest           Suggest patterns based on project conventions');
+    lines.push('  --cwd <path>        Working directory (default: current directory)');
+    lines.push('  --json              Emit structured JSON');
   }
 
   console.log(lines.join('\n'));
@@ -139,9 +175,9 @@ if (rawArgs.includes('--version') || rawArgs.includes('-v')) {
   process.exit(0);
 }
 
-const codexSessionsBase = normalizePath(process.env.BRIDGE_CODEX_SESSIONS_DIR || '~/.codex/sessions');
-const claudeProjectsBase = normalizePath(process.env.BRIDGE_CLAUDE_PROJECTS_DIR || '~/.claude/projects');
-const geminiTmpBase = normalizePath(process.env.BRIDGE_GEMINI_TMP_DIR || '~/.gemini/tmp');
+const codexSessionsBase = normalizePath(process.env.CHORUS_CODEX_SESSIONS_DIR || process.env.BRIDGE_CODEX_SESSIONS_DIR || '~/.codex/sessions');
+const claudeProjectsBase = normalizePath(process.env.CHORUS_CLAUDE_PROJECTS_DIR || process.env.BRIDGE_CLAUDE_PROJECTS_DIR || '~/.claude/projects');
+const geminiTmpBase = normalizePath(process.env.CHORUS_GEMINI_TMP_DIR || process.env.BRIDGE_GEMINI_TMP_DIR || '~/.gemini/tmp');
 const setupProviders = [
   { agent: 'codex', targetFile: 'AGENTS.md' },
   { agent: 'claude', targetFile: 'CLAUDE.md' },
@@ -264,10 +300,10 @@ function writeFileEnsured(filePath, content) {
 }
 
 function makeManagedBlock(provider, snippetRelPath) {
-  const marker = `agent-bridge:${provider.agent}`;
+  const marker = `agent-chorus:${provider.agent}`;
   return [
     `<!-- ${marker}:start -->`,
-    '## Agent Bridge Integration',
+    '## Agent Chorus Integration',
     '',
     `This project is wired for cross-agent coordination via \`bridge\`.`,
     `Provider snippet: \`${snippetRelPath}\``,
@@ -379,7 +415,7 @@ function defaultSetupIntents() {
     '5. Do not ask for session ID before first fetch unless user requested exact ID.',
     '6. Do not invent missing context; explicitly call out missing sessions.',
     '',
-    'Core protocol reference: https://github.com/cote-star/agent-bridge/blob/main/PROTOCOL.md.',
+    'Core protocol reference: https://github.com/cote-star/agent-chorus/blob/main/PROTOCOL.md.',
   ].join('\n');
 }
 
@@ -921,7 +957,7 @@ function readClaudeSession(id, cwd, lastN) {
   };
 }
 
-const cursorDataBase = normalizePath(process.env.BRIDGE_CURSOR_DATA_DIR || (
+const cursorDataBase = normalizePath(process.env.CHORUS_CURSOR_DATA_DIR || process.env.BRIDGE_CURSOR_DATA_DIR || (
   process.platform === 'darwin'
     ? '~/Library/Application Support/Cursor'
     : '~/.cursor'
@@ -1202,11 +1238,22 @@ function sanitizeForTerminal(text) {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ''); // C0 control chars except \t \n \r
 }
 
-function renderReadResult(result, asJson, metadataOnly) {
+function renderReadResult(result, asJson, metadataOnly, auditRedactions) {
+  // Compute redaction audit if requested
+  let redactionAudit = null;
+  if (auditRedactions && result.content) {
+    const { redactSensitiveTextWithAudit } = require('./adapters/utils.cjs');
+    const auditResult = redactSensitiveTextWithAudit(result.content);
+    redactionAudit = auditResult.redactions;
+  }
+
   if (asJson) {
-    const output = Object.assign({ bridge_output_version: 1 }, result);
+    const output = Object.assign({ chorus_output_version: 1 }, result);
     if (metadataOnly) {
       output.content = null;
+    }
+    if (redactionAudit) {
+      output.redactions = redactionAudit;
     }
     console.log(JSON.stringify(output, null, 2));
     return;
@@ -1216,14 +1263,21 @@ function renderReadResult(result, asJson, metadataOnly) {
     console.error(sanitizeForTerminal(warning));
   }
 
-  console.log('--- BEGIN BRIDGE OUTPUT ---');
+  console.log('--- BEGIN CHORUS OUTPUT ---');
   const label = result.agent.charAt(0).toUpperCase() + result.agent.slice(1);
   console.log(sanitizeForTerminal(`SOURCE: ${label} Session (${result.source})`));
   if (!metadataOnly) {
     console.log('---');
     console.log(sanitizeForTerminal(result.content));
   }
-  console.log('--- END BRIDGE OUTPUT ---');
+  if (redactionAudit && redactionAudit.length > 0) {
+    console.log('---');
+    console.log('Redaction audit:');
+    for (const entry of redactionAudit) {
+      console.log(`  ${entry.pattern} — ${entry.count} occurrence(s)`);
+    }
+  }
+  console.log('--- END CHORUS OUTPUT ---');
 }
 
 function renderReport(result, asJson) {
@@ -1285,6 +1339,7 @@ function runRead(inputArgs) {
   const cwd = normalizePath(getOptionValue(inputArgs, '--cwd', process.cwd()));
   const asJson = hasFlag(inputArgs, '--json');
   const metadataOnly = hasFlag(inputArgs, '--metadata-only');
+  const auditRedactions = hasFlag(inputArgs, '--audit-redactions');
   const lastN = parseInt(getOptionValue(inputArgs, '--last', '1'), 10) || 1;
 
   const result = readSessionViaAdapter(agent, {
@@ -1294,7 +1349,7 @@ function runRead(inputArgs) {
     lastN,
   });
 
-  renderReadResult(result, asJson, metadataOnly);
+  renderReadResult(result, asJson, metadataOnly, auditRedactions);
 }
 
 function runSearch(inputArgs) {
@@ -1353,7 +1408,7 @@ function runSetup(inputArgs) {
     setupWarnings.push(`Warning: ${cwd} has no recognizable project markers (.git, package.json, etc.)`);
   }
 
-  const setupRoot = path.join(cwd, '.agent-bridge');
+  const setupRoot = path.join(cwd, '.agent-chorus');
   const providersDir = path.join(setupRoot, 'providers');
   const operations = [];
 
@@ -1435,7 +1490,7 @@ function runSetup(inputArgs) {
     }
 
     const targetPath = path.join(cwd, provider.targetFile);
-    const markerPrefix = `agent-bridge:${provider.agent}`;
+    const markerPrefix = `agent-chorus:${provider.agent}`;
     const block = makeManagedBlock(provider, snippetRelPath);
     const upsert = upsertManagedBlock(targetPath, block, markerPrefix, force, dryRun);
     operations.push({
@@ -1525,7 +1580,7 @@ function runDoctor(inputArgs) {
     checks.push({ id, status, detail });
   }
 
-  addCheck('version', 'pass', `agent-bridge v${getPackageVersion()}`);
+  addCheck('version', 'pass', `agent-chorus v${getPackageVersion()}`);
 
   const baseChecks = [
     ['codex_sessions_dir', codexSessionsBase],
@@ -1536,7 +1591,7 @@ function runDoctor(inputArgs) {
     addCheck(id, fs.existsSync(dirPath) ? 'pass' : 'warn', fs.existsSync(dirPath) ? `Found: ${dirPath}` : `Missing: ${dirPath}`);
   }
 
-  const setupRoot = path.join(cwd, '.agent-bridge');
+  const setupRoot = path.join(cwd, '.agent-chorus');
   const intentsPath = path.join(setupRoot, 'INTENTS.md');
   addCheck('setup_intents', fs.existsSync(intentsPath) ? 'pass' : 'warn', fs.existsSync(intentsPath) ? `Found: ${intentsPath}` : `Missing: ${intentsPath}`);
 
@@ -1555,7 +1610,7 @@ function runDoctor(inputArgs) {
     }
 
     const content = fs.readFileSync(targetPath, 'utf-8');
-    const marker = `agent-bridge:${provider.agent}:start`;
+    const marker = `agent-chorus:${provider.agent}:start`;
     addCheck(
       `integration_${provider.agent}`,
       content.includes(marker) ? 'pass' : 'warn',
@@ -1756,6 +1811,209 @@ function pickRoast(agent, content, messageCount) {
 
 function capitalize(str) {
   return str.charAt(0).toUpperCase() + str.slice(1);
+}
+
+function runSend(inputArgs) {
+  const from = getOptionValue(inputArgs, '--from', null);
+  const to = getOptionValue(inputArgs, '--to', null);
+  const message = getOptionValue(inputArgs, '--message', null);
+  if (!from || !to || !message) throw new Error('send requires --from, --to, and --message');
+  const rawCwd = getOptionValue(inputArgs, '--cwd', null);
+  const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
+  const asJson = hasFlag(inputArgs, '--json');
+
+  const messagesDir = path.join(cwd, '.agent-chorus', 'messages');
+  fs.mkdirSync(messagesDir, { recursive: true });
+
+  const msg = {
+    from,
+    to,
+    timestamp: new Date().toISOString(),
+    content: message,
+    cwd,
+  };
+
+  const filePath = path.join(messagesDir, `${to}.jsonl`);
+  fs.appendFileSync(filePath, JSON.stringify(msg) + '\n', 'utf8');
+
+  if (asJson) {
+    console.log(JSON.stringify(msg, null, 2));
+  } else {
+    console.log(`Message sent from ${msg.from} to ${msg.to} at ${msg.timestamp}`);
+  }
+}
+
+function runMessages(inputArgs) {
+  const agent = getOptionValue(inputArgs, '--agent', null);
+  if (!agent) throw new Error('messages requires --agent');
+  const rawCwd = getOptionValue(inputArgs, '--cwd', null);
+  const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
+  const asJson = hasFlag(inputArgs, '--json');
+  const clearAfter = hasFlag(inputArgs, '--clear');
+
+  const filePath = path.join(cwd, '.agent-chorus', 'messages', `${agent}.jsonl`);
+  let messages = [];
+  if (fs.existsSync(filePath)) {
+    const lines = fs.readFileSync(filePath, 'utf8').split('\n').filter(l => l.trim());
+    for (const line of lines) {
+      try {
+        messages.push(JSON.parse(line));
+      } catch (_e) { /* skip malformed */ }
+    }
+  }
+
+  if (asJson) {
+    console.log(JSON.stringify(messages, null, 2));
+  } else if (messages.length === 0) {
+    console.log(`No messages for ${agent}.`);
+  } else {
+    for (const msg of messages) {
+      console.log(`[${msg.timestamp}] from=${msg.from} → to=${msg.to}: ${msg.content}`);
+    }
+  }
+
+  if (clearAfter) {
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+    if (!asJson) {
+      console.log(`Cleared ${messages.length} message(s).`);
+    }
+  }
+}
+
+function runDiff(inputArgs) {
+  const agent = getOptionValue(inputArgs, '--agent', null);
+  if (!agent) throw new Error('diff requires --agent=<codex|gemini|claude|cursor>');
+  const fromId = getOptionValue(inputArgs, '--from', null);
+  const toId = getOptionValue(inputArgs, '--to', null);
+  if (!fromId || !toId) throw new Error('diff requires --from <id> and --to <id>');
+  const rawCwd = getOptionValue(inputArgs, '--cwd', null);
+  const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
+  const lastN = parseInt(getOptionValue(inputArgs, '--last', '1'), 10) || 1;
+  const asJson = hasFlag(inputArgs, '--json');
+
+  const sessionA = readSessionViaAdapter(agent, { id: fromId, cwd, chatsDir: null, lastN });
+  const sessionB = readSessionViaAdapter(agent, { id: toId, cwd, chatsDir: null, lastN });
+
+  const linesA = (sessionA.content || '').split('\n');
+  const linesB = (sessionB.content || '').split('\n');
+  const hunks = computeLineDiff(linesA, linesB);
+
+  const added = hunks.filter(h => h.tag === 'add').length;
+  const removed = hunks.filter(h => h.tag === 'remove').length;
+
+  const result = {
+    agent,
+    session_a: sessionA.session_id || fromId,
+    session_b: sessionB.session_id || toId,
+    added_lines: added,
+    removed_lines: removed,
+    hunks,
+  };
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`Diff: ${result.agent} session ${result.session_a} vs ${result.session_b}`);
+    console.log(`  +${result.added_lines} added, -${result.removed_lines} removed\n`);
+    for (const hunk of result.hunks) {
+      if (hunk.tag === 'add') console.log(`+ ${hunk.content}`);
+      else if (hunk.tag === 'remove') console.log(`- ${hunk.content}`);
+      else console.log(`  ${hunk.content}`);
+    }
+  }
+}
+
+/**
+ * Simple LCS-based line diff.
+ */
+function computeLineDiff(a, b) {
+  const m = a.length;
+  const n = b.length;
+
+  // Build LCS table
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+
+  // Backtrack
+  const hunks = [];
+  let i = m, j = n;
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+      hunks.push({ tag: 'equal', content: a[i - 1] });
+      i--; j--;
+    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+      hunks.push({ tag: 'add', content: b[j - 1] });
+      j--;
+    } else {
+      hunks.push({ tag: 'remove', content: a[i - 1] });
+      i--;
+    }
+  }
+
+  hunks.reverse();
+  return hunks;
+}
+
+function runRelevance(inputArgs) {
+  const rawCwd = getOptionValue(inputArgs, '--cwd', null);
+  const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
+  const asJson = hasFlag(inputArgs, '--json');
+  const listMode = hasFlag(inputArgs, '--list');
+  const suggestMode = hasFlag(inputArgs, '--suggest');
+  const testPath = getOptionValue(inputArgs, '--test', null);
+
+  const { listPatterns, testFile, suggestPatterns } = require('./context_pack/relevance.cjs');
+
+  if (testPath) {
+    const result = testFile(cwd, testPath);
+    if (asJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else {
+      const status = result.relevant ? 'RELEVANT' : 'NOT RELEVANT';
+      console.log(`${result.path}: ${status}`);
+      if (result.matched_by) {
+        console.log(`  matched by: ${result.matched_by}`);
+      }
+    }
+  } else if (suggestMode) {
+    const result = suggestPatterns(cwd);
+    if (asJson) {
+      console.log(JSON.stringify(result, null, 2));
+    } else if (result.suggestions.length === 0) {
+      console.log('No additional pattern suggestions for this project.');
+    } else {
+      for (const s of result.suggestions) {
+        console.log(`[${s.type}] ${s.pattern} — ${s.reason}`);
+      }
+    }
+  } else if (listMode) {
+    const info = listPatterns(cwd);
+    if (asJson) {
+      console.log(JSON.stringify(info, null, 2));
+    } else {
+      console.log(`Source: ${info.source}`);
+      console.log('\nInclude:');
+      for (const p of info.include) {
+        console.log(`  ${p}`);
+      }
+      console.log('\nExclude:');
+      for (const p of info.exclude) {
+        console.log(`  ${p}`);
+      }
+    }
+  } else {
+    printHelp('relevance');
+  }
 }
 
 function runTrashTalk(inputArgs) {
@@ -1959,6 +2217,14 @@ try {
     runDoctor(args);
   } else if (command === 'context-pack') {
     runContextPack(args);
+  } else if (command === 'send') {
+    runSend(args);
+  } else if (command === 'messages') {
+    runMessages(args);
+  } else if (command === 'diff') {
+    runDiff(args);
+  } else if (command === 'relevance') {
+    runRelevance(args);
   } else if (command === 'trash-talk') {
     runTrashTalk(args);
   } else {

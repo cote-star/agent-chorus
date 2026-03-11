@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-bridge.dev/schemas/read-output.schema.json",
-  "title": "Bridge Read Output",
+  "$id": "https://agent-chorus.dev/schemas/read-output.schema.json",
+  "title": "Chorus Read Output",
   "type": "object",
   "additionalProperties": false,
   "required": ["agent", "source", "warnings"],
   "properties": {
-    "bridge_output_version": {
+    "chorus_output_version": {
       "type": "integer",
       "description": "Protocol version for output boundary identification"
     },
@@ -42,6 +42,18 @@
     "messages_returned": {
       "type": "integer",
       "minimum": 0
+    },
+    "redactions": {
+      "type": "array",
+      "description": "Redaction audit trail (present when --audit-redactions is used)",
+      "items": {
+        "type": "object",
+        "required": ["pattern", "count"],
+        "properties": {
+          "pattern": { "type": "string" },
+          "count": { "type": "integer", "minimum": 1 }
+        }
+      }
     }
   }
 }

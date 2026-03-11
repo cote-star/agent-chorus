@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Bridge - Context Pack</title>
+    <title>Agent Chorus - Context Pack</title>
     <style>
         :root {
             --bg: #0d1117;
@@ -199,7 +199,7 @@
             html('claude', '<span class="dim">Claude Code v1.0 &mdash; ~/projects/bridge</span>');
             line('claude', '');
             line('codex', '');
-            html('codex', '<span class="dim">Codex CLI &mdash; Agent Bridge</span>');
+            html('codex', '<span class="dim">Codex CLI &mdash; Agent Chorus</span>');
             html('codex', '<span class="dim">Waiting for repo context...</span>');
             line('codex', '');
             await wait(1100);
@@ -208,17 +208,17 @@
             html('claude', '<span class="claude-prompt">~/bridge</span> <span class="dim">$</span> <span class="user-input">Enable context-pack automation</span>');
             line('claude', '');
             await wait(700);
-            toolCall('claude', 'bridge setup --context-pack');
+            toolCall('claude', 'chorus setup --context-pack');
             line('claude', '');
             await wait(1100);
             html('claude', [
-                'Agent Bridge setup complete for ~/projects/bridge',
-                '- [created] .agent-bridge/INTENTS.md (Created intent contract)',
-                '- [created] .agent-bridge/providers/codex.md (Created provider snippet)',
+                'Agent Chorus setup complete for ~/projects/bridge',
+                '- [created] .agent-chorus/INTENTS.md (Created intent contract)',
+                '- [created] .agent-chorus/providers/codex.md (Created provider snippet)',
                 '- [updated] AGENTS.md (Managed block written)',
-                '- [created] .agent-bridge/providers/claude.md (Created provider snippet)',
+                '- [created] .agent-chorus/providers/claude.md (Created provider snippet)',
                 '- [updated] CLAUDE.md (Managed block written)',
-                '- [created] .agent-bridge/providers/gemini.md (Created provider snippet)',
+                '- [created] .agent-chorus/providers/gemini.md (Created provider snippet)',
                 '- [updated] GEMINI.md (Managed block written)',
                 '- [updated] .agent-context/current ([context-pack] updated: .agent-context (snapshot 20260210T114200Z_abc123))',
                 '- [updated] .githooks/pre-push ([context-pack] updated: .githooks/pre-push)',
@@ -242,7 +242,7 @@
             await wait(500);
             toolCall('codex', 'open_file .agent-context/current/20_CODE_MAP.md');
             await wait(500);
-            toolCall('codex', 'bridge context-pack check-freshness --base origin/main');
+            toolCall('codex', 'chorus context-pack check-freshness --base origin/main');
             line('codex', '');
             await wait(700);
             html('codex', [
@@ -267,7 +267,7 @@
             await wait(900);
 
             // === SCENE 4: Codex confirms fresh state ===
-            toolCall('codex', 'bridge context-pack check-freshness --base origin/main');
+            toolCall('codex', 'chorus context-pack check-freshness --base origin/main');
             await wait(600);
             html('codex', '<span class="success">PASS context-pack-freshness (context pack was updated)</span>');
             line('codex', '');

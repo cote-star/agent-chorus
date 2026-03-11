@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-bridge.dev/schemas/error.schema.json",
+  "$id": "https://agent-chorus.dev/schemas/error.schema.json",
   "title": "Bridge Error Output",
   "type": "object",
   "additionalProperties": false,

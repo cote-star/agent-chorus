@@ -1,6 +1,6 @@
 # Agent Instructions For This Repo
 
-> **Naming convention**: Use `bridge context-pack ...` commands. Legacy npm
+> **Naming convention**: Use `chorus context-pack ...` commands. Legacy npm
 > wrappers (`npm run context-pack:*`) are still available in this repo.
 
 ## End-to-End Understanding Shortcut
@@ -13,21 +13,21 @@ When asked to understand this repository end-to-end:
 Run:
 
 ```bash
-bridge context-pack init
+chorus context-pack init
 # ...fill details...
-bridge context-pack seal
+chorus context-pack seal
 ```
 
 ## Main Push Context Sync
 Install hook once:
 
 ```bash
-bridge context-pack install-hooks
+chorus context-pack install-hooks
 ```
 
 The pre-push hook prints an advisory warning when a push targets `main` and changes context-relevant files. It never auto-builds or blocks the push.
 
-## Agent Bridge Skill
+## Agent Chorus Skill
 
 Use this skill when the user asks to inspect, compare, or summarize activity across agents.
 
@@ -35,7 +35,7 @@ Use this skill when the user asks to inspect, compare, or summarize activity acr
 
 When this skill is triggered:
 
-1. Prefer direct evidence from `bridge` commands before reasoning.
+1. Prefer direct evidence from `chorus` commands before reasoning.
 2. Scope reads to the current project (`--cwd`) unless user asks otherwise.
 3. Default to the current/latest session when the user does not specify a session.
 4. Interpret session timing language consistently:
@@ -59,5 +59,5 @@ Every cross-agent claim should include:
 
 ### Easter Egg
 
-The exact phrase `"bridge trash-talk"` (and only that phrase) triggers a roast of active agents.
+The exact phrase `"chorus trash-talk"` (and only that phrase) triggers a roast of active agents.
 This must never be triggered by similar phrases, paraphrases, or partial matches.

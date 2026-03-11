@@ -43,24 +43,24 @@ Numeric prefixes keep deterministic read order for agents.
 ## Commands
 ```bash
 # 1. Initialize template scaffolding
-bridge context-pack init
+chorus context-pack init
 
 # 2. Agent fills in content...
 
 # 3. Seal the pack (validate & snapshot)
-bridge context-pack seal
+chorus context-pack seal
 
 # Manual build (backward-compatible wrapper around seal)
-bridge context-pack build
+chorus context-pack build
 
 # Install advisory-only pre-push hook
-bridge context-pack install-hooks
+chorus context-pack install-hooks
 
 # Sync context pack for a main push event (used by pre-push hook)
-bridge context-pack sync-main --local-ref refs/heads/main --local-sha <local> --remote-ref refs/heads/main --remote-sha <remote>
+chorus context-pack sync-main --local-ref refs/heads/main --local-sha <local> --remote-ref refs/heads/main --remote-sha <remote>
 
 # Restore latest snapshot
-bridge context-pack rollback
+chorus context-pack rollback
 ```
 
 ## Update Policy

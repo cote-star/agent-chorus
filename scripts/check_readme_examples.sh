@@ -17,19 +17,19 @@ list_rust_json="$TMP_DIR/list-rust.json"
 search_node_json="$TMP_DIR/search-node.json"
 search_rust_json="$TMP_DIR/search-rust.json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 node "$ROOT/scripts/read_session.cjs" read --agent=codex --cwd=/workspace/demo --json > "$read_node_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- read --agent codex --cwd /workspace/demo --json > "$read_rust_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 node "$ROOT/scripts/read_session.cjs" compare \
   --source=codex \
   --source=gemini \
@@ -37,9 +37,9 @@ node "$ROOT/scripts/read_session.cjs" compare \
   --cwd=/workspace/demo \
   --json > "$compare_node_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- compare \
   --source codex \
   --source gemini \
@@ -47,47 +47,47 @@ cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- compare \
   --cwd /workspace/demo \
   --json > "$compare_rust_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 node "$ROOT/scripts/read_session.cjs" report \
   --handoff="$ROOT/fixtures/handoff-report.json" \
   --json > "$report_node_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- report \
   --handoff "$ROOT/fixtures/handoff-report.json" \
   --json > "$report_rust_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 node "$ROOT/scripts/read_session.cjs" list \
   --agent=codex \
   --cwd=/workspace/demo \
   --json > "$list_node_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- list \
   --agent codex \
   --cwd /workspace/demo \
   --json > "$list_rust_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 node "$ROOT/scripts/read_session.cjs" search "Codex fixture assistant output." \
   --agent=codex \
   --cwd=/workspace/demo \
   --json > "$search_node_json"
 
-BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
 cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- search "Codex fixture assistant output." \
   --agent codex \
   --cwd /workspace/demo \

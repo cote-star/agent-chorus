@@ -254,4 +254,78 @@ if (require.main === module) {
     }
 }
 
-module.exports = { loadRelevanceConfig, isRelevant, filterRelevantFiles, DEFAULT_CONFIG };
+// ---------------------------------------------------------------------------
+// Introspection API (Phase 2 innovation)
+// ---------------------------------------------------------------------------
+
+/**
+ * List current include/exclude patterns.
+ * @param {string} cwd  Working directory (repo root)
+ * @returns {{ include: string[], exclude: string[], source: string }}
+ */
+function listPatterns(cwd) {
+    const configPath = path.join(cwd, '.agent-context', 'relevance.json');
+    const config = loadRelevanceConfig(cwd);
+    const source = fs.existsSync(configPath) ? configPath : 'defaults';
+    return { include: config.include, exclude: config.exclude, source };
+}
+
+/**
+ * Test whether a specific file path is relevant.
+ * @param {string} cwd       Working directory (repo root)
+ * @param {string} filePath  Repo-relative path to test
+ * @returns {{ path: string, relevant: boolean, matched_by: string|null }}
+ */
+function testFile(cwd, filePath) {
+    const config = loadRelevanceConfig(cwd);
+    const normalized = filePath.replace(/\\/g, '/');
+
+    for (const pattern of config.exclude) {
+        if (matchGlob(normalized, pattern)) {
+            return { path: filePath, relevant: false, matched_by: `exclude: ${pattern}` };
+        }
+    }
+
+    for (const pattern of config.include) {
+        if (matchGlob(normalized, pattern)) {
+            return { path: filePath, relevant: true, matched_by: `include: ${pattern}` };
+        }
+    }
+
+    return { path: filePath, relevant: false, matched_by: null };
+}
+
+/**
+ * Suggest patterns based on common project conventions detected in cwd.
+ * @param {string} cwd  Working directory (repo root)
+ * @returns {{ suggestions: Array<{pattern: string, reason: string, type: string}> }}
+ */
+function suggestPatterns(cwd) {
+    const suggestions = [];
+    const checks = [
+        { dir: 'coverage', pattern: 'coverage/**', reason: 'Test coverage output', type: 'exclude' },
+        { dir: '.next', pattern: '.next/**', reason: 'Next.js build output', type: 'exclude' },
+        { dir: '.nuxt', pattern: '.nuxt/**', reason: 'Nuxt build output', type: 'exclude' },
+        { dir: '__pycache__', pattern: '__pycache__/**', reason: 'Python cache', type: 'exclude' },
+        { dir: '.pytest_cache', pattern: '.pytest_cache/**', reason: 'Pytest cache', type: 'exclude' },
+        { dir: '.venv', pattern: '.venv/**', reason: 'Python virtualenv', type: 'exclude' },
+        { dir: 'venv', pattern: 'venv/**', reason: 'Python virtualenv', type: 'exclude' },
+        { dir: '.turbo', pattern: '.turbo/**', reason: 'Turborepo cache', type: 'exclude' },
+        { dir: '.cargo', pattern: '.cargo/**', reason: 'Cargo local config', type: 'exclude' },
+        { file: 'Dockerfile', pattern: 'Dockerfile*', reason: 'Docker config (include for infra context)', type: 'include' },
+        { file: 'docker-compose.yml', pattern: 'docker-compose*.yml', reason: 'Docker Compose config', type: 'include' },
+    ];
+
+    for (const check of checks) {
+        if (check.dir && fs.existsSync(path.join(cwd, check.dir))) {
+            suggestions.push({ pattern: check.pattern, reason: check.reason, type: check.type });
+        }
+        if (check.file && fs.existsSync(path.join(cwd, check.file))) {
+            suggestions.push({ pattern: check.pattern, reason: check.reason, type: check.type });
+        }
+    }
+
+    return { suggestions };
+}
+
+module.exports = { loadRelevanceConfig, isRelevant, filterRelevantFiles, DEFAULT_CONFIG, listPatterns, testFile, suggestPatterns };

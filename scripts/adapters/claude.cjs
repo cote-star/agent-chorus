@@ -9,7 +9,7 @@ const {
   findLatestByCwd, getFileTimestamp, extractClaudeText, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
-const claudeProjectsBase = normalizePath(process.env.BRIDGE_CLAUDE_PROJECTS_DIR || '~/.claude/projects');
+const claudeProjectsBase = normalizePath(process.env.CHORUS_CLAUDE_PROJECTS_DIR || process.env.BRIDGE_CLAUDE_PROJECTS_DIR || '~/.claude/projects');
 
 if (isSystemDirectory(claudeProjectsBase)) {
   throw new Error(`Refusing to scan system directory: ${claudeProjectsBase}`);

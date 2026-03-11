@@ -4,10 +4,10 @@ const os = require('os');
 const https = require('https');
 const { spawn } = require('child_process');
 
-const CACHE_DIR = path.join(os.homedir(), '.cache', 'agent-bridge');
+const CACHE_DIR = path.join(os.homedir(), '.cache', 'agent-chorus');
 const CACHE_FILE = path.join(CACHE_DIR, 'update-check.json');
 const LOCK_FILE = path.join(CACHE_DIR, 'update-check.lock');
-const REGISTRY_URL = 'https://registry.npmjs.org/agent-bridge/latest';
+const REGISTRY_URL = 'https://registry.npmjs.org/agent-chorus/latest';
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 // Helper: Ensure cache dir exists
@@ -165,7 +165,7 @@ function maybeNotifyUpdate(context) {
             context.isJson ||
             !process.stderr.isTTY ||
             process.env.CI === 'true' ||
-            process.env.BRIDGE_SKIP_UPDATE_CHECK === '1' ||
+            (process.env.CHORUS_SKIP_UPDATE_CHECK || process.env.BRIDGE_SKIP_UPDATE_CHECK) === '1' ||
             context.command === 'context-pack'
         ) {
             return;
@@ -187,7 +187,7 @@ function maybeNotifyUpdate(context) {
                 !cache.latest.includes('-') // Stable only
             ) {
                 process.stderr.write(
-                    `\nUpdate available: ${current} → ${cache.latest} — run \`npm update -g agent-bridge\`\n\n`
+                    `\nUpdate available: ${current} → ${cache.latest} — run \`npm update -g agent-chorus\`\n\n`
                 );
 
                 // Update notification timestamp/version
@@ -214,7 +214,7 @@ function maybeNotifyUpdate(context) {
             const child = spawn(process.execPath, [__filename, '__update_worker__'], {
                 detached: true,
                 stdio: 'ignore',
-                env: { ...process.env, BRIDGE_SKIP_UPDATE_CHECK: undefined } // Ensure worker not skipped if env differs (though usually it inherits)
+                env: { ...process.env, CHORUS_SKIP_UPDATE_CHECK: undefined, BRIDGE_SKIP_UPDATE_CHECK: undefined }
             });
             child.unref();
         }
@@ -225,7 +225,7 @@ function maybeNotifyUpdate(context) {
 }
 
 /**
- * Synchronous check for 'bridge doctor'.
+ * Synchronous check for 'chorus doctor'.
  * Blocks to fetch registry.
  * Returns structured status.
  */

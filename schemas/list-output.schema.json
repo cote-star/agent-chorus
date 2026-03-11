@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-bridge.dev/schemas/list-output.schema.json",
+  "$id": "https://agent-chorus.dev/schemas/list-output.schema.json",
   "title": "Bridge List Output",
   "type": "array",
   "items": {

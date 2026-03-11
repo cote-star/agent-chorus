@@ -9,7 +9,7 @@ const {
   getFileTimestamp, extractText, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
-const geminiTmpBase = normalizePath(process.env.BRIDGE_GEMINI_TMP_DIR || '~/.gemini/tmp');
+const geminiTmpBase = normalizePath(process.env.CHORUS_GEMINI_TMP_DIR || process.env.BRIDGE_GEMINI_TMP_DIR || '~/.gemini/tmp');
 
 function compareByMtimeDesc(a, b) {
   if (b.mtimeNs !== a.mtimeNs) {

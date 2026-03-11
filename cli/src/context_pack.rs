@@ -414,8 +414,11 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-const HOOK_SENTINEL_START: &str = "# --- agent-bridge:pre-push:start ---";
-const HOOK_SENTINEL_END: &str = "# --- agent-bridge:pre-push:end ---";
+const HOOK_SENTINEL_START: &str = "# --- agent-chorus:pre-push:start ---";
+const HOOK_SENTINEL_END: &str = "# --- agent-chorus:pre-push:end ---";
+// Legacy sentinels for backward compatibility during migration
+const LEGACY_HOOK_SENTINEL_START: &str = "# --- agent-bridge:pre-push:start ---";
+const LEGACY_HOOK_SENTINEL_END: &str = "# --- agent-bridge:pre-push:end ---";
 
 pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
     let cwd_path = PathBuf::from(cwd);
@@ -427,7 +430,7 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
     let hooks_dir = if !existing_hooks_path.is_empty() {
         if existing_hooks_path != ".githooks" {
             println!(
-                "[context-pack] NOTE: core.hooksPath is '{}'; appending bridge hook there.",
+                "[context-pack] NOTE: core.hooksPath is '{}'; appending chorus hook there.",
                 existing_hooks_path
             );
         }
@@ -446,10 +449,19 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
 
     let final_content = if pre_push_path.exists() {
         let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
-        if existing.contains(HOOK_SENTINEL_START) && existing.contains(HOOK_SENTINEL_END) {
-            // Replace existing bridge section
-            let start_idx = existing.find(HOOK_SENTINEL_START).unwrap();
-            let end_idx = existing.find(HOOK_SENTINEL_END).unwrap() + HOOK_SENTINEL_END.len();
+        // Detect new or legacy sentinels
+        let (has_sentinel, sentinel_start, sentinel_end_str) =
+            if existing.contains(HOOK_SENTINEL_START) && existing.contains(HOOK_SENTINEL_END) {
+                (true, HOOK_SENTINEL_START, HOOK_SENTINEL_END)
+            } else if existing.contains(LEGACY_HOOK_SENTINEL_START) && existing.contains(LEGACY_HOOK_SENTINEL_END) {
+                (true, LEGACY_HOOK_SENTINEL_START, LEGACY_HOOK_SENTINEL_END)
+            } else {
+                (false, "", "")
+            };
+        if has_sentinel {
+            // Replace existing chorus/bridge section
+            let start_idx = existing.find(sentinel_start).unwrap();
+            let end_idx = existing.find(sentinel_end_str).unwrap() + sentinel_end_str.len();
             // Trim trailing newline after end sentinel if present
             let end_idx = if existing.as_bytes().get(end_idx) == Some(&b'\n') {
                 end_idx + 1
@@ -680,6 +692,7 @@ fn run_git(args: &[&str], cwd: &Path, allow_failure: bool) -> Result<String> {
 fn resolve_pack_root(repo_root: &Path, pack_dir: Option<&str>) -> PathBuf {
     let dir = pack_dir
         .map(|value| value.to_string())
+        .or_else(|| env::var("CHORUS_CONTEXT_PACK_DIR").ok())
         .or_else(|| env::var("BRIDGE_CONTEXT_PACK_DIR").ok())
         .unwrap_or_else(|| ".agent-context".to_string());
     let dir_path = PathBuf::from(dir);

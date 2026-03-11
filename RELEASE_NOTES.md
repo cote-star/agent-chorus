@@ -3,11 +3,16 @@
 ## v0.7.0 (2026-03-11)
 
 ### Highlights
+- **Renamed**: `agent-bridge` / `bridge` → `agent-chorus` / `chorus`. All env vars, sentinels, output markers, and docs updated with backward-compatible fallbacks.
+- **Relevance Introspection** (new): `chorus relevance --list | --test <path> | --suggest` — inspect and test context-pack filtering patterns.
+- **Redaction Audit Trail** (new): `chorus read --audit-redactions` — shows what was redacted and why.
+- **Session Diff** (new): `chorus diff --agent X --from id1 --to id2` — line-level diff between two sessions.
+- **Agent-to-Agent Messaging** (new): `chorus send` and `chorus messages` — simple JSONL message queue between agents.
 - Context-pack v2: agent-driven content model with `init` → agent fill → `seal` workflow.
 - Security hardening: trust model documentation, output boundary markers, adversarial redaction tests.
-- `--metadata-only` flag to reduce injection surface on `bridge read`.
-- `bridge context-pack verify` command for manifest integrity checking.
-- Non-intrusive update notifications with `bridge doctor` integration.
+- `--metadata-only` flag to reduce injection surface on `chorus read`.
+- `chorus context-pack verify` command for manifest integrity checking.
+- Non-intrusive update notifications with `chorus doctor` integration.
 - Generic relevance engine with configurable `.agent-context/relevance.json`.
 - Sentinel-based hook installation preserves existing git hooks.
 - System directory guards on all adapter base directories.
@@ -16,52 +21,71 @@
 - CLI smoke test suite (`scripts/test_smoke.sh`).
 
 ### Added
-- `bridge context-pack init` — scaffolds template files, `GUIDE.md`, and `relevance.json`.
-- `bridge context-pack seal` — validates canonical files, generates manifest, snapshot, and history.
-- `bridge context-pack verify` — validates manifest checksums against actual file content.
-- `bridge read --metadata-only` — returns session metadata without content (reduces injection surface).
-- Output boundary markers: `--- BEGIN/END BRIDGE OUTPUT ---` in text mode, `bridge_output_version: 1` in JSON.
+- `chorus relevance --list` — show current include/exclude patterns and their source.
+- `chorus relevance --test <path>` — test whether a file path is relevant and which pattern matched.
+- `chorus relevance --suggest` — suggest patterns based on detected project conventions.
+- `chorus read --audit-redactions` — include redaction audit trail (pattern names and counts) in output.
+- `chorus diff --agent X --from id1 --to id2` — compare two sessions with line-level diff output.
+- `chorus send --from X --to Y --message "..."` — send a message from one agent to another.
+- `chorus messages --agent X [--clear] [--json]` — read (and optionally clear) messages for an agent.
+- `schemas/message.schema.json` — JSON Schema for agent-to-agent messages.
+- `cli/src/diff.rs` — LCS-based line diff module.
+- `cli/src/messaging.rs` — JSONL message queue module.
+- `chorus context-pack init` — scaffolds template files, `GUIDE.md`, and `relevance.json`.
+- `chorus context-pack seal` — validates canonical files, generates manifest, snapshot, and history.
+- `chorus context-pack verify` — validates manifest checksums against actual file content.
+- `chorus read --metadata-only` — returns session metadata without content (reduces injection surface).
+- Output boundary markers: `--- BEGIN/END CHORUS OUTPUT ---` in text mode, `chorus_output_version: 1` in JSON.
 - Trust Model section in `PROTOCOL.md` documenting trust boundaries and consuming-agent responsibilities.
 - Cross-project session warnings for Cursor (no CWD scoping) and Gemini (multi-directory resolution).
 - System directory guards on all adapters (Codex, Claude, Gemini, Cursor) — both Node and Rust.
 - Adversarial redaction test suite (`scripts/test_adversarial_redaction.sh` + `fixtures/adversarial/`).
 - `scripts/update_check.cjs` + `cli/src/update_check.rs` — once-per-version update banner on stderr.
-- `scripts/context_pack/relevance.cjs` + `cli/src/relevance.rs` — configurable include/exclude relevance matcher.
+- `scripts/context_pack/relevance.cjs` + `cli/src/relevance.rs` — configurable include/exclude relevance matcher with introspection API.
 - `scripts/context_pack/cp_utils.cjs` — shared utilities (symlink checks, atomic writes, stale lock recovery).
 - `scripts/test_smoke.sh` — CLI smoke tests for `doctor`, `init`, `seal`, `build`.
-- `bridge doctor` now reports context pack state (`UNINITIALIZED`, `TEMPLATE`, `SEALED_VALID`, `SEALED_STALE`) and update status.
-- `BRIDGE_SKIP_UPDATE_CHECK=1` environment variable to disable update checks.
+- `chorus doctor` now reports context pack state (`UNINITIALIZED`, `TEMPLATE`, `SEALED_VALID`, `SEALED_STALE`) and update status.
+- `CHORUS_SKIP_UPDATE_CHECK=1` environment variable to disable update checks.
 
 ### Changed
-- Hook installation uses sentinel markers (`# --- agent-bridge:pre-push:start/end ---`) to append to existing hooks instead of clobbering.
+- **Package renamed**: npm `agent-bridge` → `agent-chorus`, crate `agent-bridge` → `agent-chorus`, binary `bridge` → `chorus`.
+- **Environment variables renamed**: `BRIDGE_*` → `CHORUS_*` with backward-compatible `BRIDGE_*` fallback.
+- **Sentinel markers renamed**: `agent-bridge:` → `agent-chorus:` with legacy sentinel detection in hook management.
+- **Output markers renamed**: `BEGIN/END BRIDGE OUTPUT` → `BEGIN/END CHORUS OUTPUT`, `bridge_output_version` → `chorus_output_version`.
+- **Setup directory renamed**: `.agent-bridge/` → `.agent-chorus/`.
+- Hook installation uses sentinel markers (`# --- agent-chorus:pre-push:start/end ---`) to append to existing hooks instead of clobbering.
 - `repo_root` field in manifest.json now emits `"."` instead of the absolute path (prevents path leakage).
 - SKILL.md consolidated into CLAUDE.md and AGENTS.md; SKILL.md is now a redirect.
-- `bridge context-pack build` is now a backward-compatible wrapper that routes to `init` or `seal` based on pack state.
-- `bridge context-pack sync-main` is advisory-only — prints a warning, never auto-builds.
+- `chorus context-pack build` is now a backward-compatible wrapper that routes to `init` or `seal` based on pack state.
+- `chorus context-pack sync-main` is advisory-only — prints a warning, never auto-builds.
 - Pre-push hook is fail-open — context-pack errors never block push.
-- `bridge setup --context-pack` runs `init` + `install-hooks` instead of `build`.
+- `chorus setup --context-pack` runs `init` + `install-hooks` instead of `build`.
 - Relevance detection uses configurable `.agent-context/relevance.json` instead of hardcoded paths.
 - Rust `now_stamp()` uses pure `SystemTime` calculation instead of shelling out to `date`.
 - Rust pattern matching uses `globset` crate for proper `**` glob support.
 - JSONL reader drops truncated last line for concurrent-read safety (both Node and Rust).
-- `read-output.schema.json` now includes `bridge_output_version` and allows nullable `content`.
+- `read-output.schema.json` now includes `chorus_output_version`, allows nullable `content`, and optional `redactions` array.
 - All documentation updated from "build generates content" to "agent authors + seal finalizes".
 
 ### Fixes
 - Fixed duplicate `sha256()` and `readJson()` declarations in `seal.cjs` from merge.
-- Fixed `collectMatchingFiles.search` crash in `bridge doctor` and legacy `build`.
+- Fixed `collectMatchingFiles.search` crash in `chorus doctor` and legacy `build`.
 - Fixed `--pack-dir` flag extraction bug in `build.cjs`.
 - Fixed `--cwd` passthrough in `build.cjs` subprocess calls.
+- Fixed `isSystemDirectory` rejecting macOS temp dirs under `/var/folders/` (both Node and Rust).
 - Added stale lockfile recovery (Node + Rust) for interrupted `seal` operations.
 - Added symlink protection for all context-pack file writes.
 - Gated unused Rust content-generator functions with `#[allow(dead_code)]` and doc comments.
 - Reduced clippy warnings from 21 to ≤5.
 
 ### Upgrade Notes
-- `bridge context-pack build` continues to work — no breaking changes for existing automation.
+- Install via `npm install -g agent-chorus` (replaces `agent-bridge`).
+- Old `BRIDGE_*` environment variables continue to work as fallbacks.
+- Old `agent-bridge:` sentinel markers are auto-detected during hook management.
+- `chorus context-pack build` continues to work — no breaking changes for existing automation.
 - New recommended workflow: `init` → agent fills content → `seal`.
 - The `--changed-file` flag on `build` is deprecated (accepted with warning, will be removed in next major).
-- Consuming agents should treat `bridge read` output as untrusted data — see Trust Model in PROTOCOL.md.
+- Consuming agents should treat `chorus read` output as untrusted data — see Trust Model in PROTOCOL.md.
 
 ## v0.6.2 (2026-02-11)
 
@@ -72,9 +96,9 @@
 
 ### Changed
 - README now includes the social star badge, "How It Compares" matrix, and an expanded roadmap section.
-- README roadmap now includes planned non-intrusive update notifications with `bridge doctor` status visibility.
+- README roadmap now includes planned non-intrusive update notifications with `chorus doctor` status visibility.
 - README now includes a "Visibility Without Orchestration" section, a Claude->Codex handoff visual, and explicit current-boundary notes aligned with roadmap status.
-- crates.io keywords in `cli/Cargo.toml` now align with launch messaging (`agent-bridge`, `multi-agent`, `cross-agent`, `context-engineering`).
+- crates.io keywords in `cli/Cargo.toml` now align with launch messaging (`agent-chorus`, `multi-agent`, `cross-agent`, `context-engineering`).
 - Setup intent text now points to the canonical `PROTOCOL.md` URL.
 
 ### Upgrade Notes
@@ -151,7 +175,7 @@
 
 ### Added
 - `rust-version = "1.74"` in `cli/Cargo.toml`.
-- `documentation = "https://docs.rs/agent-bridge"` in `cli/Cargo.toml`.
+- `documentation = "https://docs.rs/agent-chorus"` in `cli/Cargo.toml`.
 - npm metadata refinements: `preferGlobal`, Node `engines`, and expanded discoverability keywords.
 
 ### Changed
@@ -181,12 +205,12 @@
 
 ### Highlights
 - Promotes context-pack to a first-class release feature for token-efficient, agent-first repo understanding.
-- Adds Node and Rust parity for `bridge context-pack` commands.
+- Adds Node and Rust parity for `chorus context-pack` commands.
 - Finalizes docs and demo coverage so new users can adopt context-pack safely.
 
 ### Added
-- `bridge context-pack build|sync-main|install-hooks|rollback|check-freshness`.
-- `bridge setup --context-pack` bootstrap workflow.
+- `chorus context-pack build|sync-main|install-hooks|rollback|check-freshness`.
+- `chorus setup --context-pack` bootstrap workflow.
 - Agent instruction flow that prioritizes `.agent-context/current/` for end-to-end repo understanding tasks.
 
 ### Changed
@@ -203,8 +227,8 @@
 - To enable context-pack automation in an existing repo:
 
 ```bash
-bridge setup --context-pack
+chorus setup --context-pack
 # or
-bridge context-pack build
-bridge context-pack install-hooks
+chorus context-pack build
+chorus context-pack install-hooks
 ```

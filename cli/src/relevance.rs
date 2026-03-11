@@ -145,6 +145,148 @@ pub fn filter_relevant_files(files: &[String], config: &RelevanceConfig) -> Vec<
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Introspection API (Phase 2 innovation)
+// ---------------------------------------------------------------------------
+
+/// Result of `list_patterns`: current include/exclude patterns and their source.
+#[derive(Debug, serde::Serialize)]
+pub struct PatternsInfo {
+    pub include: Vec<String>,
+    pub exclude: Vec<String>,
+    /// Either the absolute path to relevance.json or "defaults".
+    pub source: String,
+}
+
+/// List current include/exclude patterns for a given repo root.
+pub fn list_patterns(cwd: &Path) -> PatternsInfo {
+    let config_path = cwd.join(".agent-context").join("relevance.json");
+
+    if let Ok(raw) = fs::read_to_string(&config_path) {
+        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&raw) {
+            let include = parsed
+                .get("include")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_else(|| DEFAULT_INCLUDE.iter().map(|s| s.to_string()).collect());
+            let exclude = parsed
+                .get("exclude")
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_else(|| DEFAULT_EXCLUDE.iter().map(|s| s.to_string()).collect());
+            return PatternsInfo {
+                include,
+                exclude,
+                source: config_path.to_string_lossy().to_string(),
+            };
+        }
+    }
+
+    PatternsInfo {
+        include: DEFAULT_INCLUDE.iter().map(|s| s.to_string()).collect(),
+        exclude: DEFAULT_EXCLUDE.iter().map(|s| s.to_string()).collect(),
+        source: "defaults".to_string(),
+    }
+}
+
+/// Result of `test_file`: whether a path is relevant and which pattern matched.
+#[derive(Debug, serde::Serialize)]
+pub struct TestFileResult {
+    pub path: String,
+    pub relevant: bool,
+    pub matched_by: Option<String>,
+}
+
+/// Test whether a specific file path is relevant, returning the matching pattern.
+pub fn test_file(cwd: &Path, file_path: &str) -> TestFileResult {
+    let info = list_patterns(cwd);
+    let normalized = file_path.replace('\\', "/");
+
+    for pattern in &info.exclude {
+        if let Some(matcher) = compile_glob(pattern) {
+            if matcher.is_match(&normalized) {
+                return TestFileResult {
+                    path: file_path.to_string(),
+                    relevant: false,
+                    matched_by: Some(format!("exclude: {}", pattern)),
+                };
+            }
+        }
+    }
+
+    for pattern in &info.include {
+        if let Some(matcher) = compile_glob(pattern) {
+            if matcher.is_match(&normalized) {
+                return TestFileResult {
+                    path: file_path.to_string(),
+                    relevant: true,
+                    matched_by: Some(format!("include: {}", pattern)),
+                };
+            }
+        }
+    }
+
+    TestFileResult {
+        path: file_path.to_string(),
+        relevant: false,
+        matched_by: None,
+    }
+}
+
+/// A suggested pattern with reason and type.
+#[derive(Debug, serde::Serialize)]
+pub struct PatternSuggestion {
+    pub pattern: String,
+    pub reason: String,
+    #[serde(rename = "type")]
+    pub suggestion_type: String,
+}
+
+/// Suggest patterns based on common project conventions detected in cwd.
+pub fn suggest_patterns(cwd: &Path) -> Vec<PatternSuggestion> {
+    let checks: Vec<(&str, Option<&str>, &str, &str, &str)> = vec![
+        // (dir_check, file_check, pattern, reason, type)
+        ("coverage", None, "coverage/**", "Test coverage output", "exclude"),
+        (".next", None, ".next/**", "Next.js build output", "exclude"),
+        (".nuxt", None, ".nuxt/**", "Nuxt build output", "exclude"),
+        ("__pycache__", None, "__pycache__/**", "Python cache", "exclude"),
+        (".pytest_cache", None, ".pytest_cache/**", "Pytest cache", "exclude"),
+        (".venv", None, ".venv/**", "Python virtualenv", "exclude"),
+        ("venv", None, "venv/**", "Python virtualenv", "exclude"),
+        (".turbo", None, ".turbo/**", "Turborepo cache", "exclude"),
+        (".cargo", None, ".cargo/**", "Cargo local config", "exclude"),
+    ];
+
+    let file_checks: Vec<(Option<&str>, &str, &str, &str, &str)> = vec![
+        (None, "Dockerfile", "Dockerfile*", "Docker config (include for infra context)", "include"),
+        (None, "docker-compose.yml", "docker-compose*.yml", "Docker Compose config", "include"),
+    ];
+
+    let mut suggestions = Vec::new();
+
+    for (dir, _, pattern, reason, stype) in &checks {
+        if cwd.join(dir).exists() {
+            suggestions.push(PatternSuggestion {
+                pattern: pattern.to_string(),
+                reason: reason.to_string(),
+                suggestion_type: stype.to_string(),
+            });
+        }
+    }
+
+    for (_, file, pattern, reason, stype) in &file_checks {
+        if cwd.join(file).exists() {
+            suggestions.push(PatternSuggestion {
+                pattern: pattern.to_string(),
+                reason: reason.to_string(),
+                suggestion_type: stype.to_string(),
+            });
+        }
+    }
+
+    suggestions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

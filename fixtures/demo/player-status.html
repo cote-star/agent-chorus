@@ -289,11 +289,11 @@
             line('codex', '');
             await wait(600);
 
-            toolCall('codex', 'bridge read --agent claude --cwd ~/projects/checkout --last 3 --json');
+            toolCall('codex', 'chorus read --agent claude --cwd ~/projects/checkout --last 3 --json');
             await wait(400);
-            toolCall('codex', 'bridge read --agent gemini --cwd ~/projects/checkout --last 3 --json');
+            toolCall('codex', 'chorus read --agent gemini --cwd ~/projects/checkout --last 3 --json');
             await wait(400);
-            toolCall('codex', 'bridge search "checkout" --agent claude --json');
+            toolCall('codex', 'chorus search "checkout" --agent claude --json');
             line('codex', '');
 
             await wait(1000);
@@ -322,7 +322,7 @@
             line('codex', '');
             await wait(600);
 
-            toolCall('codex', 'bridge compare --source gemini --source claude --normalize --json');
+            toolCall('codex', 'chorus compare --source gemini --source claude --normalize --json');
             line('codex', '');
 
             await wait(1000);

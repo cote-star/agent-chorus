@@ -23,14 +23,14 @@ run_read_case() {
     rust_cmd+=(--chats-dir "$STORE/gemini/tmp/demo/chats")
   fi
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   "${node_cmd[@]}" > "$node_out"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   "${rust_cmd[@]}" > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "read-${label}"
@@ -46,18 +46,18 @@ run_compare_case() {
   local node_out="$TMP_DIR/compare-node.json"
   local rust_out="$TMP_DIR/compare-rust.json"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   node "$ROOT/scripts/read_session.cjs" compare \
     --source=codex:codex-fixture \
     --source=gemini:gemini-fixture \
     --source=claude:claude-fixture \
     --json > "$node_out"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- compare \
     --source codex:codex-fixture \
     --source gemini:gemini-fixture \
@@ -77,14 +77,14 @@ run_report_case() {
   local node_out="$TMP_DIR/report-node.json"
   local rust_out="$TMP_DIR/report-rust.json"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   node "$ROOT/scripts/read_session.cjs" report --handoff="$handoff" --json > "$node_out"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- report --handoff "$handoff" --json > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "report"
@@ -103,14 +103,14 @@ run_list_case() {
   local node_out="$TMP_DIR/list-${agent}-node.json"
   local rust_out="$TMP_DIR/list-${agent}-rust.json"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   node "$ROOT/scripts/read_session.cjs" list --agent="$agent" --cwd="$cwd" --json > "$node_out"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- list --agent "$agent" --cwd "$cwd" --json > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "list-${label}"
@@ -130,14 +130,14 @@ run_search_case() {
   local node_out="$TMP_DIR/search-${agent}-node.json"
   local rust_out="$TMP_DIR/search-${agent}-rust.json"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   node "$ROOT/scripts/read_session.cjs" search "$query" --agent="$agent" --cwd="$cwd" --json > "$node_out"
 
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- search "$query" --agent "$agent" --cwd "$cwd" --json > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "search-${label}"

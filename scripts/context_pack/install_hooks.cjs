@@ -5,8 +5,11 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const SENTINEL_START = '# --- agent-bridge:pre-push:start ---';
-const SENTINEL_END = '# --- agent-bridge:pre-push:end ---';
+const SENTINEL_START = '# --- agent-chorus:pre-push:start ---';
+const SENTINEL_END = '# --- agent-chorus:pre-push:end ---';
+// Legacy sentinels for backward compatibility during migration
+const LEGACY_SENTINEL_START = '# --- agent-bridge:pre-push:start ---';
+const LEGACY_SENTINEL_END = '# --- agent-bridge:pre-push:end ---';
 
 function parseArgs(argv) {
   const options = {
@@ -111,27 +114,36 @@ function main() {
   }
 
   const prePushPath = path.join(hooksDir, 'pre-push');
-  const bridgeSection = `${SENTINEL_START}\n${buildBridgeSection()}\n${SENTINEL_END}`;
+  const chorusSection = `${SENTINEL_START}\n${buildBridgeSection()}\n${SENTINEL_END}`;
 
   let finalContent;
   if (fs.existsSync(prePushPath)) {
     const existing = fs.readFileSync(prePushPath, 'utf8');
+    // Detect new or legacy sentinels
+    let sentStart, sentEnd;
     if (existing.includes(SENTINEL_START) && existing.includes(SENTINEL_END)) {
-      // Replace existing bridge section
-      const startIdx = existing.indexOf(SENTINEL_START);
-      let endIdx = existing.indexOf(SENTINEL_END) + SENTINEL_END.length;
-      if (existing[endIdx] === '\n') endIdx++;
-      finalContent = existing.slice(0, startIdx) + bridgeSection + '\n' + existing.slice(endIdx);
+      sentStart = SENTINEL_START; sentEnd = SENTINEL_END;
+    } else if (existing.includes(LEGACY_SENTINEL_START) && existing.includes(LEGACY_SENTINEL_END)) {
+      sentStart = LEGACY_SENTINEL_START; sentEnd = LEGACY_SENTINEL_END;
     } else {
-      // Append bridge section to existing hook
+      sentStart = null; sentEnd = null;
+    }
+    if (sentStart && sentEnd) {
+      // Replace existing chorus/bridge section
+      const startIdx = existing.indexOf(sentStart);
+      let endIdx = existing.indexOf(sentEnd) + sentEnd.length;
+      if (existing[endIdx] === '\n') endIdx++;
+      finalContent = existing.slice(0, startIdx) + chorusSection + '\n' + existing.slice(endIdx);
+    } else {
+      // Append chorus section to existing hook
       let content = existing;
       if (!content.endsWith('\n')) content += '\n';
-      content += '\n' + bridgeSection + '\n';
+      content += '\n' + chorusSection + '\n';
       finalContent = content;
     }
   } else {
     // Create new hook file with shebang
-    finalContent = `#!/usr/bin/env bash\nset -euo pipefail\n\n${bridgeSection}\n`;
+    finalContent = `#!/usr/bin/env bash\nset -euo pipefail\n\n${chorusSection}\n`;
   }
 
   const contentUnchanged = fs.existsSync(prePushPath) && fs.readFileSync(prePushPath, 'utf8') === finalContent;

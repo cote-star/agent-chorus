@@ -766,6 +766,10 @@ fn get_claude_session_cwd(file_path: &Path) -> Option<PathBuf> {
 
 fn is_system_directory(dir: &Path) -> bool {
     let s = dir.to_string_lossy();
+    // macOS temp dirs live under /var/folders or /private/var/folders — allow those
+    if s.starts_with("/var/folders/") || s.starts_with("/private/var/folders/") {
+        return false;
+    }
     let system_prefixes = ["/etc", "/usr", "/var", "/bin", "/sbin", "/System", "/Library",
         "/Windows", "/Windows/System32", "/Program Files", "/Program Files (x86)"];
     for prefix in system_prefixes {
@@ -945,6 +949,68 @@ fn redact_sensitive_text(input: &str) -> String {
     let step8 = redact_pem_keys(&step7);
     let step9 = redact_connection_strings(&step8);
     redact_secret_assignments(&step9)
+}
+
+/// A single redaction audit entry.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RedactionEntry {
+    pub pattern: String,
+    pub count: usize,
+}
+
+/// Redact sensitive text and return an audit trail of what was redacted.
+pub fn redact_sensitive_text_with_audit(input: &str) -> (String, Vec<RedactionEntry>) {
+    let mut audit = Vec::new();
+
+    fn count_diff(before: &str, after: &str, pattern: &str, audit: &mut Vec<RedactionEntry>) {
+        if before != after {
+            // Count how many redaction placeholders appeared that weren't there before
+            let markers = ["[REDACTED]", "[REDACTED_JWT]", "[REDACTED_PEM_KEY]"];
+            let mut count = 0usize;
+            for marker in &markers {
+                let after_count = after.matches(marker).count();
+                let before_count = before.matches(marker).count();
+                count += after_count.saturating_sub(before_count);
+            }
+            if count == 0 { count = 1; } // at least one if text changed
+            audit.push(RedactionEntry {
+                pattern: pattern.to_string(),
+                count,
+            });
+        }
+    }
+
+    let step1 = redact_openai_like_keys(input);
+    count_diff(input, &step1, "openai_key", &mut audit);
+
+    let step2 = redact_aws_access_keys(&step1);
+    count_diff(&step1, &step2, "aws_access_key", &mut audit);
+
+    let step3 = redact_github_tokens(&step2);
+    count_diff(&step2, &step3, "github_token", &mut audit);
+
+    let step4 = redact_google_api_keys(&step3);
+    count_diff(&step3, &step4, "google_api_key", &mut audit);
+
+    let step5 = redact_slack_tokens(&step4);
+    count_diff(&step4, &step5, "slack_token", &mut audit);
+
+    let step6 = redact_bearer_tokens(&step5);
+    count_diff(&step5, &step6, "bearer_token", &mut audit);
+
+    let step7 = redact_jwt_tokens(&step6);
+    count_diff(&step6, &step7, "jwt_token", &mut audit);
+
+    let step8 = redact_pem_keys(&step7);
+    count_diff(&step7, &step8, "pem_key", &mut audit);
+
+    let step9 = redact_connection_strings(&step8);
+    count_diff(&step8, &step9, "connection_string", &mut audit);
+
+    let final_text = redact_secret_assignments(&step9);
+    count_diff(&step9, &final_text, "secret_assignment", &mut audit);
+
+    (final_text, audit)
 }
 
 fn redact_openai_like_keys(input: &str) -> String {
@@ -1603,7 +1669,8 @@ pub fn search_cursor_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
 // --- Cursor support ---
 
 fn cursor_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_CURSOR_DATA_DIR")
+    std::env::var("CHORUS_CURSOR_DATA_DIR")
+        .or_else(|_| std::env::var("BRIDGE_CURSOR_DATA_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| {
@@ -1748,21 +1815,24 @@ pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
 }
 
 fn codex_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_CODEX_SESSIONS_DIR")
+    std::env::var("CHORUS_CODEX_SESSIONS_DIR")
+        .or_else(|_| std::env::var("BRIDGE_CODEX_SESSIONS_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| expand_home("~/.codex/sessions").unwrap_or_else(|| PathBuf::from("~/.codex/sessions")))
 }
 
 fn claude_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_CLAUDE_PROJECTS_DIR")
+    std::env::var("CHORUS_CLAUDE_PROJECTS_DIR")
+        .or_else(|_| std::env::var("BRIDGE_CLAUDE_PROJECTS_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| expand_home("~/.claude/projects").unwrap_or_else(|| PathBuf::from("~/.claude/projects")))
 }
 
 fn gemini_tmp_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_GEMINI_TMP_DIR")
+    std::env::var("CHORUS_GEMINI_TMP_DIR")
+        .or_else(|_| std::env::var("BRIDGE_GEMINI_TMP_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| expand_home("~/.gemini/tmp").unwrap_or_else(|| PathBuf::from("~/.gemini/tmp")))

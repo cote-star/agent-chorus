@@ -39,7 +39,7 @@ function main() {
     (packDirIdx !== -1 && opts.passthrough[packDirIdx + 1]
       ? opts.passthrough[packDirIdx + 1]
       : null) ||
-    process.env.BRIDGE_CONTEXT_PACK_DIR ||
+    process.env.CHORUS_CONTEXT_PACK_DIR || process.env.BRIDGE_CONTEXT_PACK_DIR ||
     '.agent-context';
 
   const cwdIdx = opts.passthrough.findIndex((t) => t === '--cwd');

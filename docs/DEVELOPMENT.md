@@ -15,10 +15,10 @@ The repo supports a context pack for agent onboarding:
 
 ```bash
 # Build/update local context pack
-bridge context-pack build
+chorus context-pack build
 
 # Install pre-push hook that syncs pack on main pushes when needed
-bridge context-pack install-hooks
+chorus context-pack install-hooks
 ```
 
 The active pack (`.agent-context/current/`) is tracked in git. Recovery snapshots (`.agent-context/snapshots/`) and build history are git-ignored and stay local.

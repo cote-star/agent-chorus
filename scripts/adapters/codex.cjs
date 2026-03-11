@@ -9,7 +9,7 @@ const {
   findLatestByCwd, getFileTimestamp, extractText, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
-const codexSessionsBase = normalizePath(process.env.BRIDGE_CODEX_SESSIONS_DIR || '~/.codex/sessions');
+const codexSessionsBase = normalizePath(process.env.CHORUS_CODEX_SESSIONS_DIR || process.env.BRIDGE_CODEX_SESSIONS_DIR || '~/.codex/sessions');
 
 if (isSystemDirectory(codexSessionsBase)) {
   throw new Error(`Refusing to scan system directory: ${codexSessionsBase}`);

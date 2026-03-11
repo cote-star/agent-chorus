@@ -8,7 +8,7 @@ const {
   normalizePath, collectMatchingFiles, getFileTimestamp, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
-const cursorDataBase = normalizePath(process.env.BRIDGE_CURSOR_DATA_DIR || (
+const cursorDataBase = normalizePath(process.env.CHORUS_CURSOR_DATA_DIR || process.env.BRIDGE_CURSOR_DATA_DIR || (
   process.platform === 'darwin'
     ? '~/Library/Application Support/Cursor'
     : '~/.cursor'

@@ -5,37 +5,37 @@ Use this page for full command syntax, examples, output contracts, and operation
 ## Command Contract
 
 ```bash
-bridge read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json]
-bridge compare --source <agent[:session-substring]>... [--cwd=<path>] [--normalize] [--json]
-bridge report --handoff <handoff.json> [--cwd=<path>] [--json]
-bridge list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
-bridge search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
-bridge setup [--cwd=<path>] [--dry-run] [--force] [--context-pack] [--json]
-bridge doctor [--cwd=<path>] [--json]
-bridge context-pack <build|sync-main|install-hooks|rollback|check-freshness> [...]
+chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json]
+chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--normalize] [--json]
+chorus report --handoff <handoff.json> [--cwd=<path>] [--json]
+chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
+chorus search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
+chorus setup [--cwd=<path>] [--dry-run] [--force] [--context-pack] [--json]
+chorus doctor [--cwd=<path>] [--json]
+chorus context-pack <build|sync-main|install-hooks|rollback|check-freshness> [...]
 ```
 
 ## Reading a Session
 
 ```bash
 # Read from Codex (defaults to latest session, last message)
-bridge read --agent codex
+chorus read --agent codex
 
 # Read from Claude, scoped to current working directory
-bridge read --agent claude --cwd /path/to/project
+chorus read --agent claude --cwd /path/to/project
 
 # Read the previous (past) Claude session
-bridge list --agent claude --cwd /path/to/project --limit 2 --json
-bridge read --agent claude --id "<second-session-id>" --cwd /path/to/project
+chorus list --agent claude --cwd /path/to/project --limit 2 --json
+chorus read --agent claude --id "<second-session-id>" --cwd /path/to/project
 
 # Read the last 5 assistant messages from a session
-bridge read --agent codex --id "fix-bug" --last 5
+chorus read --agent codex --id "fix-bug" --last 5
 
 # Read from Cursor
-bridge read --agent cursor --json
+chorus read --agent cursor --json
 
 # Get machine-readable JSON output
-bridge read --agent gemini --json
+chorus read --agent gemini --json
 ```
 
 When `--last N` is greater than 1, multiple messages are separated by `\n---\n` in the `content` field.
@@ -60,13 +60,13 @@ When `--last N` is greater than 1, multiple messages are separated by `\n---\n` 
 
 ```bash
 # List the 10 most recent Codex sessions
-bridge list --agent codex --json
+chorus list --agent codex --json
 
 # Limit results
-bridge list --agent claude --limit 5 --json
+chorus list --agent claude --limit 5 --json
 
 # Scope to a working directory
-bridge list --agent codex --cwd /path/to/project --json
+chorus list --agent codex --cwd /path/to/project --json
 ```
 
 **JSON output:**
@@ -87,23 +87,23 @@ bridge list --agent codex --cwd /path/to/project --json
 
 ```bash
 # Find sessions mentioning "authentication"
-bridge search "authentication" --agent claude --json
+chorus search "authentication" --agent claude --json
 
 # Limit results
-bridge search "bug fix" --agent codex --limit 3 --json
+chorus search "bug fix" --agent codex --limit 3 --json
 ```
 
 ## Comparing Agents
 
 ```bash
 # Compare latest sessions across agents
-bridge compare --source codex --source gemini --source claude --json
+chorus compare --source codex --source gemini --source claude --json
 
 # Compare specific sessions
-bridge compare --source codex:fix-bug --source claude:fix-bug --json
+chorus compare --source codex:fix-bug --source claude:fix-bug --json
 
 # Ignore whitespace differences
-bridge compare --source codex --source gemini --normalize --json
+chorus compare --source codex --source gemini --normalize --json
 ```
 
 The `--normalize` flag collapses all whitespace before comparison.
@@ -111,45 +111,45 @@ The `--normalize` flag collapses all whitespace before comparison.
 ## Reporting
 
 ```bash
-bridge report --handoff ./handoff_packet.json --json
+chorus report --handoff ./handoff_packet.json --json
 ```
 
 ## Context Pack
 
 ```bash
 # Build or refresh context pack files
-bridge context-pack build
+chorus context-pack build
 
 # Install pre-push hook to auto-sync context pack for main pushes
-bridge context-pack install-hooks
+chorus context-pack install-hooks
 
 # Restore latest local snapshot
-bridge context-pack rollback
+chorus context-pack rollback
 
 # Non-blocking warning check for stale pack updates
-bridge context-pack check-freshness --base origin/main
+chorus context-pack check-freshness --base origin/main
 ```
 
 You can also bootstrap context-pack from setup:
 
 ```bash
-bridge setup --context-pack
+chorus setup --context-pack
 ```
 
 ## Common Recipes
 
 ```bash
 # Handoff recovery: read latest work from another agent in this repo
-bridge read --agent claude --cwd . --json
+chorus read --agent claude --cwd . --json
 
 # Cross-agent verification: validate a claim with search + compare
-bridge search "processPayment" --agent codex --cwd . --json
-bridge compare --source codex --source claude --json
+chorus search "processPayment" --agent codex --cwd . --json
+chorus compare --source codex --source claude --json
 
 # Cold-start onboarding: build a compact index before deeper reads
-bridge setup --context-pack
-bridge context-pack build
-bridge context-pack check-freshness --base origin/main
+chorus setup --context-pack
+chorus context-pack build
+chorus context-pack check-freshness --base origin/main
 ```
 
 ## Error Codes
@@ -179,14 +179,14 @@ Override default paths using environment variables.
 
 | Variable                     | Description               | Default                                |
 | :--------------------------- | :------------------------ | :------------------------------------- |
-| `BRIDGE_CODEX_SESSIONS_DIR`  | Path to Codex sessions    | `~/.codex/sessions`                    |
-| `BRIDGE_GEMINI_TMP_DIR`      | Path to Gemini temp chats | `~/.gemini/tmp`                        |
-| `BRIDGE_CLAUDE_PROJECTS_DIR` | Path to Claude projects   | `~/.claude/projects`                   |
-| `BRIDGE_CURSOR_DATA_DIR`     | Path to Cursor data       | `~/Library/Application Support/Cursor` |
+| `CHORUS_CODEX_SESSIONS_DIR`  | Path to Codex sessions    | `~/.codex/sessions`                    |
+| `CHORUS_GEMINI_TMP_DIR`      | Path to Gemini temp chats | `~/.gemini/tmp`                        |
+| `CHORUS_CLAUDE_PROJECTS_DIR` | Path to Claude projects   | `~/.claude/projects`                   |
+| `CHORUS_CURSOR_DATA_DIR`     | Path to Cursor data       | `~/Library/Application Support/Cursor` |
 
 ## Redaction
 
-The bridge automatically redacts sensitive data before output:
+Chorus automatically redacts sensitive data before output:
 
 | Pattern               | Example Input            | Redacted Output      |
 | :-------------------- | :----------------------- | :------------------- |

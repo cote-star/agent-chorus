@@ -19,7 +19,7 @@ function parseArgs(argv) {
     reason: 'manual-seal',
     base: null,
     head: null,
-    packDir: process.env.BRIDGE_CONTEXT_PACK_DIR || '.agent-context',
+    packDir: process.env.CHORUS_CONTEXT_PACK_DIR || process.env.BRIDGE_CONTEXT_PACK_DIR || '.agent-context',
     cwd: process.cwd(),
     force: false,
     forceSnapshot: false,

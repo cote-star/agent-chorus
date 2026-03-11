@@ -47,7 +47,7 @@ test_node_redaction() {
 
 # Helper: run Rust redaction via a test harness
 # Since redact_sensitive_text is private, we test via a small Rust program
-# We'll use a temporary session fixture and bridge read
+# We'll use a temporary session fixture and chorus read
 test_rust_redaction() {
   local fixture="$1"
   local label="$2"
@@ -71,7 +71,7 @@ test_rust_redaction() {
 JSONL
 
   local redacted
-  redacted=$(BRIDGE_CODEX_SESSIONS_DIR="$tmpdir" "$ROOT_DIR/cli/target/debug/bridge" read --agent codex --json 2>/dev/null || echo '{"content":"[error]"}')
+  redacted=$(CHORUS_CODEX_SESSIONS_DIR="$tmpdir" "$ROOT_DIR/cli/target/debug/chorus" read --agent codex --json 2>/dev/null || echo '{"content":"[error]"}')
   local output_content
   output_content=$(echo "$redacted" | node -e "
     let d=''; process.stdin.on('data',c=>d+=c); process.stdin.on('end',()=>{
@@ -103,7 +103,7 @@ echo "=== Adversarial Redaction Tests ==="
 echo ""
 
 # Build Rust binary if needed
-if [ ! -f "$ROOT_DIR/cli/target/debug/bridge" ]; then
+if [ ! -f "$ROOT_DIR/cli/target/debug/chorus" ]; then
   echo "Building Rust CLI..."
   (cd "$ROOT_DIR/cli" && cargo build 2>/dev/null)
 fi
