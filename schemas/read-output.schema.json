@@ -4,8 +4,12 @@
   "title": "Bridge Read Output",
   "type": "object",
   "additionalProperties": false,
-  "required": ["agent", "source", "content", "warnings"],
+  "required": ["agent", "source", "warnings"],
   "properties": {
+    "bridge_output_version": {
+      "type": "integer",
+      "description": "Protocol version for output boundary identification"
+    },
     "agent": {
       "type": "string",
       "enum": ["codex", "gemini", "claude", "cursor"]
@@ -15,7 +19,8 @@
       "minLength": 1
     },
     "content": {
-      "type": "string"
+      "type": ["string", "null"],
+      "description": "Session content; null when --metadata-only is used"
     },
     "warnings": {
       "type": "array",

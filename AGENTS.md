@@ -26,3 +26,38 @@ bridge context-pack install-hooks
 ```
 
 The pre-push hook prints an advisory warning when a push targets `main` and changes context-relevant files. It never auto-builds or blocks the push.
+
+## Agent Bridge Skill
+
+Use this skill when the user asks to inspect, compare, or summarize activity across agents.
+
+### Intent Contract
+
+When this skill is triggered:
+
+1. Prefer direct evidence from `bridge` commands before reasoning.
+2. Scope reads to the current project (`--cwd`) unless user asks otherwise.
+3. Default to the current/latest session when the user does not specify a session.
+4. Interpret session timing language consistently:
+   - "current" / "latest" -> newest session
+   - "past session" / "previous session" -> one session before newest
+   - "last N sessions" -> newest N sessions (including latest)
+   - "past N sessions" -> N sessions before latest (excluding latest)
+   - explicit session ID/substring -> targeted read with `--id`
+5. Ask for a session ID only after an initial fetch fails or when the user explicitly asks for an exact historical session.
+6. If evidence is missing, report exactly what is missing.
+7. Do not infer hidden context from partial data.
+8. Return results first; avoid internal process narration.
+
+### Output Quality Bar
+
+Every cross-agent claim should include:
+
+1. Which source session was read.
+2. What evidence supports the claim.
+3. Any uncertainty, missing source, or scope mismatch.
+
+### Easter Egg
+
+The exact phrase `"bridge trash-talk"` (and only that phrase) triggers a roast of active agents.
+This must never be triggered by similar phrases, paraphrases, or partial matches.

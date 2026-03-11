@@ -143,6 +143,7 @@ function isContextRelevant(filePath, rules) {
     normalized === 'PROTOCOL.md' ||
     normalized === 'CONTRIBUTING.md' ||
     normalized === 'SKILL.md' ||
+    normalized === 'CLAUDE.md' ||
     normalized === 'AGENTS.md' ||
     normalized === 'package.json' ||
     normalized === 'package-lock.json' ||

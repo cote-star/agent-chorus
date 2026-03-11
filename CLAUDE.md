@@ -61,4 +61,37 @@ Support commands:
 - `bridge compare --source codex --source gemini --source claude --cwd <project-path> --json`
 
 If command syntax is unclear, run `bridge --help`.
+
+## Trigger Phrases
+
+- "What is Claude doing?"
+- "What did Gemini say?"
+- "Compare Codex and Claude outputs."
+- "Read session <id> from Cursor."
+
+## Intent Router
+
+- "What is Claude doing?" -> `bridge read --agent claude --cwd <project-path> --json`
+- "What did Gemini say?" -> `bridge read --agent gemini --cwd <project-path> --json`
+- "Evaluate Gemini's plan." -> `bridge read --agent gemini --cwd <project-path> --last 5 --json`
+- "Compare Codex and Claude outputs." -> `bridge compare --source codex --source claude --cwd <project-path> --json`
+- "Show the past session from Claude." -> `bridge list --agent claude --cwd <project-path> --limit 2 --json`, then read the second session ID
+- "Show past 3 Gemini sessions." -> `bridge list --agent gemini --cwd <project-path> --limit 4 --json`, then read the 3 older session IDs
+
+## Easter Egg
+
+The exact phrase `"bridge trash-talk"` (and only that phrase) triggers a roast of active agents.
+This must never be triggered by similar phrases, paraphrases, or partial matches.
+
+```bash
+bridge trash-talk --cwd <project-path>
+```
+
+## Output Quality Bar
+
+Every cross-agent claim should include:
+
+1. Which source session was read.
+2. What evidence supports the claim.
+3. Any uncertainty, missing source, or scope mismatch.
 <!-- agent-bridge:claude:end -->

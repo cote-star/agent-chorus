@@ -414,40 +414,84 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+const HOOK_SENTINEL_START: &str = "# --- agent-bridge:pre-push:start ---";
+const HOOK_SENTINEL_END: &str = "# --- agent-bridge:pre-push:end ---";
+
 pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
     let cwd_path = PathBuf::from(cwd);
     let repo_root = git_repo_root(&cwd_path)?;
 
-    let existing = run_git(&["config", "--get", "core.hooksPath"], &repo_root, true)?;
-    if !existing.is_empty() && existing != ".githooks" {
-        println!(
-            "[context-pack] WARNING: core.hooksPath is already set to '{}'",
-            existing
-        );
-        println!(
-            "[context-pack] Overriding to .githooks; previous hooks path will be replaced."
-        );
-    }
+    let existing_hooks_path = run_git(&["config", "--get", "core.hooksPath"], &repo_root, true)?;
 
-    let hooks_dir = repo_root.join(".githooks");
+    // Determine hooks directory — prefer existing if set, otherwise use .githooks
+    let hooks_dir = if !existing_hooks_path.is_empty() {
+        if existing_hooks_path != ".githooks" {
+            println!(
+                "[context-pack] NOTE: core.hooksPath is '{}'; appending bridge hook there.",
+                existing_hooks_path
+            );
+        }
+        repo_root.join(&existing_hooks_path)
+    } else {
+        repo_root.join(".githooks")
+    };
+
     let pre_push_path = hooks_dir.join("pre-push");
-    let content = build_pre_push_hook();
+    let bridge_section = format!(
+        "{}\n{}\n{}",
+        HOOK_SENTINEL_START,
+        build_pre_push_hook_section(),
+        HOOK_SENTINEL_END
+    );
+
+    let final_content = if pre_push_path.exists() {
+        let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
+        if existing.contains(HOOK_SENTINEL_START) && existing.contains(HOOK_SENTINEL_END) {
+            // Replace existing bridge section
+            let start_idx = existing.find(HOOK_SENTINEL_START).unwrap();
+            let end_idx = existing.find(HOOK_SENTINEL_END).unwrap() + HOOK_SENTINEL_END.len();
+            // Trim trailing newline after end sentinel if present
+            let end_idx = if existing.as_bytes().get(end_idx) == Some(&b'\n') {
+                end_idx + 1
+            } else {
+                end_idx
+            };
+            format!("{}{}\n{}", &existing[..start_idx], bridge_section, &existing[end_idx..])
+        } else {
+            // Append bridge section to existing hook
+            let mut content = existing;
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push('\n');
+            content.push_str(&bridge_section);
+            content.push('\n');
+            content
+        }
+    } else {
+        // Create new hook file with shebang
+        format!("#!/usr/bin/env bash\nset -euo pipefail\n\n{}\n", bridge_section)
+    };
+
     let content_unchanged = if pre_push_path.exists() {
-        fs::read_to_string(&pre_push_path).unwrap_or_default() == content
+        fs::read_to_string(&pre_push_path).unwrap_or_default() == final_content
     } else {
         false
     };
 
     if !dry_run {
         ensure_dir(&hooks_dir)?;
-        write_text(&pre_push_path, &content)?;
+        write_text(&pre_push_path, &final_content)?;
         #[cfg(unix)]
         {
             let mut perms = fs::metadata(&pre_push_path)?.permissions();
             perms.set_mode(0o755);
             fs::set_permissions(&pre_push_path, perms)?;
         }
-        run_git(&["config", "core.hooksPath", ".githooks"], &repo_root, false)?;
+        // Only set core.hooksPath if it wasn't already configured
+        if existing_hooks_path.is_empty() {
+            run_git(&["config", "core.hooksPath", ".githooks"], &repo_root, false)?;
+        }
     }
 
     let status = if dry_run {
@@ -463,11 +507,94 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
         rel_path(&pre_push_path, &repo_root)
     );
     if !dry_run {
-        println!("[context-pack] git hooks path set to .githooks");
         println!("[context-pack] pre-push hook is active");
     }
 
     Ok(())
+}
+
+pub fn verify(pack_dir: Option<&str>, cwd: &str) -> Result<()> {
+    let cwd_path = PathBuf::from(cwd);
+    let repo_root = git_repo_root(&cwd_path).unwrap_or_else(|_| cwd_path.clone());
+    let pack_root = resolve_pack_root(&repo_root, pack_dir);
+    let current_dir = pack_root.join("current");
+    let manifest_path = current_dir.join("manifest.json");
+
+    if !manifest_path.exists() {
+        return Err(anyhow!(
+            "[context-pack] verify failed: manifest.json not found at {}",
+            manifest_path.display()
+        ));
+    }
+
+    let manifest_content = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read manifest at {}", manifest_path.display()))?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
+        .with_context(|| "Failed to parse manifest.json")?;
+
+    let files = manifest.get("files").and_then(|f| f.as_array());
+    if files.is_none() {
+        return Err(anyhow!("[context-pack] verify failed: manifest has no 'files' array"));
+    }
+
+    let mut pass_count = 0usize;
+    let mut fail_count = 0usize;
+
+    for file_entry in files.unwrap() {
+        let file_path_str = file_entry.get("path").and_then(|p| p.as_str()).unwrap_or("unknown");
+        let expected_hash = file_entry.get("sha256").and_then(|h| h.as_str()).unwrap_or("");
+        let actual_path = current_dir.join(file_path_str);
+
+        if !actual_path.exists() {
+            eprintln!("  FAIL  {}  (file missing)", file_path_str);
+            fail_count += 1;
+            continue;
+        }
+
+        let content = fs::read_to_string(&actual_path)?;
+        use sha2::{Digest, Sha256};
+        let actual_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+
+        if actual_hash == expected_hash {
+            println!("  PASS  {}", file_path_str);
+            pass_count += 1;
+        } else {
+            eprintln!("  FAIL  {}  (checksum mismatch)", file_path_str);
+            fail_count += 1;
+        }
+    }
+
+    // Verify pack_checksum if present
+    if let Some(expected_pack_checksum) = manifest.get("pack_checksum").and_then(|c| c.as_str()) {
+        let mut file_entries: Vec<String> = Vec::new();
+        if let Some(files_arr) = files {
+            for f in files_arr {
+                let p = f.get("path").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let h = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+                file_entries.push(format!("{}:{}", p, h));
+            }
+        }
+        let combined = file_entries.join("\n");
+        use sha2::{Digest, Sha256};
+        let actual_pack_checksum = format!("{:x}", Sha256::digest(combined.as_bytes()));
+        if actual_pack_checksum == expected_pack_checksum {
+            println!("  PASS  pack_checksum");
+            pass_count += 1;
+        } else {
+            eprintln!("  FAIL  pack_checksum (mismatch)");
+            fail_count += 1;
+        }
+    }
+
+    let total = pass_count + fail_count;
+    println!("\n  Results: {pass_count}/{total} passed");
+
+    if fail_count > 0 {
+        Err(anyhow!("[context-pack] verify failed: {} file(s) did not match", fail_count))
+    } else {
+        println!("  Context pack integrity verified.");
+        Ok(())
+    }
 }
 
 pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
@@ -702,7 +829,7 @@ fn collect_files_meta(current_dir: &Path, relative_paths: &[String]) -> Result<V
 #[allow(clippy::too_many_arguments)]
 fn build_manifest(
     generated_at: &str,
-    repo_root: &Path,
+    _repo_root: &Path,
     repo_name: &str,
     branch: &str,
     head_sha: Option<&str>,
@@ -747,7 +874,7 @@ fn build_manifest(
         "schema_version": 1,
         "generated_at": generated_at,
         "repo_name": repo_name,
-        "repo_root": repo_root.display().to_string(),
+        "repo_root": ".",
         "branch": branch,
         "head_sha": head_sha,
         "package_version": package_version,
@@ -975,6 +1102,7 @@ fn is_context_relevant(file_path: &str) -> bool {
             | "PROTOCOL.md"
             | "CONTRIBUTING.md"
             | "SKILL.md"
+            | "CLAUDE.md"
             | "AGENTS.md"
             | "package.json"
             | "package-lock.json"
@@ -1370,11 +1498,8 @@ This guide tells AI agents how to fill in the context pack templates.
     .to_string()
 }
 
-fn build_pre_push_hook() -> String {
-    r#"#!/usr/bin/env bash
-set -euo pipefail
-
-remote_name="${1:-origin}"
+fn build_pre_push_hook_section() -> String {
+    r#"remote_name="${1:-origin}"
 remote_url="${2:-unknown}"
 
 run_context_sync() {
@@ -1409,7 +1534,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "[context-pack] validating main push for ${remote_name} (${remote_url})"
     run_context_sync "$local_ref" "$local_sha" "$remote_ref" "$remote_sha"
   fi
-done
-"#
+done"#
     .to_string()
 }

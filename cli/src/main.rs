@@ -47,6 +47,10 @@ enum Commands {
         /// Emit structured JSON instead of text
         #[arg(long)]
         json: bool,
+
+        /// Return session metadata only (no content)
+        #[arg(long)]
+        metadata_only: bool,
     },
 
     /// Compare sources and return an analyze-mode report
@@ -213,6 +217,17 @@ enum ContextPackCommand {
         pack_dir: Option<String>,
     },
 
+    /// Verify context pack integrity (checksums)
+    Verify {
+        /// Override pack directory (default: .agent-context or BRIDGE_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+
     /// Warn when context-relevant files changed without pack update
     #[command(name = "check-freshness")]
     CheckFreshness {
@@ -358,6 +373,7 @@ fn run(cli: Cli) -> Result<()> {
             chats_dir,
             last,
             json,
+            metadata_only,
         } => {
             let effective_cwd = effective_cwd(cwd);
             let last_n = last.max(1);
@@ -371,10 +387,16 @@ fn run(cli: Cli) -> Result<()> {
             )?;
 
             if json {
+                let content_value = if metadata_only {
+                    serde_json::Value::Null
+                } else {
+                    serde_json::Value::String(session.content.clone())
+                };
                 let report = json!({
+                    "bridge_output_version": 1,
                     "agent": session.agent,
                     "source": session.source,
-                    "content": session.content,
+                    "content": content_value,
                     "warnings": session.warnings,
                     "session_id": session.session_id,
                     "cwd": session.cwd,
@@ -387,9 +409,13 @@ fn run(cli: Cli) -> Result<()> {
                 for warning in &session.warnings {
                     eprintln!("{}", utils::sanitize_for_terminal(warning));
                 }
+                println!("--- BEGIN BRIDGE OUTPUT ---");
                 println!("SOURCE: {} Session ({})", format_agent_name(session.agent), utils::sanitize_for_terminal(&session.source));
-                println!("---");
-                println!("{}", utils::sanitize_for_terminal(&session.content));
+                if !metadata_only {
+                    println!("---");
+                    println!("{}", utils::sanitize_for_terminal(&session.content));
+                }
+                println!("--- END BRIDGE OUTPUT ---");
             }
         }
         Commands::Compare { sources, cwd, normalize, json } => {
@@ -499,6 +525,10 @@ fn run(cli: Cli) -> Result<()> {
                 }
                 ContextPackCommand::Rollback { snapshot, pack_dir } => {
                     context_pack::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
+                }
+                ContextPackCommand::Verify { pack_dir, cwd } => {
+                    let target_cwd = effective_cwd(cwd);
+                    context_pack::verify(pack_dir.as_deref(), &target_cwd)?;
                 }
                 ContextPackCommand::CheckFreshness { base, cwd } => {
                     let target_cwd = effective_cwd(cwd);

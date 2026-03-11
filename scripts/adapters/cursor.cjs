@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  normalizePath, collectMatchingFiles, getFileTimestamp, redactSensitiveText,
+  normalizePath, collectMatchingFiles, getFileTimestamp, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
 const cursorDataBase = normalizePath(process.env.BRIDGE_CURSOR_DATA_DIR || (
@@ -13,6 +13,10 @@ const cursorDataBase = normalizePath(process.env.BRIDGE_CURSOR_DATA_DIR || (
     ? '~/Library/Application Support/Cursor'
     : '~/.cursor'
 ));
+
+if (isSystemDirectory(cursorDataBase)) {
+  throw new Error(`Refusing to scan system directory: ${cursorDataBase}`);
+}
 
 function getWorkspacesDir() {
   return path.join(cursorDataBase, 'User', 'workspaceStorage');
@@ -34,7 +38,8 @@ function resolve(id, cwd, opts) {
     return true;
   }, true);
 
-  return files.length > 0 ? { path: files[0].path, warnings: [] } : null;
+  const warnings = ['Warning: Cursor sessions have no project scoping. Results may include sessions from unrelated projects.'];
+  return files.length > 0 ? { path: files[0].path, warnings } : null;
 }
 
 function read(filePath, lastN) {

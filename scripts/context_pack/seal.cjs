@@ -80,15 +80,6 @@ function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
-function sha256(input) {
-  return crypto.createHash('sha256').update(input).digest('hex');
-}
-
-function readJson(filePath) {
-  if (!fs.existsSync(filePath)) return null;
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
-
 function collectFilesMeta(currentDir, relativePaths) {
   return relativePaths.map((relativePath) => {
     const absolutePath = path.join(currentDir, relativePath);
@@ -128,7 +119,7 @@ function buildManifest({
       schema_version: 1,
       generated_at: generatedAt,
       repo_name: repoName,
-      repo_root: repoRoot,
+      repo_root: '.',
       branch,
       head_sha: headSha || null,
       package_version: 'unknown',

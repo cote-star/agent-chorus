@@ -71,7 +71,7 @@ bridge context-pack rollback
 Relevant paths are configurable in `.agent-context/relevance.json`. Defaults include:
 - command/runtime sources (`scripts/`, `cli/src/`)
 - contracts (`schemas/`, `PROTOCOL.md`)
-- docs that define behavior (`README.md`, `CONTRIBUTING.md`, `SKILL.md`)
+- docs that define behavior (`README.md`, `CONTRIBUTING.md`, `CLAUDE.md`, `AGENTS.md`)
 - release/CI wiring (`.github/workflows/`, package metadata, Cargo metadata)
 - fixture/golden data used by behavior tests
 

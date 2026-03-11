@@ -6,10 +6,14 @@ const fs = require('fs');
 const path = require('path');
 const {
   normalizePath, collectMatchingFiles, readJsonlLines,
-  findLatestByCwd, getFileTimestamp, extractClaudeText, redactSensitiveText,
+  findLatestByCwd, getFileTimestamp, extractClaudeText, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
 const claudeProjectsBase = normalizePath(process.env.BRIDGE_CLAUDE_PROJECTS_DIR || '~/.claude/projects');
+
+if (isSystemDirectory(claudeProjectsBase)) {
+  throw new Error(`Refusing to scan system directory: ${claudeProjectsBase}`);
+}
 
 function getClaudeSessionCwd(filePath) {
   try {

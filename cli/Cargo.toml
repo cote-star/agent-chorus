@@ -1,6 +1,6 @@
 [package]
 name = "agent-bridge"
-version = "0.6.2"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.74"
 description = "Local-first CLI to read, compare, and hand off context across Codex, Claude, Gemini, and Cursor sessions."
@@ -11,6 +11,11 @@ documentation = "https://docs.rs/agent-bridge"
 readme = "../README.md"
 keywords = ["agent-bridge", "multi-agent", "cli", "cross-agent", "context-engineering"]
 categories = ["command-line-utilities", "development-tools"]
+
+[features]
+default = []
+update-check = []
+relevance = []
 
 [[bin]]
 name = "bridge"

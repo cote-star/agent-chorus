@@ -1,19 +1,30 @@
 # Release Notes
 
-## v0.7.0 (2026-02-15)
+## v0.7.0 (2026-03-11)
 
 ### Highlights
 - Context-pack v2: agent-driven content model with `init` → agent fill → `seal` workflow.
+- Security hardening: trust model documentation, output boundary markers, adversarial redaction tests.
+- `--metadata-only` flag to reduce injection surface on `bridge read`.
+- `bridge context-pack verify` command for manifest integrity checking.
 - Non-intrusive update notifications with `bridge doctor` integration.
 - Generic relevance engine with configurable `.agent-context/relevance.json`.
-- Advisory-only `sync-main` and fail-open pre-push hooks.
-- Shared Node utilities (`cp_utils.cjs`) with symlink protection and stale lock recovery.
+- Sentinel-based hook installation preserves existing git hooks.
+- System directory guards on all adapter base directories.
+- Concurrent-read safety for JSONL files during active writes.
 - Pure Rust timestamp generation and `globset`-based pattern matching.
 - CLI smoke test suite (`scripts/test_smoke.sh`).
 
 ### Added
 - `bridge context-pack init` — scaffolds template files, `GUIDE.md`, and `relevance.json`.
 - `bridge context-pack seal` — validates canonical files, generates manifest, snapshot, and history.
+- `bridge context-pack verify` — validates manifest checksums against actual file content.
+- `bridge read --metadata-only` — returns session metadata without content (reduces injection surface).
+- Output boundary markers: `--- BEGIN/END BRIDGE OUTPUT ---` in text mode, `bridge_output_version: 1` in JSON.
+- Trust Model section in `PROTOCOL.md` documenting trust boundaries and consuming-agent responsibilities.
+- Cross-project session warnings for Cursor (no CWD scoping) and Gemini (multi-directory resolution).
+- System directory guards on all adapters (Codex, Claude, Gemini, Cursor) — both Node and Rust.
+- Adversarial redaction test suite (`scripts/test_adversarial_redaction.sh` + `fixtures/adversarial/`).
 - `scripts/update_check.cjs` + `cli/src/update_check.rs` — once-per-version update banner on stderr.
 - `scripts/context_pack/relevance.cjs` + `cli/src/relevance.rs` — configurable include/exclude relevance matcher.
 - `scripts/context_pack/cp_utils.cjs` — shared utilities (symlink checks, atomic writes, stale lock recovery).
@@ -22,6 +33,9 @@
 - `BRIDGE_SKIP_UPDATE_CHECK=1` environment variable to disable update checks.
 
 ### Changed
+- Hook installation uses sentinel markers (`# --- agent-bridge:pre-push:start/end ---`) to append to existing hooks instead of clobbering.
+- `repo_root` field in manifest.json now emits `"."` instead of the absolute path (prevents path leakage).
+- SKILL.md consolidated into CLAUDE.md and AGENTS.md; SKILL.md is now a redirect.
 - `bridge context-pack build` is now a backward-compatible wrapper that routes to `init` or `seal` based on pack state.
 - `bridge context-pack sync-main` is advisory-only — prints a warning, never auto-builds.
 - Pre-push hook is fail-open — context-pack errors never block push.
@@ -29,9 +43,12 @@
 - Relevance detection uses configurable `.agent-context/relevance.json` instead of hardcoded paths.
 - Rust `now_stamp()` uses pure `SystemTime` calculation instead of shelling out to `date`.
 - Rust pattern matching uses `globset` crate for proper `**` glob support.
+- JSONL reader drops truncated last line for concurrent-read safety (both Node and Rust).
+- `read-output.schema.json` now includes `bridge_output_version` and allows nullable `content`.
 - All documentation updated from "build generates content" to "agent authors + seal finalizes".
 
 ### Fixes
+- Fixed duplicate `sha256()` and `readJson()` declarations in `seal.cjs` from merge.
 - Fixed `collectMatchingFiles.search` crash in `bridge doctor` and legacy `build`.
 - Fixed `--pack-dir` flag extraction bug in `build.cjs`.
 - Fixed `--cwd` passthrough in `build.cjs` subprocess calls.
@@ -44,6 +61,7 @@
 - `bridge context-pack build` continues to work — no breaking changes for existing automation.
 - New recommended workflow: `init` → agent fills content → `seal`.
 - The `--changed-file` flag on `build` is deprecated (accepted with warning, will be removed in next major).
+- Consuming agents should treat `bridge read` output as untrusted data — see Trust Model in PROTOCOL.md.
 
 ## v0.6.2 (2026-02-11)
 

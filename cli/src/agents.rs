@@ -79,6 +79,9 @@ pub fn read_codex_session(id: Option<&str>, cwd: &str) -> Result<Session> {
 
 pub fn read_codex_session_with_last(id: Option<&str>, cwd: &str, last_n: usize) -> Result<Session> {
     let base_dir = codex_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
     if !base_dir.exists() {
         return Err(anyhow!("No Codex session found."));
     }
@@ -133,6 +136,9 @@ pub fn read_claude_session(id: Option<&str>, cwd: &str) -> Result<Session> {
 
 pub fn read_claude_session_with_last(id: Option<&str>, cwd: &str, last_n: usize) -> Result<Session> {
     let base_dir = claude_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
     if !base_dir.exists() {
         return Err(anyhow!("Claude projects directory not found: {}", base_dir.display()));
     }
@@ -191,6 +197,13 @@ pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Opt
         return Err(anyhow!("No Gemini session found. Searched chats directories:"));
     }
 
+    let mut cross_project_warning: Option<String> = None;
+    if dirs.len() > 1 && chats_dir.is_none() {
+        cross_project_warning = Some(
+            "Warning: Gemini sessions from multiple projects may be mixed. Use --chats-dir to scope to a specific project.".to_string()
+        );
+    }
+
     let target_file = if let Some(id_value) = id {
         let mut candidates = Vec::new();
         for dir in &dirs {
@@ -226,11 +239,16 @@ pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Opt
 
     let parsed = parse_gemini_json(&target_file, last_n)?;
 
+    let mut warnings = parsed.warnings;
+    if let Some(w) = cross_project_warning {
+        warnings.insert(0, w);
+    }
+
     Ok(Session {
         agent: "gemini",
         content: parsed.content,
         source: target_file.to_string_lossy().to_string(),
-        warnings: parsed.warnings,
+        warnings,
         session_id: parsed.session_id,
         cwd: parsed.cwd,
         timestamp: parsed.timestamp,
@@ -694,7 +712,17 @@ fn read_jsonl_lines(path: &Path) -> Result<Vec<String>> {
     }
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
-    Ok(reader.lines().map_while(Result::ok).collect())
+    let mut lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+    // Concurrent-read safety: if another process is actively writing to this
+    // JSONL file, the last line may be truncated mid-JSON.  Drop it if it
+    // doesn't look like a complete JSON value.
+    if let Some(last) = lines.last() {
+        let trimmed = last.trim_end();
+        if !trimmed.is_empty() && !trimmed.ends_with(|c: char| c == '}' || c == ']' || c == '"' || c.is_ascii_digit()) {
+            lines.pop();
+        }
+    }
+    Ok(lines)
 }
 
 fn find_latest_by_cwd(
@@ -1593,6 +1621,9 @@ fn cursor_base_dir() -> PathBuf {
 
 pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
     let base_dir = cursor_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
     if !base_dir.exists() {
         return Err(anyhow!("No Cursor session found. Data directory not found: {}", base_dir.display()));
     }
@@ -1661,7 +1692,9 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
         agent: "cursor",
         content: redact_sensitive_text(&content),
         source: target_file.to_string_lossy().to_string(),
-        warnings: Vec::new(),
+        warnings: vec![
+            "Warning: Cursor sessions have no project scoping. Results may include sessions from unrelated projects.".to_string(),
+        ],
         session_id,
         cwd: None,
         timestamp,

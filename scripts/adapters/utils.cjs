@@ -88,7 +88,17 @@ function readJsonlLines(filePath) {
   if (stat.size > MAX_FILE_SIZE) {
     throw new Error(`Skipped ${filePath} (exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB size limit)`);
   }
-  return fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+  const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+  // Concurrent-read safety: if another process is actively writing to this
+  // JSONL file, the last line may be truncated mid-JSON.  Drop it if it
+  // doesn't look like a complete JSON value.
+  if (lines.length > 0) {
+    const last = lines[lines.length - 1].trimEnd();
+    if (last.length > 0 && !/[}\]"0-9]$/.test(last)) {
+      lines.pop();
+    }
+  }
+  return lines;
 }
 
 function findLatestByCwd(files, cwdExtractor, expectedCwd) {
@@ -162,6 +172,17 @@ function redactSensitiveText(input) {
   return output;
 }
 
+const SYSTEM_DIRS = new Set(['/etc', '/usr', '/var', '/bin', '/sbin', '/System', '/Library',
+  '/Windows', '/Windows/System32', '/Program Files', '/Program Files (x86)']);
+
+function isSystemDirectory(dirPath) {
+  const resolved = path.resolve(dirPath);
+  for (const sysDir of SYSTEM_DIRS) {
+    if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) return true;
+  }
+  return false;
+}
+
 module.exports = {
   MAX_FILE_SIZE,
   MAX_SCAN_FILES,
@@ -175,4 +196,5 @@ module.exports = {
   extractText,
   extractClaudeText,
   redactSensitiveText,
+  isSystemDirectory,
 };

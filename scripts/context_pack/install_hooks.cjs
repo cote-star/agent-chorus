@@ -5,6 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
+const SENTINEL_START = '# --- agent-bridge:pre-push:start ---';
+const SENTINEL_END = '# --- agent-bridge:pre-push:end ---';
+
 function parseArgs(argv) {
   const options = {
     cwd: process.cwd(),
@@ -45,11 +48,8 @@ function runGit(args, cwd, allowFailure = false) {
   }
 }
 
-function buildPrePushHook() {
-  return `#!/usr/bin/env bash
-set -euo pipefail
-
-remote_name="\${1:-origin}"
+function buildBridgeSection() {
+  return `remote_name="\${1:-origin}"
 remote_url="\${2:-unknown}"
 
 run_context_sync() {
@@ -86,8 +86,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       echo "[context-pack] WARN: sync-main failed; push is continuing (fail-open)" >&2
     }
   fi
-done
-`;
+done`;
 }
 
 function main() {
@@ -99,28 +98,57 @@ function main() {
   }
 
   const existingHooksPath = runGit(['config', '--get', 'core.hooksPath'], repoRoot, true);
-  if (existingHooksPath && existingHooksPath !== '.githooks') {
-    process.stdout.write(`[context-pack] WARNING: core.hooksPath is already set to '${existingHooksPath}'\n`);
-    process.stdout.write('[context-pack] Overriding to .githooks; previous hooks path will be replaced.\n');
+
+  // Determine hooks directory — prefer existing if set, otherwise use .githooks
+  let hooksDir;
+  if (existingHooksPath) {
+    if (existingHooksPath !== '.githooks') {
+      process.stdout.write(`[context-pack] NOTE: core.hooksPath is '${existingHooksPath}'; appending bridge hook there.\n`);
+    }
+    hooksDir = path.join(repoRoot, existingHooksPath);
+  } else {
+    hooksDir = path.join(repoRoot, '.githooks');
   }
 
-  const hooksDir = path.join(repoRoot, '.githooks');
   const prePushPath = path.join(hooksDir, 'pre-push');
-  const content = buildPrePushHook();
-  const hadExistingHook = fs.existsSync(prePushPath);
-  const contentUnchanged = hadExistingHook && fs.readFileSync(prePushPath, 'utf8') === content;
+  const bridgeSection = `${SENTINEL_START}\n${buildBridgeSection()}\n${SENTINEL_END}`;
+
+  let finalContent;
+  if (fs.existsSync(prePushPath)) {
+    const existing = fs.readFileSync(prePushPath, 'utf8');
+    if (existing.includes(SENTINEL_START) && existing.includes(SENTINEL_END)) {
+      // Replace existing bridge section
+      const startIdx = existing.indexOf(SENTINEL_START);
+      let endIdx = existing.indexOf(SENTINEL_END) + SENTINEL_END.length;
+      if (existing[endIdx] === '\n') endIdx++;
+      finalContent = existing.slice(0, startIdx) + bridgeSection + '\n' + existing.slice(endIdx);
+    } else {
+      // Append bridge section to existing hook
+      let content = existing;
+      if (!content.endsWith('\n')) content += '\n';
+      content += '\n' + bridgeSection + '\n';
+      finalContent = content;
+    }
+  } else {
+    // Create new hook file with shebang
+    finalContent = `#!/usr/bin/env bash\nset -euo pipefail\n\n${bridgeSection}\n`;
+  }
+
+  const contentUnchanged = fs.existsSync(prePushPath) && fs.readFileSync(prePushPath, 'utf8') === finalContent;
 
   if (!options.dryRun) {
     fs.mkdirSync(hooksDir, { recursive: true });
-    fs.writeFileSync(prePushPath, content, 'utf8');
+    fs.writeFileSync(prePushPath, finalContent, 'utf8');
     fs.chmodSync(prePushPath, 0o755);
-    runGit(['config', 'core.hooksPath', '.githooks'], repoRoot);
+    // Only set core.hooksPath if it wasn't already configured
+    if (!existingHooksPath) {
+      runGit(['config', 'core.hooksPath', '.githooks'], repoRoot);
+    }
   }
 
   const statusLabel = options.dryRun ? 'planned' : (contentUnchanged ? 'unchanged' : 'updated');
   process.stdout.write(`[context-pack] ${statusLabel}: ${path.relative(repoRoot, prePushPath)}\n`);
   if (!options.dryRun) {
-    process.stdout.write('[context-pack] git hooks path set to .githooks\n');
     process.stdout.write('[context-pack] pre-push hook is active\n');
   }
 }

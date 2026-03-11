@@ -1202,9 +1202,13 @@ function sanitizeForTerminal(text) {
     .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, ''); // C0 control chars except \t \n \r
 }
 
-function renderReadResult(result, asJson) {
+function renderReadResult(result, asJson, metadataOnly) {
   if (asJson) {
-    console.log(JSON.stringify(result, null, 2));
+    const output = Object.assign({ bridge_output_version: 1 }, result);
+    if (metadataOnly) {
+      output.content = null;
+    }
+    console.log(JSON.stringify(output, null, 2));
     return;
   }
 
@@ -1212,10 +1216,14 @@ function renderReadResult(result, asJson) {
     console.error(sanitizeForTerminal(warning));
   }
 
+  console.log('--- BEGIN BRIDGE OUTPUT ---');
   const label = result.agent.charAt(0).toUpperCase() + result.agent.slice(1);
   console.log(sanitizeForTerminal(`SOURCE: ${label} Session (${result.source})`));
-  console.log('---');
-  console.log(sanitizeForTerminal(result.content));
+  if (!metadataOnly) {
+    console.log('---');
+    console.log(sanitizeForTerminal(result.content));
+  }
+  console.log('--- END BRIDGE OUTPUT ---');
 }
 
 function renderReport(result, asJson) {
@@ -1276,6 +1284,7 @@ function runRead(inputArgs) {
   const chatsDir = getOptionValue(inputArgs, '--chats-dir', null);
   const cwd = normalizePath(getOptionValue(inputArgs, '--cwd', process.cwd()));
   const asJson = hasFlag(inputArgs, '--json');
+  const metadataOnly = hasFlag(inputArgs, '--metadata-only');
   const lastN = parseInt(getOptionValue(inputArgs, '--last', '1'), 10) || 1;
 
   const result = readSessionViaAdapter(agent, {
@@ -1285,7 +1294,7 @@ function runRead(inputArgs) {
     lastN,
   });
 
-  renderReadResult(result, asJson);
+  renderReadResult(result, asJson, metadataOnly);
 }
 
 function runSearch(inputArgs) {

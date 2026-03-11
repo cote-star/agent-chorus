@@ -1,0 +1,19 @@
+Anthropic key variant: sk-ant-api03-abcdefghijklmnopqrstuvwxyz1234567890
+GitHub PAT variant: github_pat_11AAAAAA0aaaaaaaaaaaaa_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbb
+Secret in JSON: {"api_key": "sk-supersecret123456789012345"}
+Secret in YAML: api_key: sk-supersecret123456789012345
+Multiline connection: mongodb://
+  admin:p4ssw0rd@
+  cluster0.example.com:27017/
+  mydb?retryWrites=true
+URL encoded secret: postgres://user:p%40ssw%23rd@host:5432/db
+Token in env export: export OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz
+GitHub OAuth token: gho_ABCDEFGHIJKLMNOPQRSTUVwxyz12
+GitHub server token: ghs_ABCDEFGHIJKLMNOPQRSTUVwxyz12
+Secret in markdown code block:
+```
+MY_SECRET_TOKEN=sk-abcdefghijklmnopqrstuvwxyz1234
+```
+Token with equals: token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcd
+Slack user token: xoxp-123456789012-abcdefghijklmn
+AMQP connection: amqp://guest:guest_password@rabbitmq.example.com:5672/

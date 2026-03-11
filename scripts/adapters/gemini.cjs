@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   normalizePath, hashPath, collectMatchingFiles,
-  getFileTimestamp, extractText, redactSensitiveText,
+  getFileTimestamp, extractText, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
 const geminiTmpBase = normalizePath(process.env.BRIDGE_GEMINI_TMP_DIR || '~/.gemini/tmp');
@@ -36,17 +36,6 @@ function listGeminiChatDirs() {
   return dirs;
 }
 
-const SYSTEM_DIRS = new Set(['/etc', '/usr', '/var', '/bin', '/sbin', '/System', '/Library',
-  '/Windows', '/Windows/System32', '/Program Files', '/Program Files (x86)']);
-
-function isSystemDirectory(dirPath) {
-  const resolved = path.resolve(dirPath);
-  for (const sysDir of SYSTEM_DIRS) {
-    if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) return true;
-  }
-  return false;
-}
-
 function resolveGeminiChatDirs(chatsDir, cwd) {
   if (chatsDir) {
     const expanded = normalizePath(chatsDir);
@@ -74,6 +63,9 @@ function resolve(id, cwd, opts) {
   if (dirs.length === 0) return null;
 
   const warnings = [];
+  if (dirs.length > 1 && !chatsDir) {
+    warnings.push('Warning: Gemini sessions from multiple projects may be mixed. Use --chats-dir to scope to a specific project.');
+  }
   const candidates = [];
   for (const dir of dirs) {
     const files = collectMatchingFiles(dir, (fullPath, name) => {
