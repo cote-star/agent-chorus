@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-03-12T14:07:14.185Z",
+  "repo_name": "agent-chorus",
+  "repo_root": ".",
+  "branch": "main",
+  "head_sha": "0ea19896c3aebb270c7996169649cb438d4e28c9",
+  "package_version": "unknown",
+  "cargo_version": "unknown",
+  "build_reason": "manual-seal",
+  "base_sha": null,
+  "changed_files": [],
+  "files_count": 5,
+  "words_total": 1414,
+  "bytes_total": 9945,
+  "pack_checksum": "d45e18a5c1fdee96d500a56aeeb2a921b0e4d8ae5b4a653c0d3f87fb0b33713d",
+  "stable_checksum": "4646d3fd16149389c95373b66d11f41e1a49e01d9fd57e6655dd3caefc8c43d3",
+  "files": [
+    {
+      "path": "00_START_HERE.md",
+      "sha256": "285a0988eddef9f55104c489bf16c0e5f6623fc418ea06cd1d80f4f7f0388dcd",
+      "bytes": 1414,
+      "words": 191
+    },
+    {
+      "path": "10_SYSTEM_OVERVIEW.md",
+      "sha256": "107adbf2b42aa4d56e5ce2665f425e93d5dd2b8b99bec2e2d4f5cd1ce079bdd1",
+      "bytes": 2395,
+      "words": 364
+    },
+    {
+      "path": "20_CODE_MAP.md",
+      "sha256": "0659386fd48c60808dddec60563c9edaa9f315306745f9fa44ce404660d48052",
+      "bytes": 2607,
+      "words": 387
+    },
+    {
+      "path": "30_BEHAVIORAL_INVARIANTS.md",
+      "sha256": "649cfb43ed4de9f0cba1b1a89f3adb4b748dac303790b1a268a4215a68146561",
+      "bytes": 1742,
+      "words": 235
+    },
+    {
+      "path": "40_OPERATIONS_AND_RELEASE.md",
+      "sha256": "b3095204b36de230cdb57d88e70d52246e5d9f4e9b62effbd8fac5905861e822",
+      "bytes": 1787,
+      "words": 237
+    }
+  ]
+}
