@@ -8,17 +8,8 @@
 - **Redaction Audit Trail** (new): `chorus read --audit-redactions` — shows what was redacted and why.
 - **Session Diff** (new): `chorus diff --agent X --from id1 --to id2` — line-level diff between two sessions.
 - **Agent-to-Agent Messaging** (new): `chorus send` and `chorus messages` — simple JSONL message queue between agents.
-- Context-pack v2: agent-driven content model with `init` → agent fill → `seal` workflow.
-- Security hardening: trust model documentation, output boundary markers, adversarial redaction tests.
-- `--metadata-only` flag to reduce injection surface on `chorus read`.
-- `chorus context-pack verify` command for manifest integrity checking.
-- Non-intrusive update notifications with `chorus doctor` integration.
-- Generic relevance engine with configurable `.agent-context/relevance.json`.
-- Sentinel-based hook installation preserves existing git hooks.
-- System directory guards on all adapter base directories.
-- Concurrent-read safety for JSONL files during active writes.
-- Pure Rust timestamp generation and `globset`-based pattern matching.
-- CLI smoke test suite (`scripts/test_smoke.sh`).
+- **Context-pack v2**: agent-driven content model with `init` → agent fill → `seal` workflow, manifest integrity via `verify`, and configurable relevance engine.
+- **Security hardening**: trust model documentation, output boundary markers, `--metadata-only` flag, system directory guards, concurrent-read safety, and adversarial redaction test suite.
 
 ### Added
 - `chorus relevance --list` — show current include/exclude patterns and their source.
