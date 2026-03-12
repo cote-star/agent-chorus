@@ -2,9 +2,8 @@
 
 ## Snapshot
 - Repo: `agent-chorus`
-- Branch at generation: `feat/context-pack-agent-driven-v2`
-- HEAD commit: `d402091b6c0f0511b5e3399f455b5fb631f7fc4b`
-- Generated at: `2026-02-15T14:43:45.732Z`
+- Branch at generation: `main`
+- Generated at: `2026-03-12`
 
 ## Read Order (Token-Efficient)
 1. Read this file.
@@ -14,8 +13,15 @@
 5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.
 
 ## Fast Facts
-<!-- AGENT: Replace with 3-5 bullets covering product, languages/entry points, quality gate, core risk. -->
+- **Product**: Local-first CLI (`chorus`) for cross-agent session reading, comparison, and handoff across Codex, Claude, Gemini, and Cursor.
+- **Dual implementation**: Node.js (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`) with conformance-tested parity.
+- **Quality gate**: `npm run check` runs conformance, README examples, package contents, and JSON schema validation.
+- **Core risk**: Any change to CLI output format or command flags must land in both implementations, schemas, and golden fixtures simultaneously.
+- **Version**: 0.7.0 (npm `agent-chorus` + crate `agent-chorus`).
 
 ## Scope Rule
 For "understand this repo end-to-end" requests:
-<!-- AGENT: Provide scope/navigation rules (when to open code, what to read first). -->
+- Start with `PROTOCOL.md` for the CLI contract and trust model.
+- Read `docs/CLI_REFERENCE.md` for full command syntax and examples.
+- Open code only when modifying a specific command or adapter.
+- For agent integration, read `CLAUDE.md` or `AGENTS.md` (not both — they target different agents).
