@@ -10,8 +10,8 @@ run_context_sync() {
   local remote_ref="$3"
   local remote_sha="$4"
 
-  if command -v bridge >/dev/null 2>&1; then
-    bridge context-pack sync-main \
+  if command -v chorus >/dev/null 2>&1; then
+    chorus context-pack sync-main \
       --local-ref "$local_ref" \
       --local-sha "$local_sha" \
       --remote-ref "$remote_ref" \
@@ -28,7 +28,7 @@ run_context_sync() {
     return
   fi
 
-  echo "[context-pack] WARN: bridge command not found; skipping context-pack sync"
+  echo "[context-pack] WARN: chorus command not found; skipping context-pack sync"
 }
 
 while read -r local_ref local_sha remote_ref remote_sha; do

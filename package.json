@@ -1,9 +1,9 @@
 {
-  "name": "agent-bridge",
-  "version": "0.6.2",
+  "name": "agent-chorus",
+  "version": "0.7.0",
   "description": "Local-first CLI to read, compare, and hand off context across Codex, Claude, Gemini, and Cursor sessions.",
   "keywords": [
-    "agent-bridge",
+    "agent-chorus",
     "ai-agents",
     "codex",
     "claude",
@@ -27,23 +27,25 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/cote-star/agent-bridge.git"
+    "url": "git+https://github.com/cote-star/agent-chorus.git"
   },
-  "homepage": "https://github.com/cote-star/agent-bridge#readme",
+  "homepage": "https://github.com/cote-star/agent-chorus#readme",
   "bugs": {
-    "url": "https://github.com/cote-star/agent-bridge/issues"
+    "url": "https://github.com/cote-star/agent-chorus/issues"
   },
   "engines": {
     "node": ">=18"
   },
   "bin": {
-    "bridge": "scripts/read_session.cjs",
-    "bridge-node": "scripts/read_session.cjs"
+    "chorus": "scripts/read_session.cjs",
+    "chorus-node": "scripts/read_session.cjs"
   },
   "files": [
     "scripts/read_session.cjs",
+    "scripts/update_check.cjs",
     "scripts/adapters",
     "scripts/context_pack",
+    "scripts/context_pack/relevance.cjs",
     "docs/architecture.svg",
     "LICENSE",
     "PROTOCOL.md",
@@ -64,6 +66,8 @@
     "context-pack:install-hooks": "node scripts/context_pack/install_hooks.cjs",
     "context-pack:check-freshness": "node scripts/context_pack/check_freshness.cjs",
     "context-pack:rollback": "node scripts/context_pack/rollback.cjs",
+    "context-pack:init": "node scripts/context_pack/init.cjs",
+    "context-pack:seal": "node scripts/context_pack/seal.cjs",
     "demo:status": "node scripts/record_demo.js --input fixtures/demo/player-status.html --output docs/demo-status.webp --duration-ms 21000",
     "demo:handoff": "node scripts/record_demo.js --input fixtures/demo/player-handoff.html --output docs/demo-handoff.webp --duration-ms 20000",
     "demo:setup": "node scripts/record_demo.js --input fixtures/demo/player-setup.html --output docs/demo-setup.webp --duration-ms 20000",

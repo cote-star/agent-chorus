@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 function parseArgs(argv) {
   const out = {
     snapshot: null,
-    packDir: process.env.BRIDGE_CONTEXT_PACK_DIR || '.agent-context',
+    packDir: process.env.CHORUS_CONTEXT_PACK_DIR || process.env.BRIDGE_CONTEXT_PACK_DIR || '.agent-context',
   };
 
   for (let i = 2; i < argv.length; i += 1) {

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Context, Result};
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -12,13 +13,32 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
+const MAX_CHANGED_FILES_DISPLAYED: usize = 12;
 
 pub struct BuildOptions {
     pub reason: Option<String>,
     pub base: Option<String>,
     pub head: Option<String>,
     pub pack_dir: Option<String>,
+    /// Reserved: will be used when `build` constructs the start-here template with change summaries.
+    #[allow(dead_code)]
     pub changed_files: Vec<String>,
+    pub force_snapshot: bool,
+}
+
+pub struct InitOptions {
+    pub pack_dir: Option<String>,
+    pub cwd: Option<String>,
+    pub force: bool,
+}
+
+pub struct SealOptions {
+    pub reason: Option<String>,
+    pub base: Option<String>,
+    pub head: Option<String>,
+    pub pack_dir: Option<String>,
+    pub cwd: Option<String>,
+    pub force: bool,
     pub force_snapshot: bool,
 }
 
@@ -36,27 +56,127 @@ struct ManifestBundle {
 }
 
 pub fn build(options: BuildOptions) -> Result<()> {
+    // Wrapper: route to init or seal based on current pack state.
     let cwd = env::current_dir().context("Failed to resolve current directory")?;
+    let repo_root = git_repo_root(&cwd)?;
+    let pack_root = resolve_pack_root(&repo_root, options.pack_dir.as_deref());
+    let current_dir = pack_root.join("current");
+
+    if !current_dir.exists() || is_dir_empty(&current_dir)? {
+        // No pack yet: initialize templates.
+        return init(InitOptions {
+            pack_dir: options.pack_dir,
+            cwd: Some(cwd.display().to_string()),
+            force: false,
+        });
+    }
+
+    // Pack exists: seal existing content.
+    seal(SealOptions {
+        reason: options.reason,
+        base: options.base,
+        head: options.head,
+        pack_dir: options.pack_dir,
+        cwd: Some(cwd.display().to_string()),
+        force: false,
+        force_snapshot: options.force_snapshot,
+    })
+}
+
+pub fn init(options: InitOptions) -> Result<()> {
+    let cwd = options
+        .cwd
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
     let repo_root = git_repo_root(&cwd)?;
     let repo_name = repo_root
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("repo")
         .to_string();
-
-    let package_json_path = repo_root.join("package.json");
-    let package_version = read_package_version(&package_json_path).unwrap_or_else(|| "unknown".to_string());
-
-    let cargo_toml_path = repo_root.join("cli").join("Cargo.toml");
-    let cargo_version = fs::read_to_string(&cargo_toml_path)
-        .ok()
-        .and_then(|text| parse_cargo_version(&text))
-        .unwrap_or_else(|| "unknown".to_string());
-
     let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], &repo_root, true)?
         .trim()
         .to_string();
+    let head_sha = run_git(&["rev-parse", "HEAD"], &repo_root, true)?
+        .trim()
+        .to_string();
 
+    let pack_root = resolve_pack_root(&repo_root, options.pack_dir.as_deref());
+    let current_dir = pack_root.join("current");
+    let guide_path = pack_root.join("GUIDE.md");
+    let relevance_path = pack_root.join("relevance.json");
+
+    if current_dir.exists() && !options.force {
+        let mut has_files = false;
+        for entry in fs::read_dir(&current_dir).with_context(|| {
+            format!("Failed to read {}", current_dir.display())
+        })? {
+            if entry.is_ok() {
+                has_files = true;
+                break;
+            }
+        }
+        if has_files {
+            return Err(anyhow!(
+                "[context-pack] init aborted: {} is not empty (use --force to overwrite)",
+                rel_path(&current_dir, &repo_root)
+            ));
+        }
+    }
+
+    ensure_dir(&current_dir)?;
+    ensure_dir(&pack_root)?;
+
+    let generated_at = now_stamp();
+
+    let templates = vec![
+        (
+            "00_START_HERE.md",
+            build_template_start_here(&repo_name, &branch, &head_sha, &generated_at),
+        ),
+        ("10_SYSTEM_OVERVIEW.md", build_template_system_overview()),
+        ("20_CODE_MAP.md", build_template_code_map()),
+        ("30_BEHAVIORAL_INVARIANTS.md", build_template_invariants()),
+        ("40_OPERATIONS_AND_RELEASE.md", build_template_operations()),
+    ];
+
+    for (name, content) in templates {
+        write_text(&current_dir.join(name), &content)?;
+    }
+
+    if !relevance_path.exists() || options.force {
+        write_text(&relevance_path, &default_relevance_json())?;
+    }
+
+    if !guide_path.exists() || options.force {
+        write_text(&guide_path, &build_guide())?;
+    }
+
+    println!(
+        "[context-pack] init completed: {}",
+        rel_path(&current_dir, &repo_root)
+    );
+    println!(
+        "[context-pack] next: ask your agent to fill AGENT sections, then run `chorus context-pack seal`"
+    );
+
+    Ok(())
+}
+
+pub fn seal(options: SealOptions) -> Result<()> {
+    let cwd = options
+        .cwd
+        .map(PathBuf::from)
+        .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    let repo_root = git_repo_root(&cwd)?;
+    let repo_name = repo_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("repo")
+        .to_string();
+    let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], &repo_root, true)?
+        .trim()
+        .to_string();
     let head_sha = match options.head.as_ref() {
         Some(sha) if !sha.trim().is_empty() => Some(sha.trim().to_string()),
         _ => {
@@ -69,86 +189,65 @@ pub fn build(options: BuildOptions) -> Result<()> {
         }
     };
 
-    let generated_at = now_stamp();
-    let reason = options
-        .reason
-        .unwrap_or_else(|| "manual-build".to_string());
-
-    let mut changed_files = normalize_changed_files(&options.changed_files);
-    if changed_files.is_empty() && head_sha.is_some() {
-        changed_files = compute_changed_files(
-            &repo_root,
-            options.base.as_deref(),
-            head_sha.as_deref().unwrap_or(""),
-        )?;
-    }
-
-    let tracked_files = run_git(&["ls-files"], &repo_root, true)?
-        .lines()
-        .map(|line| line.trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    let path_counts = summarize_path_counts(&tracked_files);
-
-    let command_surface = vec![
-        ("read", "Read latest or selected session content", vec!["scripts/read_session.cjs", "cli/src/main.rs", "cli/src/agents.rs"]),
-        ("list", "List recent sessions by agent", vec!["scripts/read_session.cjs", "cli/src/agents.rs"]),
-        ("search", "Find sessions containing text", vec!["scripts/read_session.cjs", "cli/src/agents.rs"]),
-        ("compare", "Compare multiple agent outputs", vec!["scripts/read_session.cjs", "cli/src/report.rs"]),
-        ("report", "Build coordinator report from handoff JSON", vec!["scripts/read_session.cjs", "cli/src/report.rs"]),
-        ("setup", "Write provider instruction wiring files", vec!["scripts/read_session.cjs"]),
-        ("doctor", "Check setup and path wiring", vec!["scripts/read_session.cjs"]),
-        ("trash-talk", "Roast active agents from session content", vec!["scripts/read_session.cjs", "cli/src/agents.rs"]),
-        ("context-pack", "Build/sync/install context-pack automation", vec!["scripts/read_session.cjs", "scripts/context_pack"]),
-    ];
-
     let pack_root = resolve_pack_root(&repo_root, options.pack_dir.as_deref());
     let current_dir = pack_root.join("current");
     let snapshots_dir = pack_root.join("snapshots");
     let history_path = pack_root.join("history.jsonl");
     let manifest_path = current_dir.join("manifest.json");
-    let previous_manifest = read_json(&manifest_path)?;
+    let lock_path = pack_root.join("seal.lock");
 
-    ensure_dir(&current_dir)?;
-    ensure_dir(&snapshots_dir)?;
-
-    let outputs = vec![
-        (
-            "00_START_HERE.md".to_string(),
-            build_start_here(
-                &repo_name,
-                branch.trim(),
-                head_sha.as_deref().unwrap_or("unknown"),
-                &package_version,
-                &cargo_version,
-                &generated_at,
-                &changed_files,
-            ),
-        ),
-        (
-            "10_SYSTEM_OVERVIEW.md".to_string(),
-            build_system_overview(
-                &package_version,
-                &cargo_version,
-                tracked_files.len(),
-                &path_counts,
-                &command_surface,
-            ),
-        ),
-        ("20_CODE_MAP.md".to_string(), build_code_map()),
-        ("30_BEHAVIORAL_INVARIANTS.md".to_string(), build_invariants()),
-        ("40_OPERATIONS_AND_RELEASE.md".to_string(), build_operations()),
-    ];
-
-    for (name, content) in &outputs {
-        write_text(&current_dir.join(name), content)?;
+    if !current_dir.exists() {
+        return Err(anyhow!(
+            "[context-pack] seal failed: {} does not exist (run init first)",
+            rel_path(&current_dir, &repo_root)
+        ));
     }
 
-    let output_paths = outputs
-        .iter()
-        .map(|(name, _)| name.clone())
-        .collect::<Vec<_>>();
-    let files_meta = collect_files_meta(&current_dir, &output_paths)?;
+    let _lock = acquire_lock(&lock_path)?;
+    ensure_dir(&snapshots_dir)?;
+
+    let required_files = vec![
+        "00_START_HERE.md",
+        "10_SYSTEM_OVERVIEW.md",
+        "20_CODE_MAP.md",
+        "30_BEHAVIORAL_INVARIANTS.md",
+        "40_OPERATIONS_AND_RELEASE.md",
+    ];
+
+    for file in &required_files {
+        let path = current_dir.join(file);
+        if !path.exists() {
+            return Err(anyhow!(
+                "[context-pack] seal failed: missing required file {}",
+                rel_path(&path, &repo_root)
+            ));
+        }
+        if !options.force {
+            let content = fs::read_to_string(&path)
+                .with_context(|| format!("Failed to read {}", path.display()))?;
+            if content.contains("<!-- AGENT:") {
+                return Err(anyhow!(
+                    "[context-pack] seal failed: template markers remain in {} (use --force to override)",
+                    rel_path(&path, &repo_root)
+                ));
+            }
+        }
+    }
+
+    let generated_at = now_stamp();
+    let reason = options
+        .reason
+        .unwrap_or_else(|| "manual-seal".to_string());
+
+    let files_meta = collect_files_meta(
+        &current_dir,
+        &required_files
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+    )?;
+
+    let previous_manifest = read_json(&manifest_path)?;
 
     let manifest = build_manifest(
         &generated_at,
@@ -156,18 +255,18 @@ pub fn build(options: BuildOptions) -> Result<()> {
         &repo_name,
         branch.trim(),
         head_sha.as_deref(),
-        &package_version,
-        &cargo_version,
+        "unknown",
+        "unknown",
         &reason,
         options.base.as_deref(),
-        &changed_files,
+        &Vec::new(),
         &files_meta,
     );
-    write_text(
+
+    write_text_atomic(
         &manifest_path,
         &format!("{}\n", serde_json::to_string_pretty(&manifest.value)?),
     )?;
-
     let previous_stable = previous_manifest
         .as_ref()
         .and_then(|value| value.get("stable_checksum"))
@@ -185,12 +284,24 @@ pub fn build(options: BuildOptions) -> Result<()> {
         || previous_head != head_sha;
 
     if changed {
-        let snapshot_id = format!(
+        let mut snapshot_id = format!(
             "{}_{}",
             compact_timestamp(&generated_at),
             short_sha(head_sha.as_deref())
         );
-        let snapshot_dir = snapshots_dir.join(&snapshot_id);
+        let mut snapshot_dir = snapshots_dir.join(&snapshot_id);
+        let mut counter = 1;
+        while snapshot_dir.exists() {
+            snapshot_id = format!(
+                "{}_{}-{}",
+                compact_timestamp(&generated_at),
+                short_sha(head_sha.as_deref()),
+                counter
+            );
+            snapshot_dir = snapshots_dir.join(&snapshot_id);
+            counter += 1;
+        }
+
         copy_dir_recursive(&current_dir, &snapshot_dir)?;
 
         let history_entry = json!({
@@ -200,13 +311,13 @@ pub fn build(options: BuildOptions) -> Result<()> {
             "head_sha": head_sha,
             "base_sha": options.base,
             "reason": reason,
-            "changed_files": changed_files,
+            "changed_files": Vec::<String>::new(),
             "pack_checksum": manifest.pack_checksum,
         });
         append_jsonl(&history_path, &history_entry)?;
 
         println!(
-            "[context-pack] updated: {} (snapshot {})",
+            "[context-pack] sealed: {} (snapshot {})",
             rel_path(&pack_root, &repo_root),
             history_entry.get("snapshot_id").and_then(|v| v.as_str()).unwrap_or("unknown")
         );
@@ -237,28 +348,24 @@ pub fn sync_main(
     }
 
     let changed_files = compute_changed_files(&repo_root, Some(remote_sha), local_sha)?;
-    let relevant = changed_files
+    let rules = load_relevance_rules(&repo_root);
+    let relevant: Vec<&String> = changed_files
         .iter()
-        .filter(|path| is_context_relevant(path))
-        .collect::<Vec<_>>();
+        .filter(|path| is_context_relevant_with_rules(path, &rules))
+        .collect();
 
     if relevant.is_empty() {
         println!("[context-pack] skipped (no context-relevant file changes)");
         return Ok(());
     }
 
-    build(BuildOptions {
-        reason: Some(format!(
-            "main-push:{}..{}",
-            short_sha(Some(remote_sha)),
-            short_sha(Some(local_sha))
-        )),
-        base: Some(remote_sha.to_string()),
-        head: Some(local_sha.to_string()),
-        pack_dir: None,
-        changed_files,
-        force_snapshot: false,
-    })
+    // Advisory-only: warn but never block the push or auto-build
+    eprintln!(
+        "[context-pack] ADVISORY: context-relevant files changed on main push. \
+         Update pack content with your agent, then run 'chorus context-pack seal'."
+    );
+
+    Ok(())
 }
 
 pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
@@ -307,40 +414,96 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+const HOOK_SENTINEL_START: &str = "# --- agent-chorus:pre-push:start ---";
+const HOOK_SENTINEL_END: &str = "# --- agent-chorus:pre-push:end ---";
+// Legacy sentinels for backward compatibility during migration
+const LEGACY_HOOK_SENTINEL_START: &str = "# --- agent-bridge:pre-push:start ---";
+const LEGACY_HOOK_SENTINEL_END: &str = "# --- agent-bridge:pre-push:end ---";
+
 pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
     let cwd_path = PathBuf::from(cwd);
     let repo_root = git_repo_root(&cwd_path)?;
 
-    let existing = run_git(&["config", "--get", "core.hooksPath"], &repo_root, true)?;
-    if !existing.is_empty() && existing != ".githooks" {
-        println!(
-            "[context-pack] WARNING: core.hooksPath is already set to '{}'",
-            existing
-        );
-        println!(
-            "[context-pack] Overriding to .githooks; previous hooks path will be replaced."
-        );
-    }
+    let existing_hooks_path = run_git(&["config", "--get", "core.hooksPath"], &repo_root, true)?;
 
-    let hooks_dir = repo_root.join(".githooks");
+    // Determine hooks directory — prefer existing if set, otherwise use .githooks
+    let hooks_dir = if !existing_hooks_path.is_empty() {
+        if existing_hooks_path != ".githooks" {
+            println!(
+                "[context-pack] NOTE: core.hooksPath is '{}'; appending chorus hook there.",
+                existing_hooks_path
+            );
+        }
+        repo_root.join(&existing_hooks_path)
+    } else {
+        repo_root.join(".githooks")
+    };
+
     let pre_push_path = hooks_dir.join("pre-push");
-    let content = build_pre_push_hook();
+    let chorus_section = format!(
+        "{}\n{}\n{}",
+        HOOK_SENTINEL_START,
+        build_pre_push_hook_section(),
+        HOOK_SENTINEL_END
+    );
+
+    let final_content = if pre_push_path.exists() {
+        let existing = fs::read_to_string(&pre_push_path).unwrap_or_default();
+        // Detect new or legacy sentinels
+        let (has_sentinel, sentinel_start, sentinel_end_str) =
+            if existing.contains(HOOK_SENTINEL_START) && existing.contains(HOOK_SENTINEL_END) {
+                (true, HOOK_SENTINEL_START, HOOK_SENTINEL_END)
+            } else if existing.contains(LEGACY_HOOK_SENTINEL_START) && existing.contains(LEGACY_HOOK_SENTINEL_END) {
+                (true, LEGACY_HOOK_SENTINEL_START, LEGACY_HOOK_SENTINEL_END)
+            } else {
+                (false, "", "")
+            };
+        if has_sentinel {
+            // Replace existing chorus section
+            let start_idx = existing.find(sentinel_start).unwrap();
+            let end_idx = existing.find(sentinel_end_str).unwrap() + sentinel_end_str.len();
+            // Trim trailing newline after end sentinel if present
+            let end_idx = if existing.as_bytes().get(end_idx) == Some(&b'\n') {
+                end_idx + 1
+            } else {
+                end_idx
+            };
+            format!("{}{}\n{}", &existing[..start_idx], chorus_section, &existing[end_idx..])
+        } else {
+            // Append chorus section to existing hook
+            let mut content = existing;
+            if !content.ends_with('\n') {
+                content.push('\n');
+            }
+            content.push('\n');
+            content.push_str(&chorus_section);
+            content.push('\n');
+            content
+        }
+    } else {
+        // Create new hook file with shebang
+        format!("#!/usr/bin/env bash\nset -euo pipefail\n\n{}\n", chorus_section)
+    };
+
     let content_unchanged = if pre_push_path.exists() {
-        fs::read_to_string(&pre_push_path).unwrap_or_default() == content
+        fs::read_to_string(&pre_push_path).unwrap_or_default() == final_content
     } else {
         false
     };
 
     if !dry_run {
         ensure_dir(&hooks_dir)?;
-        write_text(&pre_push_path, &content)?;
+        write_text(&pre_push_path, &final_content)?;
         #[cfg(unix)]
         {
             let mut perms = fs::metadata(&pre_push_path)?.permissions();
             perms.set_mode(0o755);
             fs::set_permissions(&pre_push_path, perms)?;
         }
-        run_git(&["config", "core.hooksPath", ".githooks"], &repo_root, false)?;
+        // Only set core.hooksPath if it wasn't already configured
+        if existing_hooks_path.is_empty() {
+            run_git(&["config", "core.hooksPath", ".githooks"], &repo_root, false)?;
+        }
     }
 
     let status = if dry_run {
@@ -356,11 +519,94 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
         rel_path(&pre_push_path, &repo_root)
     );
     if !dry_run {
-        println!("[context-pack] git hooks path set to .githooks");
         println!("[context-pack] pre-push hook is active");
     }
 
     Ok(())
+}
+
+pub fn verify(pack_dir: Option<&str>, cwd: &str) -> Result<()> {
+    let cwd_path = PathBuf::from(cwd);
+    let repo_root = git_repo_root(&cwd_path).unwrap_or_else(|_| cwd_path.clone());
+    let pack_root = resolve_pack_root(&repo_root, pack_dir);
+    let current_dir = pack_root.join("current");
+    let manifest_path = current_dir.join("manifest.json");
+
+    if !manifest_path.exists() {
+        return Err(anyhow!(
+            "[context-pack] verify failed: manifest.json not found at {}",
+            manifest_path.display()
+        ));
+    }
+
+    let manifest_content = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read manifest at {}", manifest_path.display()))?;
+    let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
+        .with_context(|| "Failed to parse manifest.json")?;
+
+    let files = manifest.get("files").and_then(|f| f.as_array());
+    if files.is_none() {
+        return Err(anyhow!("[context-pack] verify failed: manifest has no 'files' array"));
+    }
+
+    let mut pass_count = 0usize;
+    let mut fail_count = 0usize;
+
+    for file_entry in files.unwrap() {
+        let file_path_str = file_entry.get("path").and_then(|p| p.as_str()).unwrap_or("unknown");
+        let expected_hash = file_entry.get("sha256").and_then(|h| h.as_str()).unwrap_or("");
+        let actual_path = current_dir.join(file_path_str);
+
+        if !actual_path.exists() {
+            eprintln!("  FAIL  {}  (file missing)", file_path_str);
+            fail_count += 1;
+            continue;
+        }
+
+        let content = fs::read_to_string(&actual_path)?;
+        use sha2::{Digest, Sha256};
+        let actual_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+
+        if actual_hash == expected_hash {
+            println!("  PASS  {}", file_path_str);
+            pass_count += 1;
+        } else {
+            eprintln!("  FAIL  {}  (checksum mismatch)", file_path_str);
+            fail_count += 1;
+        }
+    }
+
+    // Verify pack_checksum if present
+    if let Some(expected_pack_checksum) = manifest.get("pack_checksum").and_then(|c| c.as_str()) {
+        let mut file_entries: Vec<String> = Vec::new();
+        if let Some(files_arr) = files {
+            for f in files_arr {
+                let p = f.get("path").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let h = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+                file_entries.push(format!("{}:{}", p, h));
+            }
+        }
+        let combined = file_entries.join("\n");
+        use sha2::{Digest, Sha256};
+        let actual_pack_checksum = format!("{:x}", Sha256::digest(combined.as_bytes()));
+        if actual_pack_checksum == expected_pack_checksum {
+            println!("  PASS  pack_checksum");
+            pass_count += 1;
+        } else {
+            eprintln!("  FAIL  pack_checksum (mismatch)");
+            fail_count += 1;
+        }
+    }
+
+    let total = pass_count + fail_count;
+    println!("\n  Results: {pass_count}/{total} passed");
+
+    if fail_count > 0 {
+        Err(anyhow!("[context-pack] verify failed: {} file(s) did not match", fail_count))
+    } else {
+        println!("  Context pack integrity verified.");
+        Ok(())
+    }
 }
 
 pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
@@ -406,7 +652,7 @@ pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
         println!("  - {}", file_path);
     }
     println!();
-    println!("Consider running: bridge context-pack build");
+    println!("Consider running: chorus context-pack build");
     Ok(())
 }
 
@@ -446,6 +692,7 @@ fn run_git(args: &[&str], cwd: &Path, allow_failure: bool) -> Result<String> {
 fn resolve_pack_root(repo_root: &Path, pack_dir: Option<&str>) -> PathBuf {
     let dir = pack_dir
         .map(|value| value.to_string())
+        .or_else(|| env::var("CHORUS_CONTEXT_PACK_DIR").ok())
         .or_else(|| env::var("BRIDGE_CONTEXT_PACK_DIR").ok())
         .unwrap_or_else(|| ".agent-context".to_string());
     let dir_path = PathBuf::from(dir);
@@ -470,12 +717,32 @@ fn write_text(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
+fn write_text_atomic(path: &Path, text: &str) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| anyhow!("Missing parent for {}", path.display()))?;
+    ensure_dir(parent)?;
+    let tmp = parent.join(format!(
+        ".{}.tmp",
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("context-pack.tmp")
+    ));
+    fs::write(&tmp, text).with_context(|| format!("Failed to write {}", tmp.display()))?;
+    fs::rename(&tmp, path).with_context(|| format!("Failed to move {} -> {}", tmp.display(), path.display()))?;
+    Ok(())
+}
+
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn read_package_version(path: &Path) -> Option<String> {
     let raw = fs::read_to_string(path).ok()?;
     let value: Value = serde_json::from_str(&raw).ok()?;
     value.get("version").and_then(|v| v.as_str()).map(|v| v.to_string())
 }
 
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn parse_cargo_version(raw: &str) -> Option<String> {
     for line in raw.lines() {
         let trimmed = line.trim();
@@ -511,6 +778,9 @@ fn compute_changed_files(repo_root: &Path, base: Option<&str>, head: &str) -> Re
         .collect())
 }
 
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn normalize_changed_files(files: &[String]) -> Vec<String> {
     let mut set = BTreeSet::new();
     for file in files {
@@ -522,6 +792,9 @@ fn normalize_changed_files(files: &[String]) -> Vec<String> {
     set.into_iter().collect()
 }
 
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn summarize_path_counts(paths: &[String]) -> Vec<(String, usize)> {
     let mut buckets = vec![
         ("scripts/".to_string(), "scripts".to_string(), 0usize),
@@ -566,9 +839,10 @@ fn collect_files_meta(current_dir: &Path, relative_paths: &[String]) -> Result<V
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_manifest(
     generated_at: &str,
-    repo_root: &Path,
+    _repo_root: &Path,
     repo_name: &str,
     branch: &str,
     head_sha: Option<&str>,
@@ -613,7 +887,7 @@ fn build_manifest(
         "schema_version": 1,
         "generated_at": generated_at,
         "repo_name": repo_name,
-        "repo_root": repo_root.display().to_string(),
+        "repo_root": ".",
         "branch": branch,
         "head_sha": head_sha,
         "package_version": package_version,
@@ -693,6 +967,74 @@ fn rel_path(path: &Path, base: &Path) -> String {
         .unwrap_or_else(|_| path.display().to_string())
 }
 
+fn is_dir_empty(path: &Path) -> Result<bool> {
+    if !path.exists() {
+        return Ok(true);
+    }
+    let mut entries = fs::read_dir(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    Ok(entries.next().is_none())
+}
+
+struct FileLock {
+    path: PathBuf,
+}
+
+fn acquire_lock(path: &Path) -> Result<FileLock> {
+    acquire_lock_internal(path, true)
+}
+
+fn acquire_lock_internal(path: &Path, allow_recovery: bool) -> Result<FileLock> {
+    match fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+    {
+        Ok(mut file) => {
+            let pid = std::process::id();
+            writeln!(file, "{}", pid)
+                .with_context(|| format!("Failed to write lock {}", path.display()))?;
+            Ok(FileLock {
+                path: path.to_path_buf(),
+            })
+        }
+        Err(error) if allow_recovery && error.kind() == std::io::ErrorKind::AlreadyExists => {
+            if let Ok(content) = fs::read_to_string(path) {
+                if let Ok(pid) = content.trim().parse::<u32>() {
+                    let is_running = Command::new("kill")
+                        .arg("-0")
+                        .arg(pid.to_string())
+                        .status()
+                        .map(|s| s.success())
+                        .unwrap_or(false);
+
+                    if !is_running {
+                        eprintln!("[context-pack] WARNING: cleaned stale lock (pid {} no longer running)", pid);
+                        let _ = fs::remove_file(path);
+                        return acquire_lock_internal(path, false);
+                    }
+                }
+            }
+            Err(anyhow!(
+                "[context-pack] another seal is in progress (lock: {}): {}",
+                path.display(),
+                error
+            ))
+        }
+        Err(error) => Err(anyhow!(
+            "[context-pack] another seal is in progress (lock: {}): {}",
+            path.display(),
+            error
+        )),
+    }
+}
+
+impl Drop for FileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 fn sha256_hex(input: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(input);
@@ -712,7 +1054,7 @@ fn short_sha(sha: Option<&str>) -> String {
 }
 
 fn compact_timestamp(iso: &str) -> String {
-    let mut compact = iso.replace('-', "").replace(':', "");
+    let mut compact = iso.replace(['-', ':'], "");
     if let Some(dot_idx) = compact.find('.') {
         if let Some(z_rel) = compact[dot_idx..].find('Z') {
             let end = dot_idx + z_rel + 1;
@@ -723,23 +1065,31 @@ fn compact_timestamp(iso: &str) -> String {
 }
 
 fn now_stamp() -> String {
-    if let Ok(output) = Command::new("date")
-        .args(["-u", "+%Y-%m-%dT%H:%M:%SZ"])
-        .output()
-    {
-        if output.status.success() {
-            let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !value.is_empty() {
-                return value;
-            }
-        }
-    }
-
-    let unix = SystemTime::now()
+    let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
-    format!("unix-{unix}Z")
+        .unwrap_or_default();
+    let secs = duration.as_secs();
+
+    // Days since epoch calculation
+    let days = secs / 86400;
+    let time_of_day = secs % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+    let seconds = time_of_day % 60;
+
+    // Civil date from days since epoch (algorithm from Howard Hinnant)
+    let z = days as i64 + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", y, m, d, hours, minutes, seconds)
 }
 
 fn is_main_push(local_ref: &str, remote_ref: &str) -> bool {
@@ -765,6 +1115,7 @@ fn is_context_relevant(file_path: &str) -> bool {
             | "PROTOCOL.md"
             | "CONTRIBUTING.md"
             | "SKILL.md"
+            | "CLAUDE.md"
             | "AGENTS.md"
             | "package.json"
             | "package-lock.json"
@@ -784,6 +1135,64 @@ fn is_context_relevant(file_path: &str) -> bool {
         || normalized.starts_with(".github/workflows/")
 }
 
+/// Load relevance rules from `.agent-context/relevance.json` if it exists.
+/// Returns None if the file is missing or contains invalid JSON.
+/// Expected format: { "include": ["pattern", ...], "exclude": ["pattern", ...] }
+fn load_relevance_rules(repo_root: &Path) -> Option<Value> {
+    let rules_path = repo_root.join(".agent-context").join("relevance.json");
+    let raw = fs::read_to_string(&rules_path).ok()?;
+    let rules: Value = serde_json::from_str(&raw).ok()?;
+    if rules.is_object()
+        && (rules.get("include").and_then(|v| v.as_array()).is_some()
+            || rules.get("exclude").and_then(|v| v.as_array()).is_some())
+    {
+        Some(rules)
+    } else {
+        None
+    }
+}
+
+fn build_glob_set(patterns: &[&str]) -> Option<GlobSet> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        if let Ok(glob) = Glob::new(pattern) {
+            builder.add(glob);
+        }
+    }
+    builder.build().ok()
+}
+
+/// Determine if a file is context-relevant using loaded rules or hardcoded defaults.
+fn is_context_relevant_with_rules(file_path: &str, rules: &Option<Value>) -> bool {
+    let normalized = file_path.replace('\\', "/");
+
+    if let Some(rules) = rules {
+        if let Some(excludes_array) = rules.get("exclude").and_then(|v| v.as_array()) {
+            let patterns: Vec<&str> = excludes_array.iter().filter_map(|v| v.as_str()).collect();
+            if let Some(glob_set) = build_glob_set(&patterns) {
+                if glob_set.is_match(&normalized) {
+                    return false;
+                }
+            }
+        }
+        if let Some(includes_array) = rules.get("include").and_then(|v| v.as_array()) {
+            let patterns: Vec<&str> = includes_array.iter().filter_map(|v| v.as_str()).collect();
+            if let Some(glob_set) = build_glob_set(&patterns) {
+                if glob_set.is_match(&normalized) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Fall back to hardcoded defaults
+    is_context_relevant(file_path)
+}
+
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn build_start_here(
     repo_name: &str,
     branch: &str,
@@ -798,17 +1207,20 @@ fn build_start_here(
     } else {
         changed_files
             .iter()
-            .take(12)
+            .take(MAX_CHANGED_FILES_DISPLAYED)
             .map(|path| format!("- {}", path))
             .collect::<Vec<_>>()
             .join("\n")
     };
 
     format!(
-        "# Context Pack: Start Here\n\nThis context pack is the first-stop index for agent work in this repository.\n\n## Snapshot\n- Repo: `{repo_name}`\n- Branch at generation: `{branch}`\n- HEAD commit: `{head_sha}`\n- Node package version: `{package_version}`\n- Rust crate version: `{cargo_version}`\n- Generated at: `{generated_at}`\n\n## Read Order (Token-Efficient)\n1. Read this file.\n2. Read `10_SYSTEM_OVERVIEW.md` for architecture and execution paths.\n3. Read `30_BEHAVIORAL_INVARIANTS.md` before changing behavior.\n4. Use `20_CODE_MAP.md` to deep dive only relevant files.\n5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.\n\n## Fast Facts\n- Product: Local-first cross-agent session bridge CLI.\n- Implementations: Node (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`).\n- Quality gate: Node/Rust parity + schema validation + edge-case checks.\n- Core risk: behavior drift between Node and Rust command/output contracts.\n\n## Last Change Range Input\n{changed_summary}\n\n## Scope Rule\nFor \"understand this repo end-to-end\" requests:\n- Start with this pack only.\n- Open source files only after this pack identifies a precise target.\n- Treat this pack as the source of navigation and invariants.\n"
+        "# Context Pack: Start Here\n\nThis context pack is the first-stop index for agent work in this repository.\n\n## Snapshot\n- Repo: `{repo_name}`\n- Branch at generation: `{branch}`\n- HEAD commit: `{head_sha}`\n- Node package version: `{package_version}`\n- Rust crate version: `{cargo_version}`\n- Generated at: `{generated_at}`\n\n## Read Order (Token-Efficient)\n1. Read this file.\n2. Read `10_SYSTEM_OVERVIEW.md` for architecture and execution paths.\n3. Read `30_BEHAVIORAL_INVARIANTS.md` before changing behavior.\n4. Use `20_CODE_MAP.md` to deep dive only relevant files.\n5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.\n\n## Fast Facts\n- Product: Local-first cross-agent session chorus CLI.\n- Implementations: Node (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`).\n- Quality gate: Node/Rust parity + schema validation + edge-case checks.\n- Core risk: behavior drift between Node and Rust command/output contracts.\n\n## Last Change Range Input\n{changed_summary}\n\n## Scope Rule\nFor \"understand this repo end-to-end\" requests:\n- Start with this pack only.\n- Open source files only after this pack identifies a precise target.\n- Treat this pack as the source of navigation and invariants.\n"
     )
 }
 
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn build_system_overview(
     package_version: &str,
     cargo_version: &str,
@@ -844,10 +1256,13 @@ fn build_system_overview(
     };
 
     format!(
-        "# System Overview\n\n## Product Shape\n- Package version: `{package_version}`\n- Crate version: `{cargo_version}`\n- Tracked files: `{tracked_file_count}`\n- Delivery: npm package (`bridge`) + Rust binary (`bridge`).\n\n## Runtime Architecture\n1. User asks a provider agent for cross-agent status.\n2. Agent invokes bridge command (`read`, `list`, `search`, `compare`, `report`, `setup`, `doctor`, `trash-talk`, `context-pack`).\n3. Bridge resolves session stores (Codex/Claude/Gemini/Cursor), applies redaction, and returns terminal text or JSON.\n4. Agent answers user with evidence from bridge output.\n\n## Dual-Implementation Contract\n- Node path: `scripts/read_session.cjs` + `scripts/adapters/*.cjs`.\n- Rust path: `cli/src/main.rs`, `cli/src/agents.rs`, `cli/src/report.rs`, `cli/src/adapters/*.rs`.\n- Protocol authority: `PROTOCOL.md` and `schemas/*.json`.\n- Parity guard: `scripts/conformance.sh`.\n\n## Command Surface\n| Command | Intent | Primary Paths |\n| --- | --- | --- |\n{command_rows}\n\n## Tracked Path Density\n{path_lines}\n"
+        "# System Overview\n\n## Product Shape\n- Package version: `{package_version}`\n- Crate version: `{cargo_version}`\n- Tracked files: `{tracked_file_count}`\n- Delivery: npm package (`chorus`) + Rust binary (`chorus`).\n\n## Runtime Architecture\n1. User asks a provider agent for cross-agent status.\n2. Agent invokes chorus command (`read`, `list`, `search`, `compare`, `report`, `diff`, `relevance`, `send`, `messages`, `setup`, `doctor`, `trash-talk`, `context-pack`).\n3. Chorus resolves session stores (Codex/Claude/Gemini/Cursor), applies redaction, and returns terminal text or JSON.\n4. Agent answers user with evidence from chorus output.\n\n## Dual-Implementation Contract\n- Node path: `scripts/read_session.cjs` + `scripts/adapters/*.cjs`.\n- Rust path: `cli/src/main.rs`, `cli/src/agents.rs`, `cli/src/report.rs`, `cli/src/adapters/*.rs`.\n- Protocol authority: `PROTOCOL.md` and `schemas/*.json`.\n- Parity guard: `scripts/conformance.sh`.\n\n## Command Surface\n| Command | Intent | Primary Paths |\n| --- | --- | --- |\n{command_rows}\n\n## Tracked Path Density\n{path_lines}\n"
     )
 }
 
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn build_code_map() -> String {
     r#"# Code Map
 
@@ -877,6 +1292,9 @@ fn build_code_map() -> String {
     .to_string()
 }
 
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn build_invariants() -> String {
     r#"# Behavioral Invariants
 
@@ -905,6 +1323,9 @@ These constraints are contract-level and must be preserved unless intentionally 
     .to_string()
 }
 
+/// Reserved: content generator for auto-fill build mode.
+/// Will be wired when `build --auto-fill` is implemented.
+#[allow(dead_code)]
 fn build_operations() -> String {
     r#"# Operations And Release
 
@@ -928,24 +1349,170 @@ cargo test --manifest-path cli/Cargo.toml
 4. Build/upload Rust binaries and publish crate when tokens are configured.
 
 ## Context Pack Maintenance Contract
-1. Build pack manually: `bridge context-pack build`.
-2. Install branch-aware pre-push hook: `bridge context-pack install-hooks`.
+1. Build pack manually: `chorus context-pack build`.
+2. Install branch-aware pre-push hook: `chorus context-pack install-hooks`.
 3. On `main` push, hook runs `context-pack:sync-main`.
 4. Sync updates the pack only when changed files are context-relevant.
 5. Snapshots are saved under `.agent-context/snapshots/` for rollback/recovery.
 
 ## Rollback/Recovery
-- Restore latest snapshot: `bridge context-pack rollback`
-- Restore named snapshot: `bridge context-pack rollback --snapshot <snapshot_id>`
+- Restore latest snapshot: `chorus context-pack rollback`
+- Restore named snapshot: `chorus context-pack rollback --snapshot <snapshot_id>`
 "#
     .to_string()
 }
 
-fn build_pre_push_hook() -> String {
-    r#"#!/usr/bin/env bash
-set -euo pipefail
+fn default_relevance_json() -> String {
+    r#"{
+  "include": ["**"],
+  "exclude": [
+    ".agent-context/**",
+    ".git/**",
+    "node_modules/**",
+    "target/**",
+    "dist/**",
+    "build/**",
+    "vendor/**",
+    "tmp/**"
+  ]
+}
+"#
+    .to_string()
+}
 
-remote_name="${1:-origin}"
+fn build_template_start_here(
+    repo_name: &str,
+    branch: &str,
+    head_sha: &str,
+    generated_at: &str,
+) -> String {
+    format!(
+        r#"# Context Pack: Start Here
+
+## Snapshot
+- Repo: `{repo_name}`
+- Branch at generation: `{branch}`
+- HEAD commit: `{head_sha}`
+- Generated at: `{generated_at}`
+
+## Read Order (Token-Efficient)
+1. Read this file.
+2. Read `10_SYSTEM_OVERVIEW.md` for architecture and execution paths.
+3. Read `30_BEHAVIORAL_INVARIANTS.md` before changing behavior.
+4. Use `20_CODE_MAP.md` to deep dive only relevant files.
+5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.
+
+## Fast Facts
+<!-- AGENT: Replace with 3-5 bullets covering product, languages/entry points, quality gate, core risk. -->
+
+## Scope Rule
+For "understand this repo end-to-end" requests:
+<!-- AGENT: Provide scope/navigation rules (when to open code, what to read first). -->
+"#
+    )
+}
+
+fn build_template_system_overview() -> String {
+    r#"# System Overview
+
+<!-- AGENT: Fill by introspecting the repository. -->
+
+## Product Shape
+<!-- AGENT: Add package version(s), tracked file count, delivery mechanism(s). -->
+
+## Runtime Architecture
+<!-- AGENT: Describe primary execution flow in 3-5 numbered steps. -->
+
+## Command/API Surface
+<!-- AGENT: Table | Command/Endpoint | Intent | Primary Source Files | -->
+
+## Tracked Path Density
+<!-- AGENT: Summarize top-level directory distribution (git ls-files). -->
+"#
+    .to_string()
+}
+
+fn build_template_code_map() -> String {
+    r#"# Code Map
+
+## High-Impact Paths
+<!-- AGENT: Identify 8-15 key paths.
+| Path | What | Why It Matters | Change Risk |
+| --- | --- | --- | --- | -->
+
+## Extension Recipe
+<!-- AGENT: Describe how to add a new module/adapter/plugin if applicable. -->
+"#
+    .to_string()
+}
+
+fn build_template_invariants() -> String {
+    r#"# Behavioral Invariants
+
+<!-- AGENT: List contract-level constraints to preserve. -->
+
+## Core Invariants
+<!-- AGENT: 3-8 numbered items covering protocol/error/schema/flag invariants. -->
+
+## Update Checklist Before Merging Behavior Changes
+<!-- AGENT: List files/areas that must be updated together when behavior changes. -->
+"#
+    .to_string()
+}
+
+fn build_template_operations() -> String {
+    r#"# Operations And Release
+
+## Standard Validation
+<!-- AGENT: Add local validation commands (tests, linters, etc.). -->
+
+## CI Checks
+<!-- AGENT: List CI workflows/steps that gate merges. -->
+
+## Release Flow
+<!-- AGENT: Describe how releases are triggered and what they produce. -->
+
+## Context Pack Maintenance
+1. Initialize scaffolding: `chorus context-pack init`
+2. Have your agent fill in the template sections.
+3. Seal the pack: `chorus context-pack seal`
+4. Install pre-push hook: `chorus context-pack install-hooks`
+5. When freshness warnings appear, update content then run `chorus context-pack seal`
+
+## Rollback/Recovery
+- Restore latest snapshot: `chorus context-pack rollback`
+- Restore named snapshot: `chorus context-pack rollback --snapshot <snapshot_id>`
+"#
+    .to_string()
+}
+
+fn build_guide() -> String {
+    r#"# Context Pack Generation Guide
+
+This guide tells AI agents how to fill in the context pack templates.
+
+## Process
+1. Read each file in `.agent-context/current/` in numeric order.
+2. For each `<!-- AGENT: ... -->` block, replace it with repository-derived content.
+3. After filling all sections, run `chorus context-pack seal` to finalize (manifest + snapshot).
+
+## Quality Criteria
+- Content must be factual and verifiable from the repository.
+- Prefer concise bullets over long prose.
+- Keep total word count under ~2000 words across all files.
+- Do not include secrets or credentials.
+- If unsure, note `TBD` rather than inventing details.
+
+## When to Update
+- After significant architectural or contract changes.
+- After adding new commands/APIs/features.
+- When `chorus context-pack check-freshness` reports stale content.
+"#
+    .to_string()
+}
+
+fn build_pre_push_hook_section() -> String {
+    r#"remote_name="${1:-origin}"
 remote_url="${2:-unknown}"
 
 run_context_sync() {
@@ -954,8 +1521,8 @@ run_context_sync() {
   local remote_ref="$3"
   local remote_sha="$4"
 
-  if command -v bridge >/dev/null 2>&1; then
-    bridge context-pack sync-main \
+  if command -v chorus >/dev/null 2>&1; then
+    chorus context-pack sync-main \
       --local-ref "$local_ref" \
       --local-sha "$local_sha" \
       --remote-ref "$remote_ref" \
@@ -972,7 +1539,7 @@ run_context_sync() {
     return
   fi
 
-  echo "[context-pack] WARN: bridge command not found; skipping context-pack sync"
+  echo "[context-pack] WARN: chorus command not found; skipping context-pack sync"
 }
 
 while read -r local_ref local_sha remote_ref remote_sha; do
@@ -980,7 +1547,6 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     echo "[context-pack] validating main push for ${remote_name} (${remote_url})"
     run_context_sync "$local_ref" "$local_sha" "$remote_ref" "$remote_sha"
   fi
-done
-"#
+done"#
     .to_string()
 }

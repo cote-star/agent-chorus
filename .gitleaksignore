@@ -1,0 +1,17 @@
+# Adversarial test fixtures (intentionally fake secrets for redaction testing)
+fixtures/adversarial/edge-cases.txt:generic-api-key:18
+fixtures/adversarial/mixed-secrets.txt:generic-api-key:4
+fixtures/adversarial/mixed-secrets.txt:generic-api-key:5
+fixtures/adversarial/mixed-secrets.txt:jwt:6
+fixtures/adversarial/mixed-secrets.txt:jwt:7
+fixtures/adversarial/mixed-secrets.txt:private-key:7
+fixtures/adversarial/multi-line-pem.txt:private-key:2
+
+# Redaction pattern definitions (regex patterns, not real secrets)
+cli/src/agents.rs:generic-api-key:1964
+cli/src/agents.rs:generic-api-key:2045
+cli/src/agents.rs:jwt:2059
+cli/src/agents.rs:private-key:2074
+
+# Redaction stress test fixture (fake secrets)
+fixtures/session-store/claude/projects/sample/session-claude-redaction-stress.jsonl:generic-api-key:2

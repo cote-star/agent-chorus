@@ -25,18 +25,18 @@ compare() {
 # --- Scenario 1: No agents ---
 echo "=== Scenario: no agents ==="
 
-BRIDGE_CODEX_SESSIONS_DIR="$EMPTY_DIR" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
-BRIDGE_GEMINI_TMP_DIR="$EMPTY_DIR" \
-BRIDGE_CURSOR_DATA_DIR="$EMPTY_DIR" \
+CHORUS_CODEX_SESSIONS_DIR="$EMPTY_DIR" \
+CHORUS_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
+CHORUS_GEMINI_TMP_DIR="$EMPTY_DIR" \
+CHORUS_CURSOR_DATA_DIR="$EMPTY_DIR" \
   node "$ROOT_DIR/scripts/read_session.cjs" trash-talk --cwd /tmp/nowhere \
   > "$EMPTY_DIR/node-none.txt" 2>&1
 compare "node  trash-talk-none" "$EMPTY_DIR/node-none.txt" "$GOLDEN/trash-talk-none.txt"
 
-BRIDGE_CODEX_SESSIONS_DIR="$EMPTY_DIR" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
-BRIDGE_GEMINI_TMP_DIR="$EMPTY_DIR" \
-BRIDGE_CURSOR_DATA_DIR="$EMPTY_DIR" \
+CHORUS_CODEX_SESSIONS_DIR="$EMPTY_DIR" \
+CHORUS_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
+CHORUS_GEMINI_TMP_DIR="$EMPTY_DIR" \
+CHORUS_CURSOR_DATA_DIR="$EMPTY_DIR" \
   cargo run --quiet --manifest-path "$ROOT_DIR/cli/Cargo.toml" -- trash-talk --cwd /tmp/nowhere \
   > "$EMPTY_DIR/rust-none.txt" 2>&1
 compare "rust  trash-talk-none" "$EMPTY_DIR/rust-none.txt" "$GOLDEN/trash-talk-none.txt"
@@ -44,18 +44,18 @@ compare "rust  trash-talk-none" "$EMPTY_DIR/rust-none.txt" "$GOLDEN/trash-talk-n
 # --- Scenario 2: Single agent (Codex only) ---
 echo "=== Scenario: single agent ==="
 
-BRIDGE_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
-BRIDGE_GEMINI_TMP_DIR="$EMPTY_DIR" \
-BRIDGE_CURSOR_DATA_DIR="$EMPTY_DIR" \
+CHORUS_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
+CHORUS_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
+CHORUS_GEMINI_TMP_DIR="$EMPTY_DIR" \
+CHORUS_CURSOR_DATA_DIR="$EMPTY_DIR" \
   node "$ROOT_DIR/scripts/read_session.cjs" trash-talk --cwd /workspace/demo \
   > "$EMPTY_DIR/node-single.txt" 2>&1
 compare "node  trash-talk-single" "$EMPTY_DIR/node-single.txt" "$GOLDEN/trash-talk-single.txt"
 
-BRIDGE_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
-BRIDGE_GEMINI_TMP_DIR="$EMPTY_DIR" \
-BRIDGE_CURSOR_DATA_DIR="$EMPTY_DIR" \
+CHORUS_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
+CHORUS_CLAUDE_PROJECTS_DIR="$EMPTY_DIR" \
+CHORUS_GEMINI_TMP_DIR="$EMPTY_DIR" \
+CHORUS_CURSOR_DATA_DIR="$EMPTY_DIR" \
   cargo run --quiet --manifest-path "$ROOT_DIR/cli/Cargo.toml" -- trash-talk --cwd /workspace/demo \
   > "$EMPTY_DIR/rust-single.txt" 2>&1
 compare "rust  trash-talk-single" "$EMPTY_DIR/rust-single.txt" "$GOLDEN/trash-talk-single.txt"
@@ -63,18 +63,18 @@ compare "rust  trash-talk-single" "$EMPTY_DIR/rust-single.txt" "$GOLDEN/trash-ta
 # --- Scenario 3: Multiple agents (Codex + Claude) ---
 echo "=== Scenario: multi agent ==="
 
-BRIDGE_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$FIXTURES/session-store/claude/projects" \
-BRIDGE_GEMINI_TMP_DIR="$FIXTURES/session-store/gemini/tmp" \
-BRIDGE_CURSOR_DATA_DIR="$EMPTY_DIR" \
+CHORUS_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
+CHORUS_CLAUDE_PROJECTS_DIR="$FIXTURES/session-store/claude/projects" \
+CHORUS_GEMINI_TMP_DIR="$FIXTURES/session-store/gemini/tmp" \
+CHORUS_CURSOR_DATA_DIR="$EMPTY_DIR" \
   node "$ROOT_DIR/scripts/read_session.cjs" trash-talk --cwd /workspace/demo \
   > "$EMPTY_DIR/node-multi.txt" 2>&1
 compare "node  trash-talk-multi" "$EMPTY_DIR/node-multi.txt" "$GOLDEN/trash-talk-multi.txt"
 
-BRIDGE_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
-BRIDGE_CLAUDE_PROJECTS_DIR="$FIXTURES/session-store/claude/projects" \
-BRIDGE_GEMINI_TMP_DIR="$FIXTURES/session-store/gemini/tmp" \
-BRIDGE_CURSOR_DATA_DIR="$EMPTY_DIR" \
+CHORUS_CODEX_SESSIONS_DIR="$FIXTURES/session-store/codex/sessions" \
+CHORUS_CLAUDE_PROJECTS_DIR="$FIXTURES/session-store/claude/projects" \
+CHORUS_GEMINI_TMP_DIR="$FIXTURES/session-store/gemini/tmp" \
+CHORUS_CURSOR_DATA_DIR="$EMPTY_DIR" \
   cargo run --quiet --manifest-path "$ROOT_DIR/cli/Cargo.toml" -- trash-talk --cwd /workspace/demo \
   > "$EMPTY_DIR/rust-multi.txt" 2>&1
 compare "rust  trash-talk-multi" "$EMPTY_DIR/rust-multi.txt" "$GOLDEN/trash-talk-multi.txt"

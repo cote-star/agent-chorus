@@ -1,5 +1,6 @@
 {
   "agent": "gemini",
+  "chorus_output_version": 1,
   "content": "Gemini fixture assistant output.",
   "cwd": null,
   "message_count": 1,

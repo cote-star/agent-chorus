@@ -1,0 +1,13 @@
+{
+  "include": ["**"],
+  "exclude": [
+    ".agent-context/**",
+    ".git/**",
+    "node_modules/**",
+    "target/**",
+    "dist/**",
+    "build/**",
+    "vendor/**",
+    "tmp/**"
+  ]
+}

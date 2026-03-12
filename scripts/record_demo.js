@@ -71,7 +71,7 @@ function getArgValue(name, fallback = null) {
         process.exit(1);
     }
 
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bridge-demo-'));
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'chorus-demo-'));
 
     console.log('Launching browser...');
     const browser = await puppeteer.launch({

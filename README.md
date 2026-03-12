@@ -1,8 +1,8 @@
-# Agent Bridge
+# Agent Chorus
 
 ![CI Status](https://github.com/cote-star/agent-bridge/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.6.2-green.svg)
+![Version](https://img.shields.io/badge/version-0.7.0-green.svg)
 [![Star History](https://img.shields.io/github/stars/cote-star/agent-bridge?style=social)](https://github.com/cote-star/agent-bridge)
 
 **Let your AI agents talk about each other.**
@@ -10,7 +10,7 @@
 Ask one agent what another is doing, and get an evidence-backed answer. No copy-pasting, no tab-switching, no guessing.
 
 ```bash
-bridge read --agent claude --json
+chorus read --agent claude --json
 ```
 
 ## Why It Exists
@@ -22,7 +22,7 @@ bridge read --agent claude --json
 ## How It Works
 
 1. **Ask naturally** - "What is Claude doing?" / "Did Gemini finish the API?"
-2. **Agent runs bridge** - Your agent calls `bridge read`, `bridge compare`, etc. behind the scenes.
+2. **Agent runs chorus** - Your agent calls `chorus read`, `chorus compare`, `chorus diff`, `chorus send`, etc. behind the scenes.
 3. **Evidence-backed answer** - Sources cited, divergences flagged, no hallucination.
 
 **Tenets:**
@@ -50,23 +50,23 @@ Three agents working on checkout. You ask Codex what the others are doing.
 ### 1. Install
 
 ```bash
-npm install -g agent-bridge
+npm install -g agent-chorus
 # or
-cargo install agent-bridge
+cargo install agent-chorus
 ```
 
 ### 2. Setup
 
 ```bash
-bridge setup
-bridge doctor
+chorus setup
+chorus doctor # Checks health, context pack state, and updates
 ```
 
 From zero to a working skill query in under a minute:
 
 ![Setup Demo](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/demo-setup.webp)
 
-This wires skill triggers into your agent configs (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) so agents know how to use the bridge.
+This wires skill triggers into your agent configs (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) so agents know how to use chorus.
 
 ### 3. Ask
 
@@ -76,11 +76,11 @@ Tell any agent:
 > "Compare Codex and Gemini outputs."
 > "Pick up where Gemini left off."
 
-The agent runs bridge commands behind the scenes and gives you an evidence-backed answer.
+The agent runs chorus commands behind the scenes and gives you an evidence-backed answer.
 
 ### Session Selection Defaults
 
-After `bridge setup`, provider instructions follow this behavior:
+After `chorus setup`, provider instructions follow this behavior:
 
 - If no session is specified, read the latest session in the current project.
 - "past session" / "previous session" means one session before latest.
@@ -104,14 +104,16 @@ At a glance:
 ### Recommended Workflow
 
 ```bash
-# One-shot setup (recommended for new installs)
-bridge setup --context-pack
+# Recommended workflow:
+chorus context-pack init    # Creates .agent-context/current/ with templates
+# ...agent fills in <!-- AGENT: ... --> sections...
+chorus context-pack seal    # Validates content and locks the pack
 
-# Manual build/refresh
-bridge context-pack build
+# Manual rebuild (backward-compatible wrapper)
+chorus context-pack build
 
-# Install pre-push hook (syncs only for main pushes when relevant)
-bridge context-pack install-hooks
+# Install pre-push hook (advisory-only check on main push)
+chorus context-pack install-hooks
 ```
 
 Ask your agent explicitly:
@@ -130,12 +132,12 @@ Create and wire a context pack for token-efficient repo understanding:
 
 - Pushes that do not target `main`: skipped.
 - Pushes to `main` with no context-relevant changes: skipped.
-- Pushes to `main` with context-relevant changes: rebuilds pack and creates local recovery snapshot.
+- Pushes to `main` with context-relevant changes: advisory warning printed (no auto-build).
 
 Optional pre-PR guard:
 
 ```bash
-bridge context-pack check-freshness --base origin/main
+chorus context-pack check-freshness --base origin/main
 ```
 
 ### Usage Boundaries
@@ -153,30 +155,34 @@ bridge context-pack check-freshness --base origin/main
 Recovery matrix:
 
 - `.agent-context/current/` -> `git checkout <commit> -- .agent-context/current`
-- `.agent-context/snapshots/` -> `bridge context-pack rollback`
+- `.agent-context/snapshots/` -> `chorus context-pack rollback`
 
 ## Supported Agents
 
-| Feature            | Codex | Gemini | Claude | Cursor |
-| :----------------- | :---: | :----: | :----: | :----: |
-| **Read Content**   |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Auto-Discovery** |  Yes  |  Yes   |  Yes   |  Yes   |
-| **CWD Scoping**    |  Yes  |   No   |  Yes   |   No   |
-| **List Sessions**  |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Search**         |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Comparisons**    |  Yes  |  Yes   |  Yes   |  Yes   |
+| Feature              | Codex | Gemini | Claude | Cursor |
+| :------------------- | :---: | :----: | :----: | :----: |
+| **Read Content**     |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Auto-Discovery**   |  Yes  |  Yes   |  Yes   |  Yes   |
+| **CWD Scoping**      |  Yes  |   No   |  Yes   |   No   |
+| **List Sessions**    |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Search**           |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Comparisons**      |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Session Diff**     |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Redaction Audit**  |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Messaging**        |  Yes  |  Yes   |  Yes   |  Yes   |
 
 ## How It Compares
 
-| | agent-bridge | CrewAI / AutoGen | ccswarm / claude-squad |
+| | agent-chorus | CrewAI / AutoGen | ccswarm / claude-squad |
 | :--- | :---: | :---: | :---: |
 | **Approach** | Read-only evidence layer | Full orchestration framework | Parallel agent spawning |
-| **Install** | `npm i -g agent-bridge` or `cargo install` | pip + ecosystem | git clone |
+| **Install** | `npm i -g agent-chorus` or `cargo install` | pip + ecosystem | git clone |
 | **Agents** | Codex, Claude, Gemini, Cursor | Provider-specific | Usually Claude-only |
 | **Dependencies** | Zero npm prod deps | Heavy Python/TS stack | Moderate |
 | **Privacy** | Local-first, auto-redaction | Cloud-optional | Varies |
 | **Cold-start solution** | Context Pack (5-doc briefing) | None | None |
 | **Language** | Node.js + Rust (conformance-tested) | Python or TypeScript | Single language |
+| **Agent messaging** | Built-in JSONL queue | Framework-specific | None |
 | **Philosophy** | Visibility first, orchestration optional | Orchestration first | Task spawning |
 
 ## Visibility Without Orchestration
@@ -185,16 +191,57 @@ The default workflow is evidence-first: one agent reads another agent's session 
 
 ![Claude to Codex handoff via read-only evidence](https://raw.githubusercontent.com/cote-star/agent-bridge/ecd1314a70427f9c33f8d053a5007fd30f2f55da/docs/orchestrator-handoff-flow.svg)
 
-## Current Boundaries (v0.6.2)
+## v0.7.0 Innovations
+
+### Relevance Introspection
+
+Inspect and test the context-pack filtering patterns that decide which files matter.
+
+```bash
+chorus relevance --list --cwd .              # Show current include/exclude patterns
+chorus relevance --test src/main.rs --cwd .  # Test if a file matches
+chorus relevance --suggest --cwd .           # Suggest patterns for this project
+```
+
+### Redaction Audit Trail
+
+See exactly what was redacted and why in any `chorus read` output.
+
+```bash
+chorus read --agent claude --audit-redactions --json
+```
+
+The JSON response includes a `redactions` array with pattern names and counts.
+
+### Session Diff
+
+Compare two sessions from the same agent with line-level precision.
+
+```bash
+chorus diff --agent codex --from session-abc --to session-def --cwd . --json
+```
+
+### Agent-to-Agent Messaging
+
+Agents can leave messages for each other through a local JSONL queue.
+
+```bash
+chorus send --from claude --to codex --message "auth module ready for review" --cwd .
+chorus messages --agent codex --cwd . --json
+chorus messages --agent codex --cwd . --clear
+```
+
+Messages are stored in `.agent-chorus/messages/` and never leave your machine.
+
+## Current Boundaries (v0.7.0)
 
 - No orchestration control plane: no task router, scheduler, or work queues.
 - No autonomous agent chaining by default; handoffs are human-directed.
 - No live synchronization stream; reads are snapshot-based from local session logs.
-- Agent-to-agent messaging and cross-agent context sharing are roadmap items, not default behavior today.
 
 ## Architecture
 
-The bridge sits between your agent and other agents' session logs. You talk to your agent - your agent talks to the bridge.
+Chorus sits between your agent and other agents' session logs. You talk to your agent - your agent talks to chorus.
 
 ![Before/after workflow animation](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/silo-tax-before-after.webp)
 
@@ -202,15 +249,15 @@ The bridge sits between your agent and other agents' session logs. You talk to y
 sequenceDiagram
     participant User
     participant Agent as Your Agent (Codex, Claude, etc.)
-    participant Bridge as bridge CLI
+    participant Chorus as chorus CLI
     participant Sessions as Other Agent Sessions
 
     User->>Agent: "What is Claude doing?"
-    Agent->>Bridge: bridge read --agent claude --json
-    Bridge->>Sessions: Scan ~/.claude/projects/*.jsonl
-    Sessions-->>Bridge: Raw session data
-    Bridge->>Bridge: Redact secrets, format
-    Bridge-->>Agent: Structured JSON
+    Agent->>Chorus: chorus read --agent claude --json
+    Chorus->>Sessions: Scan ~/.claude/projects/*.jsonl
+    Sessions-->>Chorus: Raw session data
+    Chorus->>Chorus: Redact secrets, format
+    Chorus-->>Agent: Structured JSON
     Agent-->>User: Evidence-backed natural language answer
 ```
 
@@ -222,7 +269,7 @@ sequenceDiagram
 
 ## Easter Egg
 
-`bridge trash-talk` roasts your agents based on their session content.
+`chorus trash-talk` roasts your agents based on their session content.
 
 ![Trash Talk Demo](https://raw.githubusercontent.com/cote-star/agent-bridge/main/docs/demo-trash-talk.webp)
 
@@ -230,10 +277,14 @@ sequenceDiagram
 
 - **Context Pack customization** - user-defined doc structure, custom sections, team templates.
 - **Windows installation** - native Windows support (currently macOS/Linux).
-- **Auto-generated instruction wiring** - `bridge setup` creates/updates `AGENTS.md`, `CLAUDE.md`, and `GEMINI.md`, plus `.agent-bridge/INTENTS.md` and provider snippets.
-- **Non-intrusive update notifications** - once-per-version update hints with fail-silent behavior and structured status in `bridge doctor` (`BRIDGE_SKIP_UPDATE_CHECK=1` opt-out).
 - **Cross-agent context sharing** - agents share context snippets (still read-only, still local).
-- **Agent-to-agent messaging** - agents leave messages for each other via bridge.
+
+## Update Notifications
+
+Chorus checks for updates once per version.
+- **Privacy**: Only contacts `registry.npmjs.org`.
+- **Fail-silent**: If the check fails, it says nothing.
+- **Opt-out**: Set `CHORUS_SKIP_UPDATE_CHECK=1`.
 
 ## Choose Your Path
 

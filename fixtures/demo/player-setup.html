@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Bridge — Quick Setup</title>
+    <title>Agent Chorus — Quick Setup</title>
     <style>
         :root {
             --bg: #0d1117;
@@ -232,27 +232,27 @@
             html('claude', '<span class="dim">Claude Code v1.0 &mdash; ~/projects/myapp</span>');
             line('claude', '');
             line('codex', '');
-            html('codex', '<span class="dim">Codex CLI &mdash; Agent Bridge</span>');
+            html('codex', '<span class="dim">Codex CLI &mdash; Agent Chorus</span>');
             line('codex', '');
             await wait(1000);
 
             // === SCENE 1: Setup (1-4s) ===
-            html('claude', '<span class="claude-prompt">~/myapp</span> <span class="dim">$</span> <span class="user-input">Set up agent bridge</span>');
+            html('claude', '<span class="claude-prompt">~/myapp</span> <span class="dim">$</span> <span class="user-input">Set up agent chorus</span>');
             line('claude', '');
             await wait(700);
 
-            toolCall('claude', 'bridge setup');
+            toolCall('claude', 'chorus setup');
             line('claude', '');
             await wait(1100);
 
             html('claude', [
-                'Agent Bridge setup complete for ~/projects/myapp',
-                '- [created] .agent-bridge/INTENTS.md (Created intent contract)',
-                '- [created] .agent-bridge/providers/codex.md (Created provider snippet)',
+                'Agent Chorus setup complete for ~/projects/myapp',
+                '- [created] .agent-chorus/INTENTS.md (Created intent contract)',
+                '- [created] .agent-chorus/providers/codex.md (Created provider snippet)',
                 '- [updated] AGENTS.md (Managed block written)',
-                '- [created] .agent-bridge/providers/claude.md (Created provider snippet)',
+                '- [created] .agent-chorus/providers/claude.md (Created provider snippet)',
                 '- [updated] CLAUDE.md (Managed block written)',
-                '- [created] .agent-bridge/providers/gemini.md (Created provider snippet)',
+                '- [created] .agent-chorus/providers/gemini.md (Created provider snippet)',
                 '- [updated] GEMINI.md (Managed block written)',
             ].join('\n'));
             line('claude', '');
@@ -262,12 +262,12 @@
             await wait(1300);
 
             // === SCENE 2: Doctor (4-7s) ===
-            toolCall('claude', 'bridge doctor');
+            toolCall('claude', 'chorus doctor');
             line('claude', '');
             await wait(900);
 
             html('claude', [
-                'Agent Bridge doctor: WARN (~/projects/myapp)',
+                'Agent Chorus doctor: WARN (~/projects/myapp)',
                 '<span class="success">PASS</span> setup_intents',
                 '<span class="success">PASS</span> snippet_codex',
                 '<span class="success">PASS</span> integration_codex',
@@ -287,7 +287,7 @@
             line('codex', '');
             await wait(500);
 
-            toolCall('codex', 'bridge read --agent gemini --json');
+            toolCall('codex', 'chorus read --agent gemini --json');
             line('codex', '');
             await wait(900);
 
@@ -318,7 +318,7 @@
             line('codex', '');
             await wait(500);
 
-            toolCall('codex', 'bridge read --agent gemini --json');
+            toolCall('codex', 'chorus read --agent gemini --json');
             line('codex', '');
             await wait(900);
 

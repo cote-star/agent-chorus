@@ -10,7 +10,7 @@ const MAX_FILE_SIZE: u64 = 50 * 1024 * 1024; // 50 MB
 const MAX_SCAN_FILES: usize = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BridgeErrorCode {
+pub enum ChorusErrorCode {
     NotFound,
     ParseFailed,
     InvalidHandoff,
@@ -20,7 +20,7 @@ pub enum BridgeErrorCode {
     EmptySession,
 }
 
-impl BridgeErrorCode {
+impl ChorusErrorCode {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::NotFound => "NOT_FOUND",
@@ -34,22 +34,22 @@ impl BridgeErrorCode {
     }
 }
 
-pub fn classify_error(message: &str) -> BridgeErrorCode {
+pub fn classify_error(message: &str) -> ChorusErrorCode {
     let lower = message.to_ascii_lowercase();
     if lower.contains("unsupported agent") || lower.contains("unknown agent") {
-        BridgeErrorCode::UnsupportedAgent
+        ChorusErrorCode::UnsupportedAgent
     } else if lower.contains("unsupported mode") {
-        BridgeErrorCode::UnsupportedMode
+        ChorusErrorCode::UnsupportedMode
     } else if lower.contains("no") && lower.contains("session found") || lower.contains("not found") {
-        BridgeErrorCode::NotFound
+        ChorusErrorCode::NotFound
     } else if lower.contains("failed to parse") || lower.contains("failed to read") {
-        BridgeErrorCode::ParseFailed
+        ChorusErrorCode::ParseFailed
     } else if lower.contains("missing required") || lower.contains("invalid handoff") || lower.contains("must provide session_id") {
-        BridgeErrorCode::InvalidHandoff
+        ChorusErrorCode::InvalidHandoff
     } else if lower.contains("has no messages") || lower.contains("history is empty") {
-        BridgeErrorCode::EmptySession
+        ChorusErrorCode::EmptySession
     } else {
-        BridgeErrorCode::IoError
+        ChorusErrorCode::IoError
     }
 }
 
@@ -79,6 +79,9 @@ pub fn read_codex_session(id: Option<&str>, cwd: &str) -> Result<Session> {
 
 pub fn read_codex_session_with_last(id: Option<&str>, cwd: &str, last_n: usize) -> Result<Session> {
     let base_dir = codex_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
     if !base_dir.exists() {
         return Err(anyhow!("No Codex session found."));
     }
@@ -133,6 +136,9 @@ pub fn read_claude_session(id: Option<&str>, cwd: &str) -> Result<Session> {
 
 pub fn read_claude_session_with_last(id: Option<&str>, cwd: &str, last_n: usize) -> Result<Session> {
     let base_dir = claude_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
     if !base_dir.exists() {
         return Err(anyhow!("Claude projects directory not found: {}", base_dir.display()));
     }
@@ -191,6 +197,13 @@ pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Opt
         return Err(anyhow!("No Gemini session found. Searched chats directories:"));
     }
 
+    let mut cross_project_warning: Option<String> = None;
+    if dirs.len() > 1 && chats_dir.is_none() {
+        cross_project_warning = Some(
+            "Warning: Gemini sessions from multiple projects may be mixed. Use --chats-dir to scope to a specific project.".to_string()
+        );
+    }
+
     let target_file = if let Some(id_value) = id {
         let mut candidates = Vec::new();
         for dir in &dirs {
@@ -226,11 +239,16 @@ pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Opt
 
     let parsed = parse_gemini_json(&target_file, last_n)?;
 
+    let mut warnings = parsed.warnings;
+    if let Some(w) = cross_project_warning {
+        warnings.insert(0, w);
+    }
+
     Ok(Session {
         agent: "gemini",
         content: parsed.content,
         source: target_file.to_string_lossy().to_string(),
-        warnings: parsed.warnings,
+        warnings,
         session_id: parsed.session_id,
         cwd: parsed.cwd,
         timestamp: parsed.timestamp,
@@ -694,7 +712,17 @@ fn read_jsonl_lines(path: &Path) -> Result<Vec<String>> {
     }
     let file = fs::File::open(path)?;
     let reader = BufReader::new(file);
-    Ok(reader.lines().map_while(Result::ok).collect())
+    let mut lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
+    // Concurrent-read safety: if another process is actively writing to this
+    // JSONL file, the last line may be truncated mid-JSON.  Drop it if it
+    // doesn't look like a complete JSON value.
+    if let Some(last) = lines.last() {
+        let trimmed = last.trim_end();
+        if !trimmed.is_empty() && !trimmed.ends_with(|c: char| c == '}' || c == ']' || c == '"' || c.is_ascii_digit()) {
+            lines.pop();
+        }
+    }
+    Ok(lines)
 }
 
 fn find_latest_by_cwd(
@@ -738,6 +766,10 @@ fn get_claude_session_cwd(file_path: &Path) -> Option<PathBuf> {
 
 fn is_system_directory(dir: &Path) -> bool {
     let s = dir.to_string_lossy();
+    // macOS temp dirs live under /var/folders or /private/var/folders — allow those
+    if s.starts_with("/var/folders/") || s.starts_with("/private/var/folders/") {
+        return false;
+    }
     let system_prefixes = ["/etc", "/usr", "/var", "/bin", "/sbin", "/System", "/Library",
         "/Windows", "/Windows/System32", "/Program Files", "/Program Files (x86)"];
     for prefix in system_prefixes {
@@ -917,6 +949,68 @@ fn redact_sensitive_text(input: &str) -> String {
     let step8 = redact_pem_keys(&step7);
     let step9 = redact_connection_strings(&step8);
     redact_secret_assignments(&step9)
+}
+
+/// A single redaction audit entry.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RedactionEntry {
+    pub pattern: String,
+    pub count: usize,
+}
+
+/// Redact sensitive text and return an audit trail of what was redacted.
+pub fn redact_sensitive_text_with_audit(input: &str) -> (String, Vec<RedactionEntry>) {
+    let mut audit = Vec::new();
+
+    fn count_diff(before: &str, after: &str, pattern: &str, audit: &mut Vec<RedactionEntry>) {
+        if before != after {
+            // Count how many redaction placeholders appeared that weren't there before
+            let markers = ["[REDACTED]", "[REDACTED_JWT]", "[REDACTED_PEM_KEY]"];
+            let mut count = 0usize;
+            for marker in &markers {
+                let after_count = after.matches(marker).count();
+                let before_count = before.matches(marker).count();
+                count += after_count.saturating_sub(before_count);
+            }
+            if count == 0 { count = 1; } // at least one if text changed
+            audit.push(RedactionEntry {
+                pattern: pattern.to_string(),
+                count,
+            });
+        }
+    }
+
+    let step1 = redact_openai_like_keys(input);
+    count_diff(input, &step1, "openai_key", &mut audit);
+
+    let step2 = redact_aws_access_keys(&step1);
+    count_diff(&step1, &step2, "aws_access_key", &mut audit);
+
+    let step3 = redact_github_tokens(&step2);
+    count_diff(&step2, &step3, "github_token", &mut audit);
+
+    let step4 = redact_google_api_keys(&step3);
+    count_diff(&step3, &step4, "google_api_key", &mut audit);
+
+    let step5 = redact_slack_tokens(&step4);
+    count_diff(&step4, &step5, "slack_token", &mut audit);
+
+    let step6 = redact_bearer_tokens(&step5);
+    count_diff(&step5, &step6, "bearer_token", &mut audit);
+
+    let step7 = redact_jwt_tokens(&step6);
+    count_diff(&step6, &step7, "jwt_token", &mut audit);
+
+    let step8 = redact_pem_keys(&step7);
+    count_diff(&step7, &step8, "pem_key", &mut audit);
+
+    let step9 = redact_connection_strings(&step8);
+    count_diff(&step8, &step9, "connection_string", &mut audit);
+
+    let final_text = redact_secret_assignments(&step9);
+    count_diff(&step9, &final_text, "secret_assignment", &mut audit);
+
+    (final_text, audit)
 }
 
 fn redact_openai_like_keys(input: &str) -> String {
@@ -1575,7 +1669,8 @@ pub fn search_cursor_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
 // --- Cursor support ---
 
 fn cursor_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_CURSOR_DATA_DIR")
+    std::env::var("CHORUS_CURSOR_DATA_DIR")
+        .or_else(|_| std::env::var("BRIDGE_CURSOR_DATA_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| {
@@ -1593,6 +1688,9 @@ fn cursor_base_dir() -> PathBuf {
 
 pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
     let base_dir = cursor_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
     if !base_dir.exists() {
         return Err(anyhow!("No Cursor session found. Data directory not found: {}", base_dir.display()));
     }
@@ -1633,7 +1731,7 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
         } else if let Some(text) = json.get("content").and_then(|c| c.as_str()) {
             text.to_string()
         } else {
-            format!("{}", serde_json::to_string_pretty(&json).unwrap_or_default())
+            json.to_string()
         }
     } else {
         // JSONL format
@@ -1661,7 +1759,9 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
         agent: "cursor",
         content: redact_sensitive_text(&content),
         source: target_file.to_string_lossy().to_string(),
-        warnings: Vec::new(),
+        warnings: vec![
+            "Warning: Cursor sessions have no project scoping. Results may include sessions from unrelated projects.".to_string(),
+        ],
         session_id,
         cwd: None,
         timestamp,
@@ -1715,21 +1815,24 @@ pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
 }
 
 fn codex_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_CODEX_SESSIONS_DIR")
+    std::env::var("CHORUS_CODEX_SESSIONS_DIR")
+        .or_else(|_| std::env::var("BRIDGE_CODEX_SESSIONS_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| expand_home("~/.codex/sessions").unwrap_or_else(|| PathBuf::from("~/.codex/sessions")))
 }
 
 fn claude_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_CLAUDE_PROJECTS_DIR")
+    std::env::var("CHORUS_CLAUDE_PROJECTS_DIR")
+        .or_else(|_| std::env::var("BRIDGE_CLAUDE_PROJECTS_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| expand_home("~/.claude/projects").unwrap_or_else(|| PathBuf::from("~/.claude/projects")))
 }
 
 fn gemini_tmp_base_dir() -> PathBuf {
-    std::env::var("BRIDGE_GEMINI_TMP_DIR")
+    std::env::var("CHORUS_GEMINI_TMP_DIR")
+        .or_else(|_| std::env::var("BRIDGE_GEMINI_TMP_DIR"))
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| expand_home("~/.gemini/tmp").unwrap_or_else(|| PathBuf::from("~/.gemini/tmp")))

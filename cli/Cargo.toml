@@ -1,24 +1,31 @@
 [package]
-name = "agent-bridge"
-version = "0.6.2"
+name = "agent-chorus"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.74"
 description = "Local-first CLI to read, compare, and hand off context across Codex, Claude, Gemini, and Cursor sessions."
 license = "MIT"
-repository = "https://github.com/cote-star/agent-bridge"
-homepage = "https://github.com/cote-star/agent-bridge"
-documentation = "https://docs.rs/agent-bridge"
+repository = "https://github.com/cote-star/agent-chorus"
+homepage = "https://github.com/cote-star/agent-chorus"
+documentation = "https://docs.rs/agent-chorus"
 readme = "../README.md"
-keywords = ["agent-bridge", "multi-agent", "cli", "cross-agent", "context-engineering"]
+keywords = ["agent-chorus", "multi-agent", "cli", "cross-agent", "context-engineering"]
 categories = ["command-line-utilities", "development-tools"]
 
+[features]
+default = []
+update-check = []
+
 [[bin]]
-name = "bridge"
+name = "chorus"
 path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.101"
 clap = { version = "4.5.57", features = ["derive"] }
 dirs = "6.0.0"
+globset = "0.4.14"
+serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"
+ureq = { version = "2.12", features = ["json"] }

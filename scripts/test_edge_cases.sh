@@ -9,9 +9,9 @@ PASS=0
 FAIL=0
 
 ENV_VARS=(
-  BRIDGE_CODEX_SESSIONS_DIR="$STORE/codex/sessions"
-  BRIDGE_GEMINI_TMP_DIR="$STORE/gemini/tmp"
-  BRIDGE_CLAUDE_PROJECTS_DIR="$STORE/claude/projects"
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions"
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp"
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects"
 )
 
 run_node() {

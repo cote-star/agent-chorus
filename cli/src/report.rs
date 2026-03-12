@@ -256,7 +256,7 @@ pub fn build_report(request: &ReportRequest, default_cwd: &str) -> Value {
 
 pub fn report_to_markdown(report: &Value) -> String {
     let mut lines = Vec::new();
-    lines.push("### Agent Bridge Coordinator Report".to_string());
+    lines.push("### Agent Chorus Coordinator Report".to_string());
     lines.push(String::new());
     lines.push(format!("**Mode:** {}", report["mode"].as_str().unwrap_or("unknown")));
     lines.push(format!("**Task:** {}", report["task"].as_str().unwrap_or("")));

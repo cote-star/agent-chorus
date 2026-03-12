@@ -88,7 +88,17 @@ function readJsonlLines(filePath) {
   if (stat.size > MAX_FILE_SIZE) {
     throw new Error(`Skipped ${filePath} (exceeds ${MAX_FILE_SIZE / (1024 * 1024)}MB size limit)`);
   }
-  return fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+  const lines = fs.readFileSync(filePath, 'utf-8').split('\n').filter(Boolean);
+  // Concurrent-read safety: if another process is actively writing to this
+  // JSONL file, the last line may be truncated mid-JSON.  Drop it if it
+  // doesn't look like a complete JSON value.
+  if (lines.length > 0) {
+    const last = lines[lines.length - 1].trimEnd();
+    if (last.length > 0 && !/[}\]"0-9]$/.test(last)) {
+      lines.pop();
+    }
+  }
+  return lines;
 }
 
 function findLatestByCwd(files, cwdExtractor, expectedCwd) {
@@ -162,6 +172,57 @@ function redactSensitiveText(input) {
   return output;
 }
 
+/**
+ * Redact sensitive text with an audit trail of what was redacted.
+ * @param {string} input
+ * @returns {{ text: string, redactions: Array<{pattern: string, count: number}> }}
+ */
+function redactSensitiveTextWithAudit(input) {
+  let output = String(input || '');
+  const redactions = [];
+
+  function countAndReplace(regex, replacement, patternLabel) {
+    let count = 0;
+    output = output.replace(regex, (...args) => {
+      count += 1;
+      if (typeof replacement === 'function') return replacement(...args);
+      return replacement;
+    });
+    if (count > 0) redactions.push({ pattern: patternLabel, count });
+  }
+
+  countAndReplace(/\bsk-[A-Za-z0-9_-]{20,}/g, 'sk-[REDACTED]', 'openai_key');
+  countAndReplace(/\bAKIA[0-9A-Z]{16}\b/g, 'AKIA[REDACTED]', 'aws_access_key');
+  countAndReplace(/\b(ghp_|gho_|ghs_|ghr_)[A-Za-z0-9_]{20,}/g, '$1[REDACTED]', 'github_token');
+  countAndReplace(/\bgithub_pat_[A-Za-z0-9_]{20,}/g, 'github_pat_[REDACTED]', 'github_pat');
+  countAndReplace(/\bAIza[A-Za-z0-9_-]{20,}/g, 'AIza[REDACTED]', 'google_api_key');
+  countAndReplace(/\b(xoxb-|xoxp-|xoxs-)[A-Za-z0-9-]{10,}/g, '$1[REDACTED]', 'slack_token');
+  countAndReplace(/\bBearer\s+[A-Za-z0-9._-]{10,}/gi, 'Bearer [REDACTED]', 'bearer_token');
+  countAndReplace(/\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/g, '[REDACTED_JWT]', 'jwt_token');
+  countAndReplace(/-----BEGIN\s+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END\s+(RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----/g, '[REDACTED_PEM_KEY]', 'pem_key');
+  countAndReplace(/((?:postgres|mysql|mongodb|redis|amqp):\/\/)[^\s"']+/gi, '$1[REDACTED]', 'connection_string');
+  countAndReplace(
+    /\b(api[_-]?key|token|secret|password)\b\s*[:=]\s*["']?[^"'\s]+["']?/gi,
+    (_, key) => `${key}=[REDACTED]`,
+    'secret_assignment'
+  );
+
+  return { text: output, redactions };
+}
+
+const SYSTEM_DIRS = new Set(['/etc', '/usr', '/var', '/bin', '/sbin', '/System', '/Library',
+  '/Windows', '/Windows/System32', '/Program Files', '/Program Files (x86)']);
+
+function isSystemDirectory(dirPath) {
+  const resolved = path.resolve(dirPath);
+  // macOS temp dirs live under /var/folders or /private/var/folders — allow those
+  if (resolved.startsWith('/var/folders/') || resolved.startsWith('/private/var/folders/')) return false;
+  for (const sysDir of SYSTEM_DIRS) {
+    if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) return true;
+  }
+  return false;
+}
+
 module.exports = {
   MAX_FILE_SIZE,
   MAX_SCAN_FILES,
@@ -175,4 +236,6 @@ module.exports = {
   extractText,
   extractClaudeText,
   redactSensitiveText,
+  redactSensitiveTextWithAudit,
+  isSystemDirectory,
 };

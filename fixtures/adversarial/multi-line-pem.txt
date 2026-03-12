@@ -1,0 +1,6 @@
+Here is the private key for the server:
+-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7o4qne60TB3dN
+aKJBOBkO8k3ZrJd6v5cX7F42X4OJ9Q5NhVX8Y8d5cWI9F0Jb3MnQ3OzX1tKh7Gb
+-----END PRIVATE KEY-----
+That should work for the deployment.

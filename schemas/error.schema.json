@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://agent-bridge.dev/schemas/error.schema.json",
-  "title": "Bridge Error Output",
+  "$id": "https://agent-chorus.dev/schemas/error.schema.json",
+  "title": "Chorus Error Output",
   "type": "object",
   "additionalProperties": false,
   "required": ["error_code", "message"],

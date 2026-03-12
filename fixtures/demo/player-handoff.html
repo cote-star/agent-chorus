@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agent Bridge — The Handoff</title>
+    <title>Agent Chorus — The Handoff</title>
     <style>
         :root {
             --bg: #0d1117;
@@ -239,7 +239,7 @@
             html('claude', '<span class="dim">Claude Code v1.0 &mdash; ~/projects/auth</span>');
             line('claude', '');
             line('codex', '');
-            html('codex', '<span class="dim">Codex CLI &mdash; Agent Bridge</span>');
+            html('codex', '<span class="dim">Codex CLI &mdash; Agent Chorus</span>');
             line('codex', '');
             await wait(1200);
 
@@ -265,9 +265,9 @@
             line('claude', '');
             await wait(600);
 
-            toolCall('claude', 'bridge read --agent gemini --last 5 --json');
+            toolCall('claude', 'chorus read --agent gemini --last 5 --json');
             await wait(350);
-            toolCall('claude', 'bridge search "refresh token" --agent gemini --json');
+            toolCall('claude', 'chorus search "refresh token" --agent gemini --json');
             line('claude', '');
 
             await wait(900);
@@ -306,11 +306,11 @@
             line('codex', '');
             await wait(600);
 
-            toolCall('codex', 'bridge read --agent gemini --last 5 --json');
+            toolCall('codex', 'chorus read --agent gemini --last 5 --json');
             await wait(350);
-            toolCall('codex', 'bridge read --agent claude --last 5 --json');
+            toolCall('codex', 'chorus read --agent claude --last 5 --json');
             await wait(350);
-            toolCall('codex', 'bridge compare --source gemini --source claude --normalize --json');
+            toolCall('codex', 'chorus compare --source gemini --source claude --normalize --json');
             line('codex', '');
 
             await wait(1000);

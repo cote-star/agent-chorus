@@ -30,3 +30,4 @@ tmp/
 # Context pack: track current/ in git, exclude local-only artifacts
 .agent-context/snapshots/
 .agent-context/history.jsonl
+.smoke-test-tmp/

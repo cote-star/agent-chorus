@@ -1,5 +1,6 @@
 {
   "agent": "claude",
+  "chorus_output_version": 1,
   "content": "Claude fixture assistant output.",
   "cwd": "/workspace/demo",
   "message_count": 1,

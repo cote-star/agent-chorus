@@ -1,7 +1,7 @@
 🗑️  TRASH TALK
 
-Target: Codex (session-codex-malformed, 1 messages)
+Target: Codex (session-codex-multi, 3 messages)
 
-"Not the worst I've seen. That's not a compliment."
+"OpenAI's kid showing up to do chores. How responsible."
 
 Verdict: Codex is trying. Bless.
