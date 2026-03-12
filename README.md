@@ -11,7 +11,7 @@ Ask one agent what another is doing, and get an evidence-backed answer. No copy-
 
 > If you use 2+ AI coding agents (Codex, Claude, Gemini, Cursor), Chorus gives them shared visibility — no orchestrator required.
 
-![Before/after workflow](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/silo-tax-before-after.webp)
+![Before/after workflow](docs/silo-tax-before-after.webp)
 
 ```bash
 chorus read --agent claude --json
@@ -27,13 +27,13 @@ chorus read --agent claude --json
 
 Switch from Gemini to Claude mid-task. Claude picks up where Gemini left off.
 
-![Handoff Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-handoff.webp)
+![Handoff Demo](docs/demo-handoff.webp)
 
 ### The Status Check
 
 Three agents working on checkout. You ask Codex what the others are doing.
 
-![Status Check Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-status.webp)
+![Status Check Demo](docs/demo-status.webp)
 
 ### What You Get Back
 
@@ -78,7 +78,7 @@ chorus doctor # Checks health, context pack state, and updates
 
 From zero to a working skill query in under a minute:
 
-![Setup Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-setup.webp)
+![Setup Demo](docs/demo-setup.webp)
 
 This wires skill triggers into your agent configs (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) so agents know how to use chorus.
 
@@ -232,7 +232,7 @@ chorus relevance --suggest --cwd .           # Suggest patterns for this project
 
 Chorus sits between your agent and other agents' session logs. The workflow is evidence-first: one agent reads another agent's session evidence and continues with a local decision, without a central control plane.
 
-![Claude to Codex handoff via read-only evidence](https://raw.githubusercontent.com/cote-star/agent-chorus/ecd1314a70427f9c33f8d053a5007fd30f2f55da/docs/orchestrator-handoff-flow.svg)
+![Claude to Codex handoff via read-only evidence](docs/orchestrator-handoff-flow.svg)
 
 ```mermaid
 sequenceDiagram
@@ -252,7 +252,7 @@ sequenceDiagram
 
 <details><summary>Diagram not rendering? View as image</summary>
 
-![Architecture sequence diagram](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/architecture.svg)
+![Architecture sequence diagram](docs/architecture.svg)
 
 </details>
 
@@ -290,9 +290,9 @@ Ask your agent explicitly:
 
 > "Understand this repo end-to-end using the context pack first, then deep dive only where needed."
 
-![Context Pack Read-Order](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/cold-start-context-pack-hero.webp)
+![Context Pack Read-Order](docs/cold-start-context-pack-hero.webp)
 
-![Context Pack Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-context-pack.webp)
+![Context Pack Demo](docs/demo-context-pack.webp)
 
 Full context-pack internals and policy details: [`CONTEXT_PACK.md`](./CONTEXT_PACK.md)
 
@@ -333,7 +333,7 @@ Recovery matrix:
 
 `chorus trash-talk` roasts your agents based on their session content.
 
-![Trash Talk Demo](https://raw.githubusercontent.com/cote-star/agent-chorus/main/docs/demo-trash-talk.webp)
+![Trash Talk Demo](docs/demo-trash-talk.webp)
 
 ## Roadmap
 
