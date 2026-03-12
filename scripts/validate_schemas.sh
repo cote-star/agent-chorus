@@ -110,22 +110,22 @@ if [[ "${CHORUS_SKIP_AJV:-0}" == "1" ]]; then
   exit 0
 fi
 
-AJV_CMD=(npx ajv-cli validate --spec=draft2020)
+AJV_CMD=(node "$ROOT/scripts/validate_schemas_ajv.cjs")
 
-"${AJV_CMD[@]}" -s "$ROOT/schemas/handoff.schema.json" -d "$ROOT/fixtures/handoff-report.json"
+"${AJV_CMD[@]}" "$ROOT/schemas/handoff.schema.json" "$ROOT/fixtures/handoff-report.json"
 
-"${AJV_CMD[@]}" -s "$ROOT/schemas/read-output.schema.json" -d "$read_node_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/read-output.schema.json" -d "$read_rust_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/read-output.schema.json" "$read_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/read-output.schema.json" "$read_rust_json"
 
-"${AJV_CMD[@]}" -s "$ROOT/schemas/report.schema.json" -d "$report_node_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/report.schema.json" -d "$report_rust_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/report.schema.json" -d "$compare_node_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/report.schema.json" -d "$compare_rust_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/list-output.schema.json" -d "$list_node_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/list-output.schema.json" -d "$list_rust_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/list-output.schema.json" -d "$search_node_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/list-output.schema.json" -d "$search_rust_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/error.schema.json" -d "$error_node_json"
-"${AJV_CMD[@]}" -s "$ROOT/schemas/error.schema.json" -d "$error_rust_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/report.schema.json" "$report_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/report.schema.json" "$report_rust_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/report.schema.json" "$compare_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/report.schema.json" "$compare_rust_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/list-output.schema.json" "$list_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/list-output.schema.json" "$list_rust_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/list-output.schema.json" "$search_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/list-output.schema.json" "$search_rust_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/error.schema.json" "$error_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/error.schema.json" "$error_rust_json"
 
 echo "Schema validation complete for handoff/read/report/list/search/error outputs."
