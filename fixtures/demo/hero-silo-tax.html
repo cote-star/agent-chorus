@@ -131,6 +131,12 @@
   }
   .footer-left { font-size: 14px; font-weight: 600; color: #555; }
   .footer-right { font-size: 12px; color: #999; font-style: italic; }
+  .qr {
+    position: absolute;
+    bottom: 24px; right: 24px;
+    width: 80px; height: 80px;
+    z-index: 10;
+  }
 
   /* --- AFTER slide: two-column layout --- */
   .after-layout {
@@ -203,6 +209,8 @@
 </style>
 </head>
 <body>
+  <img class="qr" src="qr-code.svg" alt="QR">
+
   <!-- FRAME 1: BEFORE -->
   <div class="slide active" id="slide-before">
     <div class="top-bar">
