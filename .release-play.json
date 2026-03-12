@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "requireCleanTree": true,
+  "targets": {
+    "npm": {
+      "packageJson": "package.json",
+      "verifyCommands": [
+        ["npm", "run", "check"],
+        ["bash", "scripts/release/verify_versions.sh"]
+      ],
+      "registries": [
+        {
+          "name": "npmjs",
+          "publish": true
+        },
+        {
+          "name": "github-packages",
+          "publish": false,
+          "packageName": "@cote-star/agent-chorus"
+        }
+      ]
+    },
+    "cargo": {
+      "manifestPath": "cli/Cargo.toml",
+      "verifyCommands": [
+        ["cargo", "test", "--manifest-path", "cli/Cargo.toml"],
+        ["bash", "scripts/release/verify_versions.sh"]
+      ]
+    }
+  }
+}
