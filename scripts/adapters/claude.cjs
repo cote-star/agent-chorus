@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   normalizePath, collectMatchingFiles, readJsonlLines,
-  findLatestByCwd, getFileTimestamp, extractClaudeText, redactSensitiveText, isSystemDirectory,
+  findLatestByCwd, cwdMatchesProject, getFileTimestamp, extractClaudeText, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
 const claudeProjectsBase = normalizePath(process.env.CHORUS_CLAUDE_PROJECTS_DIR || process.env.BRIDGE_CLAUDE_PROJECTS_DIR || '~/.claude/projects');
@@ -119,7 +119,7 @@ function list(cwd, limit) {
   const entries = [];
   for (const f of files) {
     const fileCwd = getClaudeSessionCwd(f.path) || null;
-    if (expectedCwd && fileCwd !== expectedCwd) {
+    if (expectedCwd && !cwdMatchesProject(fileCwd, expectedCwd)) {
       continue;
     }
 
@@ -149,20 +149,40 @@ function search(query, cwd, limit) {
     if (entries.length >= limit) break;
 
     const fileCwd = getClaudeSessionCwd(f.path) || null;
-    if (expectedCwd && fileCwd !== expectedCwd) {
+    if (expectedCwd && !cwdMatchesProject(fileCwd, expectedCwd)) {
       continue;
     }
 
-    let content;
+    // Read JSONL and extract only assistant text content
+    let assistantText = '';
     try {
-      content = fs.readFileSync(f.path, 'utf-8');
-    } catch (error) {
+      const lines = readJsonlLines(f.path);
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.type === 'assistant' && obj.message && obj.message.content) {
+            for (const block of obj.message.content) {
+              if (block.type === 'text' && block.text) {
+                assistantText += block.text + '\n';
+              }
+            }
+          }
+        } catch (_e) { /* skip malformed */ }
+      }
+    } catch (_e) {
       continue;
     }
 
-    if (!content.toLowerCase().includes(queryLower)) {
+    if (!assistantText.toLowerCase().includes(queryLower)) {
       continue;
     }
+
+    // Extract match snippet
+    const lowerText = assistantText.toLowerCase();
+    const idx = lowerText.indexOf(queryLower);
+    const snippetStart = Math.max(0, idx - 60);
+    const snippetEnd = Math.min(assistantText.length, idx + queryLower.length + 60);
+    const match_snippet = assistantText.slice(snippetStart, snippetEnd).replace(/\n/g, ' ');
 
     entries.push({
       session_id: path.basename(f.path, path.extname(f.path)),
@@ -170,6 +190,7 @@ function search(query, cwd, limit) {
       cwd: fileCwd,
       modified_at: getFileTimestamp(f.path),
       file_path: f.path,
+      match_snippet,
     });
   }
 

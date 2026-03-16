@@ -31,3 +31,5 @@ tmp/
 .agent-context/snapshots/
 .agent-context/history.jsonl
 .smoke-test-tmp/
+.feature-test-report.md
+.bugfix-plan/

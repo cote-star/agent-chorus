@@ -9,6 +9,7 @@ function parseArgs(argv) {
   const out = {
     snapshot: null,
     packDir: process.env.CHORUS_CONTEXT_PACK_DIR || process.env.BRIDGE_CONTEXT_PACK_DIR || '.agent-context',
+    cwd: process.cwd(),
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -23,6 +24,10 @@ function parseArgs(argv) {
         break;
       case '--pack-dir':
         out.packDir = next || out.packDir;
+        if (inlineValue == null) i += 1;
+        break;
+      case '--cwd':
+        out.cwd = next ? path.resolve(next) : out.cwd;
         if (inlineValue == null) i += 1;
         break;
       default:
@@ -53,7 +58,7 @@ function listSnapshotIds(snapshotsDir) {
 
 function main() {
   const args = parseArgs(process.argv);
-  const repoRoot = runGit(['rev-parse', '--show-toplevel'], process.cwd(), true) || process.cwd();
+  const repoRoot = runGit(['rev-parse', '--show-toplevel'], args.cwd, true) || args.cwd;
   const packRoot = path.resolve(repoRoot, args.packDir);
   const currentDir = path.join(packRoot, 'current');
   const snapshotsDir = path.join(packRoot, 'snapshots');

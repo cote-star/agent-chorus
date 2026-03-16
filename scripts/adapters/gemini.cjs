@@ -198,9 +198,32 @@ function search(query, cwd, limit) {
       continue;
     }
 
-    if (!content.toLowerCase().includes(queryLower)) {
+    let assistantText = '';
+    try {
+      const session = JSON.parse(content);
+      if (Array.isArray(session.messages)) {
+        for (const msg of session.messages) {
+          if (msg.role === 'model' && Array.isArray(msg.parts)) {
+            for (const part of msg.parts) {
+              if (part.text) assistantText += part.text + '\n';
+            }
+          }
+        }
+      }
+    } catch (_e) {
+      // Fallback to raw content if parsing fails
+      assistantText = content;
+    }
+
+    if (!assistantText.toLowerCase().includes(queryLower)) {
       continue;
     }
+
+    const lowerText = assistantText.toLowerCase();
+    const idx = lowerText.indexOf(queryLower);
+    const snippetStart = Math.max(0, idx - 60);
+    const snippetEnd = Math.min(assistantText.length, idx + queryLower.length + 60);
+    const match_snippet = assistantText.slice(snippetStart, snippetEnd).replace(/\n/g, ' ');
 
     entries.push({
       session_id: path.basename(f.path, path.extname(f.path)),
@@ -208,6 +231,7 @@ function search(query, cwd, limit) {
       cwd: null,
       modified_at: getFileTimestamp(f.path),
       file_path: f.path,
+      match_snippet,
     });
   }
 

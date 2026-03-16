@@ -148,7 +148,24 @@ function search(query, cwd, limit) {
     } catch (error) {
       continue;
     }
-    const lower = raw.toLowerCase();
+
+    let assistantText = '';
+    try {
+      // Try parsing as JSON to extract assistant content
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const msg of parsed) {
+          if (msg.role === 'assistant' && msg.content) {
+            assistantText += (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)) + '\n';
+          }
+        }
+      }
+    } catch (_e) {
+      // Fallback to raw content for non-JSON formats
+      assistantText = raw;
+    }
+
+    const lower = assistantText.toLowerCase();
     if (expectedCwd && !lower.includes(expectedCwd)) {
       continue;
     }
@@ -156,12 +173,18 @@ function search(query, cwd, limit) {
       continue;
     }
 
+    const idx = lower.indexOf(queryLower);
+    const snippetStart = Math.max(0, idx - 60);
+    const snippetEnd = Math.min(assistantText.length, idx + queryLower.length + 60);
+    const match_snippet = assistantText.slice(snippetStart, snippetEnd).replace(/\n/g, ' ');
+
     entries.push({
       session_id: path.basename(f.path, path.extname(f.path)),
       agent: 'cursor',
       cwd: null,
       modified_at: getFileTimestamp(f.path),
       file_path: f.path,
+      match_snippet,
     });
   }
 

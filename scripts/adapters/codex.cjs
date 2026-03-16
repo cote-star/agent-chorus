@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   normalizePath, collectMatchingFiles, readJsonlLines,
-  findLatestByCwd, getFileTimestamp, extractText, redactSensitiveText, isSystemDirectory,
+  findLatestByCwd, cwdMatchesProject, getFileTimestamp, extractText, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
 const codexSessionsBase = normalizePath(process.env.CHORUS_CODEX_SESSIONS_DIR || process.env.BRIDGE_CODEX_SESSIONS_DIR || '~/.codex/sessions');
@@ -123,7 +123,7 @@ function list(cwd, limit) {
   const entries = [];
   for (const f of files) {
     const fileCwd = getCodexSessionCwd(f.path) || null;
-    if (expectedCwd && fileCwd !== expectedCwd) {
+    if (expectedCwd && !cwdMatchesProject(fileCwd, expectedCwd)) {
       continue;
     }
 
@@ -153,20 +153,34 @@ function search(query, cwd, limit) {
     if (entries.length >= limit) break;
 
     const fileCwd = getCodexSessionCwd(f.path) || null;
-    if (expectedCwd && fileCwd !== expectedCwd) {
+    if (expectedCwd && !cwdMatchesProject(fileCwd, expectedCwd)) {
       continue;
     }
 
-    let content;
+    let assistantText = '';
     try {
-      content = fs.readFileSync(f.path, 'utf-8');
-    } catch (error) {
+      const lines = readJsonlLines(f.path);
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.role === 'assistant' && obj.content) {
+            assistantText += (typeof obj.content === 'string' ? obj.content : JSON.stringify(obj.content)) + '\n';
+          }
+        } catch (_e) { /* skip */ }
+      }
+    } catch (_e) {
       continue;
     }
 
-    if (!content.toLowerCase().includes(queryLower)) {
+    if (!assistantText.toLowerCase().includes(queryLower)) {
       continue;
     }
+
+    const lowerText = assistantText.toLowerCase();
+    const idx = lowerText.indexOf(queryLower);
+    const snippetStart = Math.max(0, idx - 60);
+    const snippetEnd = Math.min(assistantText.length, idx + queryLower.length + 60);
+    const match_snippet = assistantText.slice(snippetStart, snippetEnd).replace(/\n/g, ' ');
 
     entries.push({
       session_id: path.basename(f.path, path.extname(f.path)),
@@ -174,6 +188,7 @@ function search(query, cwd, limit) {
       cwd: fileCwd,
       modified_at: getFileTimestamp(f.path),
       file_path: f.path,
+      match_snippet,
     });
   }
 

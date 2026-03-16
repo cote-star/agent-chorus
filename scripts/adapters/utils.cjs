@@ -101,10 +101,18 @@ function readJsonlLines(filePath) {
   return lines;
 }
 
+function cwdMatchesProject(sessionCwd, expectedCwd) {
+  if (!sessionCwd || !expectedCwd) return false;
+  const a = normalizePath(sessionCwd);
+  const b = normalizePath(expectedCwd);
+  // Exact match OR session cwd is ancestor of expected OR expected is ancestor of session cwd
+  return a === b || b.startsWith(a + '/') || a.startsWith(b + '/');
+}
+
 function findLatestByCwd(files, cwdExtractor, expectedCwd) {
   for (const file of files) {
     const fileCwd = cwdExtractor(file.path);
-    if (fileCwd && fileCwd === expectedCwd) {
+    if (fileCwd && cwdMatchesProject(fileCwd, expectedCwd)) {
       return file.path;
     }
   }
@@ -232,6 +240,7 @@ module.exports = {
   collectMatchingFiles,
   readJsonlLines,
   findLatestByCwd,
+  cwdMatchesProject,
   getFileTimestamp,
   extractText,
   extractClaudeText,

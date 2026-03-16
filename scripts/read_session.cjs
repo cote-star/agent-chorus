@@ -12,6 +12,11 @@ const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'se
 const command = commandNames.has(rawArgs[0]) ? rawArgs[0] : 'read';
 const args = commandNames.has(rawArgs[0]) ? rawArgs.slice(1) : rawArgs;
 
+function parseLimit(raw, defaultVal = 10) {
+  const n = parseInt(raw, 10);
+  return (Number.isFinite(n) && n > 0) ? n : defaultVal;
+}
+
 function getPackageVersion() {
   try {
     const rootPackagePath = path.join(__dirname, '..', 'package.json');
@@ -90,6 +95,7 @@ function printHelp(topic = null) {
     lines.push('  --source <agent[:session-substring]> (repeatable, required)');
     lines.push('  --cwd <path>');
     lines.push('  --normalize');
+    lines.push('  --last <n>            Messages per source (default: 10)');
     lines.push('  --json');
   } else if (topic === 'report') {
     lines.push('');
@@ -1230,7 +1236,7 @@ function runList(inputArgs) {
   const agent = getOptionValue(inputArgs, '--agent', 'codex');
   const rawCwd = getOptionValue(inputArgs, '--cwd', null);
   const cwd = rawCwd ? normalizePath(rawCwd) : null;
-  const limit = parseInt(getOptionValue(inputArgs, '--limit', '10'), 10) || 10;
+  const limit = parseLimit(getOptionValue(inputArgs, '--limit', '10'));
   const asJson = hasFlag(inputArgs, '--json');
 
   const entries = listSessions(agent, cwd, limit);
@@ -1238,8 +1244,14 @@ function runList(inputArgs) {
   if (asJson) {
     console.log(JSON.stringify(entries, null, 2));
   } else {
-    for (const entry of entries) {
-      console.log(JSON.stringify(entry));
+    if (entries.length === 0) {
+      console.log('No sessions found.');
+    } else {
+      for (const entry of entries) {
+        const ts = entry.modified_at ? new Date(entry.modified_at).toLocaleString() : 'unknown';
+        const cwdLabel = entry.cwd ? ` (${entry.cwd})` : '';
+        console.log(`  ${entry.agent.padEnd(8)} ${entry.session_id.slice(0, 12)}  ${ts}${cwdLabel}`);
+      }
     }
   }
 }
@@ -1250,7 +1262,7 @@ function readSource(sourceSpec, defaultCwd) {
     id: sourceSpec.session_id || null,
     cwd: effectiveCwd,
     chatsDir: sourceSpec.chats_dir || null,
-    lastN: 1,
+    lastN: sourceSpec.lastN || 10,
   });
 }
 
@@ -1291,6 +1303,17 @@ function computeVerdict(mode, missingCount, uniqueCount, successCount) {
   return 'INCOMPLETE';
 }
 
+function extractTopics(text) {
+  const words = text.toLowerCase().match(/\b[a-z]{4,}\b/g) || [];
+  return new Set(words);
+}
+
+function jaccardSimilarity(setA, setB) {
+  const intersection = new Set([...setA].filter(x => setB.has(x)));
+  const union = new Set([...setA, ...setB]);
+  return union.size === 0 ? 1 : intersection.size / union.size;
+}
+
 function buildReport(request, defaultCwd) {
   const successful = [];
   const missing = [];
@@ -1327,26 +1350,45 @@ function buildReport(request, defaultCwd) {
     }
   }
 
-  const shouldNormalize = request.normalize === true;
-  const uniqueContents = new Set(successful.map(item => {
-    const text = (item.session.content || '').trim();
-    return shouldNormalize ? normalizeContent(text) : text;
-  }));
+  let uniqueCount = 1;
 
   if (successful.length >= 2) {
-    if (uniqueContents.size > 1) {
+    const topicSets = successful.map(item => extractTopics(item.session.content || ''));
+    const pairs = [];
+    for (let i = 0; i < topicSets.length; i++) {
+      for (let j = i + 1; j < topicSets.length; j++) {
+        const sim = jaccardSimilarity(topicSets[i], topicSets[j]);
+        pairs.push({
+          a: successful[i].sourceSpec.agent,
+          b: successful[j].sourceSpec.agent,
+          similarity: sim,
+        });
+      }
+    }
+    const avgSim = pairs.reduce((s, p) => s + p.similarity, 0) / pairs.length;
+
+    uniqueCount = avgSim > 0.6 ? 1 : successful.length;
+
+    if (avgSim > 0.6) {
       findings.push({
-        severity: 'P1',
-        summary: 'Divergent agent outputs detected',
+        severity: 'P3',
+        summary: `Agent outputs are broadly aligned (similarity: ${(avgSim * 100).toFixed(0)}%)`,
         evidence: successful.map(item => item.evidence),
-        confidence: 0.75,
+        confidence: 0.8,
+      });
+    } else if (avgSim > 0.3) {
+      findings.push({
+        severity: 'P2',
+        summary: `Agent outputs partially overlap (similarity: ${(avgSim * 100).toFixed(0)}%)`,
+        evidence: successful.map(item => item.evidence),
+        confidence: 0.7,
       });
     } else {
       findings.push({
-        severity: 'P3',
-        summary: 'All available agent outputs are aligned',
+        severity: 'P1',
+        summary: `Divergent agent outputs (similarity: ${(avgSim * 100).toFixed(0)}%)`,
         evidence: successful.map(item => item.evidence),
-        confidence: 0.9,
+        confidence: 0.75,
       });
     }
   } else {
@@ -1362,7 +1404,7 @@ function buildReport(request, defaultCwd) {
   if (missing.length > 0) {
     recommendedNextActions.push('Provide valid session identifiers or cwd values for unavailable sources.');
   }
-  if (uniqueContents.size > 1) {
+  if (uniqueCount > 1) {
     recommendedNextActions.push('Inspect full transcripts for diverging sources before final decisions.');
   }
   if (Array.isArray(request.constraints) && request.constraints.length > 0) {
@@ -1379,7 +1421,7 @@ function buildReport(request, defaultCwd) {
     task: request.task,
     success_criteria: request.success_criteria,
     sources_used: successful.map(item => `${item.evidence} ${item.session.source}`),
-    verdict: computeVerdict(request.mode, missing.length, uniqueContents.size, successful.length),
+    verdict: computeVerdict(request.mode, missing.length, uniqueCount, successful.length),
     findings: findings,
     recommended_next_actions: recommendedNextActions,
     open_questions: openQuestions,
@@ -1523,15 +1565,21 @@ function runSearch(inputArgs) {
 
   const rawCwd = getOptionValue(inputArgs, '--cwd', null);
   const cwd = rawCwd ? normalizePath(rawCwd) : null;
-  const limit = parseInt(getOptionValue(inputArgs, '--limit', '10'), 10) || 10;
+  const limit = parseLimit(getOptionValue(inputArgs, '--limit', '10'));
   const asJson = hasFlag(inputArgs, '--json');
 
   const entries = searchSessions(query, agent, cwd, limit);
   if (asJson) {
     console.log(JSON.stringify(entries, null, 2));
   } else {
-    for (const entry of entries) {
-      console.log(JSON.stringify(entry));
+    if (entries.length === 0) {
+      console.log('No matching sessions found.');
+    } else {
+      for (const entry of entries) {
+        const ts = entry.modified_at ? new Date(entry.modified_at).toLocaleString() : 'unknown';
+        const snippet = entry.match_snippet ? `\n    "${entry.match_snippet.trim()}"` : '';
+        console.log(`  ${entry.agent.padEnd(8)} ${entry.session_id.slice(0, 12)}  ${ts}${snippet}`);
+      }
     }
   }
 }
@@ -1955,10 +2003,12 @@ function runDoctor(inputArgs) {
       if (typeof updateCheck.checkNowForDoctor === 'function') {
         const updateInfo = updateCheck.checkNowForDoctor();
         if (updateInfo) {
-          addCheck('update_status', 'pass', updateInfo.message);
-          // If update available, maybe add a warn/info check?
-          // The spec says "Update: up to date" or "Update: ... available"
-          // We'll stick to what checkNowForDoctor returns for the detail
+          const updateMsg = updateInfo.error
+            ? `Error: ${updateInfo.error}`
+            : updateInfo.up_to_date
+              ? `Up to date (${updateInfo.current})`
+              : `Update available: ${updateInfo.current} → ${updateInfo.latest}`;
+          addCheck('update_status', updateInfo.error ? 'warn' : 'pass', updateMsg);
         }
       }
     }
@@ -1985,7 +2035,9 @@ function runDoctor(inputArgs) {
         ? 'Git hooks path set to .githooks'
         : `Git hooks path is ${hooksPath} (expected .githooks for context-pack pre-push automation)`
     );
-    const prePushPath = path.join(cwd, hooksPath, 'pre-push');
+    const prePushPath = path.isAbsolute(hooksPath)
+      ? path.join(hooksPath, 'pre-push')
+      : path.join(cwd, hooksPath, 'pre-push');
     const prePushExists = fs.existsSync(prePushPath);
     addCheck(
       'context_pack_pre_push',
@@ -2098,6 +2150,9 @@ function runSend(inputArgs) {
   const to = getOptionValue(inputArgs, '--to', null);
   const message = getOptionValue(inputArgs, '--message', null);
   if (!from || !to || !message) throw new Error('send requires --from, --to, and --message');
+  const validAgents = new Set(require('./adapters/registry.cjs').listAdapters());
+  if (!validAgents.has(from)) throw new Error(`Unknown agent for --from: ${from}. Valid: ${[...validAgents].join(', ')}`);
+  if (!validAgents.has(to)) throw new Error(`Unknown agent for --to: ${to}. Valid: ${[...validAgents].join(', ')}`);
   const rawCwd = getOptionValue(inputArgs, '--cwd', null);
   const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
   const asJson = hasFlag(inputArgs, '--json');
@@ -2126,6 +2181,8 @@ function runSend(inputArgs) {
 function runMessages(inputArgs) {
   const agent = getOptionValue(inputArgs, '--agent', null);
   if (!agent) throw new Error('messages requires --agent');
+  const validAgents = new Set(require('./adapters/registry.cjs').listAdapters());
+  if (!validAgents.has(agent)) throw new Error(`Unknown agent: ${agent}. Valid: ${[...validAgents].join(', ')}`);
   const rawCwd = getOptionValue(inputArgs, '--cwd', null);
   const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
   const asJson = hasFlag(inputArgs, '--json');
@@ -2372,7 +2429,12 @@ function runCompare(inputArgs) {
   const cwd = normalizePath(getOptionValue(inputArgs, '--cwd', process.cwd()));
   const asJson = hasFlag(inputArgs, '--json');
   const normalize = hasFlag(inputArgs, '--normalize');
-  const sourceSpecs = sourcesRaw.map(parseSourceArg);
+  const lastN = parseInt(getOptionValue(inputArgs, '--last', '10'), 10) || 10;
+  const sourceSpecs = sourcesRaw.map(spec => {
+    const parsed = parseSourceArg(spec);
+    parsed.lastN = lastN;
+    return parsed;
+  });
 
   const report = buildReport(
     {
