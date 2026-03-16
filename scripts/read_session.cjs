@@ -1232,6 +1232,12 @@ function readSessionViaAdapter(agent, { id, cwd, chatsDir, lastN }) {
   return result;
 }
 
+function truncateCwd(cwdPath) {
+  const parts = cwdPath.split('/').filter(Boolean);
+  if (parts.length <= 3) return cwdPath;
+  return '…/' + parts.slice(-2).join('/');
+}
+
 function runList(inputArgs) {
   const agent = getOptionValue(inputArgs, '--agent', 'codex');
   const rawCwd = getOptionValue(inputArgs, '--cwd', null);
@@ -1247,11 +1253,14 @@ function runList(inputArgs) {
     if (entries.length === 0) {
       console.log('No sessions found.');
     } else {
+      console.log(`  ${'AGENT'.padEnd(8)} ${'SESSION'.padEnd(12)}  ${'TIMESTAMP'.padEnd(24)} CWD`);
+      console.log(`  ${'─'.repeat(8)} ${'─'.repeat(12)}  ${'─'.repeat(24)} ${'─'.repeat(20)}`);
       for (const entry of entries) {
         const ts = entry.modified_at ? new Date(entry.modified_at).toLocaleString() : 'unknown';
-        const cwdLabel = entry.cwd ? ` (${entry.cwd})` : '';
-        console.log(`  ${entry.agent.padEnd(8)} ${entry.session_id.slice(0, 12)}  ${ts}${cwdLabel}`);
+        const cwdLabel = entry.cwd ? truncateCwd(entry.cwd) : '';
+        console.log(`  ${entry.agent.padEnd(8)} ${entry.session_id.slice(0, 12)}  ${ts.padEnd(24)} ${cwdLabel}`);
       }
+      console.log(`\n  ${entries.length} session${entries.length === 1 ? '' : 's'} found.`);
     }
   }
 }
@@ -1304,8 +1313,18 @@ function computeVerdict(mode, missingCount, uniqueCount, successCount) {
 }
 
 function extractTopics(text) {
+  const STOP_WORDS = new Set([
+    'this', 'that', 'with', 'from', 'have', 'been', 'were', 'will',
+    'would', 'could', 'should', 'their', 'there', 'they', 'them',
+    'then', 'than', 'these', 'those', 'some', 'what', 'when', 'which',
+    'where', 'while', 'about', 'into', 'also', 'your', 'more', 'very',
+    'just', 'only', 'each', 'does', 'done', 'here', 'such', 'most',
+    'both', 'other', 'after', 'before', 'over', 'under', 'between',
+    'being', 'make', 'made', 'like', 'well', 'back', 'even', 'still',
+    'want', 'give', 'many', 'much', 'same', 'know', 'need', 'take',
+  ]);
   const words = text.toLowerCase().match(/\b[a-z]{4,}\b/g) || [];
-  return new Set(words);
+  return new Set(words.filter(w => !STOP_WORDS.has(w)));
 }
 
 function jaccardSimilarity(setA, setB) {
@@ -1369,10 +1388,14 @@ function buildReport(request, defaultCwd) {
 
     uniqueCount = avgSim > 0.6 ? 1 : successful.length;
 
+    // Pairwise breakdown detail
+    const pairDetail = pairs.map(p => `${p.a} ↔ ${p.b}: ${(p.similarity * 100).toFixed(0)}%`).join(', ');
+
     if (avgSim > 0.6) {
       findings.push({
         severity: 'P3',
         summary: `Agent outputs are broadly aligned (similarity: ${(avgSim * 100).toFixed(0)}%)`,
+        detail: pairDetail,
         evidence: successful.map(item => item.evidence),
         confidence: 0.8,
       });
@@ -1380,6 +1403,7 @@ function buildReport(request, defaultCwd) {
       findings.push({
         severity: 'P2',
         summary: `Agent outputs partially overlap (similarity: ${(avgSim * 100).toFixed(0)}%)`,
+        detail: pairDetail,
         evidence: successful.map(item => item.evidence),
         confidence: 0.7,
       });
@@ -1387,6 +1411,7 @@ function buildReport(request, defaultCwd) {
       findings.push({
         severity: 'P1',
         summary: `Divergent agent outputs (similarity: ${(avgSim * 100).toFixed(0)}%)`,
+        detail: pairDetail,
         evidence: successful.map(item => item.evidence),
         confidence: 0.75,
       });
@@ -1508,6 +1533,7 @@ function renderReport(result, asJson) {
     lines.push(
       `- **${finding.severity}:** ${finding.summary} (evidence: ${(finding.evidence || []).join(', ')}; confidence: ${Number(finding.confidence || 0).toFixed(2)})`
     );
+    if (finding.detail) lines.push(`    Pairs: ${finding.detail}`);
   }
   lines.push('');
   lines.push('**Recommended Next Actions:**');
@@ -1573,8 +1599,9 @@ function runSearch(inputArgs) {
     console.log(JSON.stringify(entries, null, 2));
   } else {
     if (entries.length === 0) {
-      console.log('No matching sessions found.');
+      console.log(`Search for "${query}": no matching sessions found.`);
     } else {
+      console.log(`Search for "${query}": ${entries.length} result${entries.length === 1 ? '' : 's'}\n`);
       for (const entry of entries) {
         const ts = entry.modified_at ? new Date(entry.modified_at).toLocaleString() : 'unknown';
         const snippet = entry.match_snippet ? `\n    "${entry.match_snippet.trim()}"` : '';
@@ -2252,12 +2279,35 @@ function runDiff(inputArgs) {
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));
   } else {
+    const equal = result.hunks.filter(h => h.tag === 'equal').length;
     console.log(`Diff: ${result.agent} session ${result.session_a} vs ${result.session_b}`);
-    console.log(`  +${result.added_lines} added, -${result.removed_lines} removed\n`);
-    for (const hunk of result.hunks) {
-      if (hunk.tag === 'add') console.log(`+ ${hunk.content}`);
-      else if (hunk.tag === 'remove') console.log(`- ${hunk.content}`);
-      else console.log(`  ${hunk.content}`);
+    console.log(`  +${result.added_lines} added, -${result.removed_lines} removed, ${equal} unchanged\n`);
+
+    // Collapse long runs of consecutive equal lines (show first 2 and last 1, skip middle)
+    const CONTEXT_LINES = 2;
+    let i = 0;
+    while (i < result.hunks.length) {
+      const hunk = result.hunks[i];
+      if (hunk.tag !== 'equal') {
+        if (hunk.tag === 'add') console.log(`+ ${hunk.content}`);
+        else if (hunk.tag === 'remove') console.log(`- ${hunk.content}`);
+        i++;
+        continue;
+      }
+      // Count consecutive equal lines
+      let runStart = i;
+      while (i < result.hunks.length && result.hunks[i].tag === 'equal') i++;
+      const runLen = i - runStart;
+      if (runLen <= CONTEXT_LINES * 2 + 1) {
+        // Short run: print all
+        for (let k = runStart; k < i; k++) console.log(`  ${result.hunks[k].content}`);
+      } else {
+        // Long run: show first CONTEXT_LINES, skip, show last CONTEXT_LINES
+        for (let k = runStart; k < runStart + CONTEXT_LINES; k++) console.log(`  ${result.hunks[k].content}`);
+        const skipped = runLen - CONTEXT_LINES * 2;
+        console.log(`  ... (${skipped} unchanged line${skipped === 1 ? '' : 's'})`);
+        for (let k = i - CONTEXT_LINES; k < i; k++) console.log(`  ${result.hunks[k].content}`);
+      }
     }
   }
 }

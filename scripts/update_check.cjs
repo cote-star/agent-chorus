@@ -78,7 +78,10 @@ function fetchLatestVersion(timeoutMs = 5000) {
         const req = https.get(REGISTRY_URL, { timeout: timeoutMs }, (res) => {
             if (res.statusCode !== 200) {
                 res.resume();
-                return reject(new Error(`Status ${res.statusCode}`));
+                if (res.statusCode === 404) {
+                    return reject(new Error('Package not published on registry (404)'));
+                }
+                return reject(new Error(`Registry returned HTTP ${res.statusCode}`));
             }
             let data = '';
             res.on('data', (chunk) => data += chunk);
@@ -92,10 +95,12 @@ function fetchLatestVersion(timeoutMs = 5000) {
                 }
             });
         });
-        req.on('error', reject);
+        req.on('error', (err) => {
+            reject(new Error(`Registry unreachable: ${err.code || err.message}`));
+        });
         req.on('timeout', () => {
             req.destroy();
-            reject(new Error('Timeout'));
+            reject(new Error('Registry unreachable: timeout'));
         });
     });
 }
@@ -280,9 +285,7 @@ function checkNowForDoctor() {
         }
 
     } catch (e) {
-        result.error = e.message || 'registry unreachable';
-        // On error, try to use cached value if freshish? No, doctor asks for "now".
-        // But maybe fallback to cache if available? Spec says "Offline: ... error"
+        result.error = e.message || 'Unknown error';
     }
 
     return result;
