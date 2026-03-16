@@ -4,7 +4,10 @@ const os = require('os');
 const https = require('https');
 const { spawn } = require('child_process');
 
-const CACHE_DIR = path.join(os.homedir(), '.cache', 'agent-chorus');
+const CACHE_DIR = path.join(
+    process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
+    'agent-chorus'
+);
 const CACHE_FILE = path.join(CACHE_DIR, 'update-check.json');
 const LOCK_FILE = path.join(CACHE_DIR, 'update-check.lock');
 const REGISTRY_URL = 'https://registry.npmjs.org/agent-chorus/latest';

@@ -82,6 +82,13 @@ From zero to a working skill query in under a minute:
 
 This wires skill triggers into your agent configs (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) so agents know how to use chorus.
 
+To cleanly reverse everything setup does (managed blocks, scaffolding, hooks):
+
+```bash
+chorus teardown           # reverse setup for this project
+chorus teardown --global  # also remove ~/.cache/agent-chorus/
+```
+
 ### 3. Ask
 
 Tell any agent:

@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const { getAdapter } = require('./adapters/registry.cjs');
 
 const rawArgs = process.argv.slice(2);
-const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'doctor', 'trash-talk', 'context-pack', 'relevance', 'diff', 'send', 'messages']);
+const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'teardown', 'doctor', 'trash-talk', 'context-pack', 'relevance', 'diff', 'send', 'messages']);
 const command = commandNames.has(rawArgs[0]) ? rawArgs[0] : 'read';
 const args = commandNames.has(rawArgs[0]) ? rawArgs.slice(1) : rawArgs;
 
@@ -36,6 +36,7 @@ function printHelp(topic = null) {
     '  compare   Compare outputs across agents',
     '  report    Generate a coordinator report from a handoff JSON',
     '  setup     Install cross-provider instruction scaffolding in this project',
+    '  teardown  Reverse setup: remove managed blocks, scaffolding, and hooks',
     '  doctor    Check session paths and provider instruction wiring',
     '  context-pack  Build/sync/install context-pack automation',
     '  relevance     Inspect relevance patterns for context-pack filtering',
@@ -54,6 +55,7 @@ function printHelp(topic = null) {
     `  ${binName} compare --source codex --source claude --json`,
     `  ${binName} report --handoff ./handoff.json --json`,
     `  ${binName} setup`,
+    `  ${binName} teardown --dry-run`,
     `  ${binName} doctor --json`,
     `  ${binName} context-pack build`,
   ];
@@ -103,6 +105,17 @@ function printHelp(topic = null) {
     lines.push('  --force (replace existing managed blocks)');
     lines.push('  --context-pack (also build context pack and install hooks)');
     lines.push('  --json');
+  } else if (topic === 'teardown') {
+    lines.push('');
+    lines.push('teardown options:');
+    lines.push('  --cwd <path> (default: current directory)');
+    lines.push('  --dry-run');
+    lines.push('  --global (also remove ~/.cache/agent-chorus/ update-check cache)');
+    lines.push('  --json');
+    lines.push('');
+    lines.push('Removes managed blocks from CLAUDE.md/AGENTS.md/GEMINI.md,');
+    lines.push('deletes .agent-chorus/ scaffolding, and removes pre-push hook sentinel.');
+    lines.push('Context pack (.agent-context/) is preserved — remove manually if desired.');
   } else if (topic === 'doctor') {
     lines.push('');
     lines.push('doctor options:');
@@ -394,6 +407,151 @@ function upsertManagedBlock(filePath, block, markerPrefix, force, dryRun) {
   }
 
   return { status, message: status === 'created' ? 'Created file with managed block' : 'Managed block written' };
+}
+
+function removeManagedBlock(filePath, markerPrefix, dryRun) {
+  if (!fs.existsSync(filePath)) {
+    return { status: 'unchanged', message: 'File does not exist' };
+  }
+
+  const existing = fs.readFileSync(filePath, 'utf-8');
+
+  // Check both current and legacy marker prefixes
+  const legacyPrefix = markerPrefix.replace('agent-chorus:', 'agent-bridge:');
+  const prefixes = [markerPrefix, legacyPrefix];
+
+  let content = existing;
+  let removed = false;
+
+  for (const prefix of prefixes) {
+    const startMarker = `<!-- ${prefix}:start -->`;
+    const endMarker = `<!-- ${prefix}:end -->`;
+
+    let safety = 0;
+    while (safety < 10) {
+      const startIdx = content.indexOf(startMarker);
+      const endIdx = content.indexOf(endMarker);
+      if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) break;
+
+      const before = content.slice(0, startIdx).replace(/\s*$/, '');
+      const after = content.slice(endIdx + endMarker.length).replace(/^\s*/, '');
+      content = before && after ? `${before}\n\n${after}` : (before || after);
+      content = content.replace(/\n{3,}/g, '\n\n');
+      removed = true;
+      safety += 1;
+    }
+  }
+
+  if (!removed) {
+    return { status: 'unchanged', message: 'No managed block found' };
+  }
+
+  const trimmed = content.trim();
+
+  if (!dryRun) {
+    if (!trimmed) {
+      fs.unlinkSync(filePath);
+    } else {
+      fs.writeFileSync(filePath, trimmed + '\n', 'utf-8');
+    }
+  }
+
+  return {
+    status: trimmed ? 'updated' : 'deleted',
+    message: trimmed ? 'Managed block removed' : 'File deleted (was only managed block)',
+  };
+}
+
+function removeHookSentinelFromFile(hookPath, dryRun) {
+  if (!fs.existsSync(hookPath)) {
+    return null;
+  }
+
+  const existing = fs.readFileSync(hookPath, 'utf-8');
+
+  const sentinelPairs = [
+    ['# --- agent-chorus:pre-push:start ---', '# --- agent-chorus:pre-push:end ---'],
+    ['# --- agent-bridge:pre-push:start ---', '# --- agent-bridge:pre-push:end ---'],
+  ];
+
+  let content = existing;
+  let removed = false;
+
+  for (const [startSentinel, endSentinel] of sentinelPairs) {
+    const startIdx = content.indexOf(startSentinel);
+    const endIdx = content.indexOf(endSentinel);
+    if (startIdx === -1 || endIdx === -1 || endIdx < startIdx) continue;
+
+    const before = content.slice(0, startIdx).replace(/\s*$/, '');
+    const after = content.slice(endIdx + endSentinel.length).replace(/^\s*/, '');
+    content = before && after ? `${before}\n\n${after}` : (before || after);
+    content = content.replace(/\n{3,}/g, '\n\n');
+    removed = true;
+  }
+
+  if (!removed) {
+    return null;
+  }
+
+  const trimmed = content.trim();
+  const isEffectivelyEmpty = !trimmed || trimmed === '#!/usr/bin/env bash' || trimmed === '#!/bin/bash' || trimmed === '#!/bin/sh';
+
+  if (!dryRun) {
+    if (isEffectivelyEmpty) {
+      fs.unlinkSync(hookPath);
+      // Clean up empty hooks directory
+      try {
+        const hooksDir = path.dirname(hookPath);
+        const remaining = fs.readdirSync(hooksDir);
+        if (remaining.length === 0) {
+          fs.rmdirSync(hooksDir);
+        }
+      } catch (_) { /* ignore */ }
+    } else {
+      fs.writeFileSync(hookPath, trimmed + '\n', 'utf-8');
+    }
+  }
+
+  return {
+    path: hookPath,
+    status: isEffectivelyEmpty ? 'deleted' : 'updated',
+    message: isEffectivelyEmpty ? 'Hook file deleted (was only chorus sentinel)' : 'Hook sentinel removed',
+  };
+}
+
+function removeHookSentinel(cwd, dryRun) {
+  // Check multiple potential hook locations:
+  // 1. core.hooksPath (git config — may be global or local)
+  // 2. .githooks/ in project root (chorus default)
+  // 3. .git/hooks/ (git default)
+  const candidates = [];
+
+  try {
+    let configPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+      cwd,
+      encoding: 'utf8',
+    }).trim();
+    if (!path.isAbsolute(configPath)) {
+      configPath = path.join(cwd, configPath);
+    }
+    candidates.push(path.join(configPath, 'pre-push'));
+  } catch (_) { /* core.hooksPath not set */ }
+
+  candidates.push(path.join(cwd, '.githooks', 'pre-push'));
+  candidates.push(path.join(cwd, '.git', 'hooks', 'pre-push'));
+
+  // Deduplicate paths
+  const seen = new Set();
+  for (const hookPath of candidates) {
+    const resolved = path.resolve(hookPath);
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
+
+    const result = removeHookSentinelFromFile(hookPath, dryRun);
+    if (result) return result;
+  }
+
+  return { path: candidates[0] || path.join(cwd, '.githooks', 'pre-push'), status: 'unchanged', message: 'No hook sentinel found' };
 }
 
 function defaultSetupIntents() {
@@ -1571,6 +1729,128 @@ function runSetup(inputArgs) {
   }
 }
 
+function getCacheDir() {
+  return path.join(
+    process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'),
+    'agent-chorus'
+  );
+}
+
+function runTeardown(inputArgs) {
+  const cwd = normalizePath(getOptionValue(inputArgs, '--cwd', process.cwd()));
+  const asJson = hasFlag(inputArgs, '--json');
+  const dryRun = hasFlag(inputArgs, '--dry-run');
+  const global = hasFlag(inputArgs, '--global');
+  const operations = [];
+  const warnings = [];
+
+  // Validate target directory is not a system path
+  if (isSystemDirectory(cwd)) {
+    throw new Error(`Refusing to run teardown in system directory: ${cwd}`);
+  }
+
+  // 1. Remove managed blocks from provider instruction files
+  for (const provider of setupProviders) {
+    const targetPath = path.join(cwd, provider.targetFile);
+    const markerPrefix = `agent-chorus:${provider.agent}`;
+    const result = removeManagedBlock(targetPath, markerPrefix, dryRun);
+    operations.push({
+      type: 'integration',
+      path: targetPath,
+      status: result.status,
+      note: result.message,
+    });
+  }
+
+  // 2. Remove .agent-chorus/ directory (scaffolding)
+  const setupRoot = path.join(cwd, '.agent-chorus');
+  if (fs.existsSync(setupRoot)) {
+    if (!dryRun) {
+      fs.rmSync(setupRoot, { recursive: true, force: true });
+    }
+    operations.push({
+      type: 'directory',
+      path: setupRoot,
+      status: 'deleted',
+      note: 'Removed scaffolding directory',
+    });
+  } else {
+    operations.push({
+      type: 'directory',
+      path: setupRoot,
+      status: 'unchanged',
+      note: 'Scaffolding directory does not exist',
+    });
+  }
+
+  // 3. Remove pre-push hook sentinel (checks core.hooksPath, .githooks/, .git/hooks/)
+  const hookResult = removeHookSentinel(cwd, dryRun);
+  operations.push({
+    type: 'hook',
+    path: hookResult.path,
+    status: hookResult.status,
+    note: hookResult.message,
+  });
+
+  // 4. Warn about .agent-context/ (never auto-delete — contains project data)
+  const contextPackDir = path.join(cwd, '.agent-context');
+  if (fs.existsSync(contextPackDir)) {
+    warnings.push(`Context pack at ${contextPackDir} preserved (contains project data). Remove manually if desired.`);
+    operations.push({
+      type: 'context-pack',
+      path: contextPackDir,
+      status: 'preserved',
+      note: 'Contains project data; not removed by teardown',
+    });
+  }
+
+  // 5. If --global: remove cache directory
+  if (global) {
+    const cacheDir = getCacheDir();
+    if (fs.existsSync(cacheDir)) {
+      if (!dryRun) {
+        fs.rmSync(cacheDir, { recursive: true, force: true });
+      }
+      operations.push({
+        type: 'cache',
+        path: cacheDir,
+        status: 'deleted',
+        note: 'Removed global update-check cache',
+      });
+    } else {
+      operations.push({
+        type: 'cache',
+        path: cacheDir,
+        status: 'unchanged',
+        note: 'Global cache does not exist',
+      });
+    }
+  }
+
+  const changedCount = operations.filter(op => op.status === 'deleted' || op.status === 'updated').length;
+  const result = {
+    cwd,
+    dry_run: dryRun,
+    global,
+    operations,
+    warnings,
+    changed: changedCount,
+  };
+
+  if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  console.log(`Agent Chorus teardown ${dryRun ? '(dry run) ' : ''}complete for ${cwd}`);
+  for (const warning of warnings) {
+    console.log(`- [warn] ${warning}`);
+  }
+  for (const op of operations) {
+    console.log(`- [${op.status}] ${op.path} (${op.note})`);
+  }
+}
+
 function runDoctor(inputArgs) {
   const cwd = normalizePath(getOptionValue(inputArgs, '--cwd', process.cwd()));
   const asJson = hasFlag(inputArgs, '--json');
@@ -2213,6 +2493,8 @@ try {
     runSearch(args);
   } else if (command === 'setup') {
     runSetup(args);
+  } else if (command === 'teardown') {
+    runTeardown(args);
   } else if (command === 'doctor') {
     runDoctor(args);
   } else if (command === 'context-pack') {
