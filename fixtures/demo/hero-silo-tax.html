@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Silo Tax</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1080px; height: 1080px;
+    background: #FAF8F5;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    color: #333;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .slide {
+    position: absolute; top: 0; left: 0;
+    width: 1080px; height: 1080px;
+    display: flex; flex-direction: column;
+    align-items: center;
+    padding: 40px 60px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  .slide.active { opacity: 1; }
+
+  /* Shared header */
+  .top-bar {
+    width: 100%;
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 20px;
+  }
+  .logo {
+    width: 36px; height: 36px;
+    border: 3px solid #E8793A;
+    border-radius: 50%;
+    border-bottom-color: transparent;
+    flex-shrink: 0;
+  }
+  .phase-dot {
+    width: 12px; height: 12px; border-radius: 50%;
+  }
+  .phase-dot.red { background: #E8793A; }
+  .phase-dot.green { background: #4CAF50; }
+  .phase-label {
+    font-size: 14px; letter-spacing: 4px; font-weight: 700;
+    color: #555;
+  }
+  .spacer { flex: 1; }
+  h1 {
+    font-size: 44px; font-weight: 700; color: #1a1a1a;
+  }
+
+  /* Diagram area */
+  .diagram {
+    flex: 1;
+    width: 100%;
+    position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Center box */
+  .center-box {
+    width: 180px; height: 80px;
+    border: 2px solid #333;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700; color: #1a1a1a;
+    background: #fff;
+    position: relative;
+    z-index: 2;
+  }
+  .center-box.accent {
+    border: 3px solid #E8793A;
+    background: #FFF3EC;
+    color: #E8793A;
+  }
+
+  /* Agent nodes */
+  .agent {
+    position: absolute;
+    width: 120px; height: 54px;
+    border: 1.5px solid #ccc;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 600; color: #555;
+    background: #fff;
+    z-index: 2;
+  }
+
+  /* Positions: roughly a diamond/star pattern */
+  .agent.top-left    { top: 60px;  left: 100px; }
+  .agent.top-right   { top: 60px;  right: 100px; }
+  .agent.bottom-left  { bottom: 120px; left: 100px; }
+  .agent.bottom-right { bottom: 120px; right: 100px; }
+
+  /* Lines (SVG overlay) */
+  .lines-svg {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    z-index: 1;
+  }
+  .line-label {
+    font-size: 11px; fill: #999; font-style: italic;
+  }
+  .line-before { stroke: #ccc; stroke-width: 1.5; fill: none; }
+  .line-after  { stroke: #E8793A; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+
+  /* Caption area */
+  .caption {
+    text-align: center;
+    margin-top: auto;
+    padding-bottom: 10px;
+  }
+  .caption .highlight {
+    font-size: 17px; color: #E8793A; font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .caption .sub {
+    font-size: 14px; color: #888; font-style: italic;
+  }
+
+  /* Footer */
+  .footer {
+    width: 100%;
+    display: flex; justify-content: space-between; align-items: flex-end;
+    padding-top: 16px;
+    border-top: 2px solid #E8793A;
+    margin-top: 20px;
+  }
+  .footer-left { font-size: 14px; font-weight: 600; color: #555; }
+  .footer-right { font-size: 12px; color: #999; font-style: italic; }
+  .qr {
+    position: absolute;
+    bottom: 150px; right: 40px;
+    width: 72px; height: 72px;
+    z-index: 10;
+  }
+
+  /* --- AFTER slide: two-column layout --- */
+  .after-layout {
+    flex: 1; width: 100%;
+    display: flex; align-items: center; justify-content: center;
+    gap: 40px;
+  }
+  .after-col {
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+  }
+  .after-col .agent-after {
+    width: 130px; height: 50px;
+    border: 1.5px solid #ccc;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px; font-weight: 600; color: #555;
+    background: #fff;
+  }
+  .after-middle {
+    display: flex; flex-direction: column; align-items: center; gap: 20px;
+  }
+  .your-agent-box {
+    width: 160px; height: 60px;
+    border: 2px solid #333;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; font-weight: 700; color: #1a1a1a;
+    background: #fff;
+  }
+  .chorus-box {
+    width: 180px; height: 70px;
+    border: 3px solid #E8793A;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 700; color: #E8793A;
+    background: #FFF3EC;
+  }
+  .arrow-label {
+    font-size: 12px; color: #888; font-style: italic;
+    text-align: center;
+  }
+  .arrow-down {
+    font-size: 24px; color: #E8793A;
+  }
+  .connector-row {
+    display: flex; align-items: center; gap: 16px;
+  }
+  .dash-line {
+    width: 60px; height: 0;
+    border-top: 2px dashed #E8793A;
+  }
+  .sessions-col {
+    display: flex; flex-direction: column; gap: 10px; align-items: center;
+  }
+  .session-label {
+    font-size: 11px; color: #999; font-style: italic;
+  }
+  .session-box {
+    width: 130px; height: 44px;
+    border: 1.5px solid #ddd;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 500; color: #777;
+    background: #FAFAFA;
+  }
+  .evidence-label {
+    font-size: 13px; color: #E8793A; font-weight: 600;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <img class="qr" src="qr-code.svg" alt="QR">
+
+  <!-- FRAME 1: BEFORE -->
+  <div class="slide active" id="slide-before">
+    <div class="top-bar">
+      <div class="logo"></div>
+      <div class="phase-dot red"></div>
+      <span class="phase-label">B E F O R E</span>
+      <span class="spacer"></span>
+      <h1>The Silo Tax</h1>
+    </div>
+
+    <div class="diagram">
+      <svg class="lines-svg" viewBox="0 0 960 560">
+        <!-- Lines from center (480,280) to each agent corner -->
+        <!-- Top-left (Codex): ~140,87 -->
+        <line x1="420" y1="260" x2="200" y2="100" class="line-before"/>
+        <text x="280" y="165" class="line-label" transform="rotate(-35,280,165)">tab-switch</text>
+        <!-- Top-right (Claude): ~760,87 -->
+        <line x1="540" y1="260" x2="760" y2="100" class="line-before"/>
+        <text x="670" y="165" class="line-label" transform="rotate(35,670,165)">copy-paste</text>
+        <!-- Bottom-left (Gemini): ~140,440 -->
+        <line x1="420" y1="300" x2="200" y2="440" class="line-before"/>
+        <text x="280" y="395" class="line-label" transform="rotate(35,280,395)">re-explain</text>
+        <!-- Bottom-right (Cursor): ~760,440 -->
+        <line x1="540" y1="300" x2="760" y2="440" class="line-before"/>
+        <text x="670" y="395" class="line-label" transform="rotate(-35,670,395)">re-read</text>
+      </svg>
+
+      <div class="center-box">You</div>
+      <div class="agent top-left">Codex</div>
+      <div class="agent top-right">Claude</div>
+      <div class="agent bottom-left">Gemini</div>
+      <div class="agent bottom-right">Cursor</div>
+    </div>
+
+    <div class="caption">
+      <div class="highlight">You are the integration layer.</div>
+      <div class="sub">Every handoff is lossy. Every claim is unverifiable.</div>
+    </div>
+
+    <div class="footer">
+      <span class="footer-left">Amit Prusty</span>
+      <span class="footer-right">Confessions of a Thoughtful Engineer</span>
+    </div>
+  </div>
+
+  <!-- FRAME 2: AFTER -->
+  <div class="slide" id="slide-after">
+    <div class="top-bar">
+      <div class="logo"></div>
+      <div class="phase-dot green"></div>
+      <span class="phase-label">A F T E R</span>
+      <span class="spacer"></span>
+      <h1>The Silo Tax</h1>
+    </div>
+
+    <div class="after-layout">
+      <div class="after-col">
+        <div class="agent-after">You</div>
+        <div style="font-size:20px; color:#555;">↓</div>
+        <div class="your-agent-box">Your Agent</div>
+        <div class="arrow-down">↓</div>
+        <div class="arrow-label">chorus read</div>
+        <div class="chorus-box">chorus CLI</div>
+        <div class="arrow-label">Structured JSON + evidence</div>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:14px; align-items:center;">
+        <div class="connector-row">
+          <div class="dash-line"></div>
+          <div class="sessions-col">
+            <div class="session-box">Codex sessions</div>
+            <div class="session-label">~/.codex/sessions</div>
+          </div>
+        </div>
+        <div class="connector-row">
+          <div class="dash-line"></div>
+          <div class="sessions-col">
+            <div class="session-box">Claude sessions</div>
+            <div class="session-label">~/.claude/projects</div>
+          </div>
+        </div>
+        <div class="connector-row">
+          <div class="dash-line"></div>
+          <div class="sessions-col">
+            <div class="session-box">Gemini sessions</div>
+            <div class="session-label">~/.gemini/tmp</div>
+          </div>
+        </div>
+        <div class="connector-row">
+          <div class="dash-line"></div>
+          <div class="sessions-col">
+            <div class="session-box">Cursor sessions</div>
+            <div class="session-label">~/Library/.../Cursor</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="caption">
+      <div class="highlight">One integration point. Evidence-backed.</div>
+      <div class="sub">Nothing leaves your machine. Every claim cites its source.</div>
+    </div>
+
+    <div class="footer">
+      <span class="footer-left">Amit Prusty</span>
+      <span class="footer-right">Confessions of a Thoughtful Engineer</span>
+    </div>
+  </div>
+
+  <script>
+    // Alternate between slides every 1800ms to match original timing
+    const slides = document.querySelectorAll('.slide');
+    let current = 0;
+    setInterval(() => {
+      slides[current].classList.remove('active');
+      current = (current + 1) % slides.length;
+      slides[current].classList.add('active');
+    }, 1800);
+  </script>
+</body>
+</html>

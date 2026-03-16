@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>The Context Pack Flow</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 1080px; height: 1080px;
+    background: #FAF8F5;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    color: #333;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 40px 60px;
+  }
+  .logo {
+    align-self: flex-start;
+    width: 36px; height: 36px;
+    border: 3px solid #E8793A;
+    border-radius: 50%;
+    border-bottom-color: transparent;
+    margin-bottom: 30px;
+  }
+  h1 {
+    font-size: 48px; font-weight: 700; color: #1a1a1a;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    font-size: 18px; color: #777; font-style: italic;
+    margin-bottom: 50px;
+  }
+  .label {
+    align-self: flex-start;
+    font-size: 14px; letter-spacing: 4px; font-weight: 600;
+    margin-bottom: 16px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .label .dot {
+    width: 10px; height: 10px; border-radius: 50%;
+  }
+  .dot-red { background: #E8793A; }
+  .dot-green { background: #4CAF50; }
+  .before-box {
+    width: 100%; max-width: 780px;
+    background: #fff;
+    border: 1px solid #e0dcd8;
+    border-radius: 8px;
+    padding: 28px 40px;
+    text-align: center;
+    margin-bottom: 20px;
+  }
+  .before-box h3 { font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+  .before-box p { font-size: 15px; color: #888; }
+  .arrow-section {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 20px;
+  }
+  .arrow-section .arrow {
+    font-size: 28px; color: #555;
+  }
+  .arrow-section .cmd {
+    font-size: 15px; color: #E8793A; font-weight: 600;
+    font-family: 'SF Mono', 'Fira Code', monospace;
+  }
+  .cards {
+    display: flex; gap: 8px; align-items: center;
+    margin-bottom: 16px;
+  }
+  .card {
+    width: 140px; height: 100px;
+    background: #FFF8F4;
+    border: 1px solid #e0dcd8;
+    border-radius: 8px;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+  }
+  .card.active {
+    border: 2.5px solid #E8793A;
+    background: #FFF3EC;
+  }
+  .card .num { font-size: 32px; font-weight: 700; color: #1a1a1a; }
+  .card .name { font-size: 13px; font-weight: 600; color: #E8793A; margin-top: 2px; }
+  .card:not(.active) .name { color: #888; }
+  .card-arrow { font-size: 18px; color: #ccc; }
+  .stats {
+    font-size: 14px; color: #888; margin-bottom: 28px;
+  }
+  .dotted-section {
+    display: flex; align-items: center; gap: 12px;
+    margin-bottom: 20px;
+  }
+  .dotted-arrow {
+    border-left: 2px dashed #bbb;
+    height: 30px;
+  }
+  .dotted-label { font-size: 14px; color: #888; font-style: italic; }
+  .source-box {
+    width: 100%; max-width: 520px;
+    background: #fff;
+    border: 1px solid #e0dcd8;
+    border-radius: 8px;
+    padding: 20px 40px;
+    text-align: center;
+    margin-bottom: 32px;
+  }
+  .source-box h3 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .source-box p { font-size: 14px; color: #888; }
+  .quote {
+    font-size: 16px; color: #E8793A; font-style: italic;
+    margin-bottom: 40px;
+  }
+  .divider {
+    width: 100%; max-width: 780px;
+    border: none; border-top: 2px solid #E8793A;
+    margin-bottom: 30px;
+  }
+  .footer {
+    width: 100%; max-width: 780px;
+    display: flex; justify-content: space-between;
+    align-items: flex-end;
+  }
+  .footer-left { font-size: 14px; font-weight: 600; color: #555; }
+  .footer-right { font-size: 12px; color: #999; font-style: italic; }
+  .qr {
+    position: absolute;
+    bottom: 150px; right: 40px;
+    width: 72px; height: 72px;
+  }
+</style>
+</head>
+<body style="position:relative;">
+  <img class="qr" src="qr-code.svg" alt="QR">
+  <div class="logo"></div>
+  <h1>The Context Pack Flow</h1>
+  <p class="subtitle">From blind crawl to guided read in 1,000 words</p>
+
+  <div class="label"><span class="dot dot-red"></span> B E F O R E</div>
+  <div class="before-box">
+    <h3>Full Repo Crawl</h3>
+    <p>102 files &middot; ~15,000 tokens &middot; every session</p>
+  </div>
+
+  <div class="arrow-section">
+    <span class="arrow">&darr;</span>
+    <span class="cmd">chorus context-pack init</span>
+  </div>
+
+  <div class="label"><span class="dot dot-green"></span> A F T E R</div>
+  <div class="cards">
+    <div class="card active">
+      <span class="num">00</span>
+      <span class="name">START</span>
+    </div>
+    <span class="card-arrow">&rsaquo;</span>
+    <div class="card">
+      <span class="num">10</span>
+      <span class="name">OVERVIEW</span>
+    </div>
+    <span class="card-arrow">&rsaquo;</span>
+    <div class="card">
+      <span class="num">20</span>
+      <span class="name">CODE MAP</span>
+    </div>
+    <span class="card-arrow">&rsaquo;</span>
+    <div class="card">
+      <span class="num">30</span>
+      <span class="name">INVARIANTS</span>
+    </div>
+    <span class="card-arrow">&rsaquo;</span>
+    <div class="card">
+      <span class="num">40</span>
+      <span class="name">OPS</span>
+    </div>
+  </div>
+  <p class="stats">~1,000 words &middot; deterministic read order &middot; auto-synced</p>
+
+  <div class="dotted-section">
+    <div class="dotted-arrow"></div>
+    <span class="dotted-label">targeted reads only</span>
+  </div>
+
+  <div class="source-box">
+    <h3>Source Files</h3>
+    <p>Only files the index points to</p>
+  </div>
+
+  <p class="quote">A new session is a clean slate. The index is what keeps it from being a blank one.</p>
+
+  <hr class="divider">
+  <div class="footer">
+    <span class="footer-left">Amit Prusty</span>
+    <span class="footer-right">Confessions of a Thoughtful Engineer</span>
+  </div>
+</body>
+</html>
