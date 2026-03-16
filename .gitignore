@@ -33,3 +33,5 @@ tmp/
 .smoke-test-tmp/
 .feature-test-report.md
 .bugfix-plan/
+.feature-test-report-v2.md
+.feature-test-report-v3.md
