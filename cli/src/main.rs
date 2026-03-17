@@ -608,10 +608,22 @@ fn run(cli: Cli) -> Result<()> {
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else if entries.is_empty() {
+                println!("No sessions found.");
             } else {
+                println!("  {:<8} {:<12}  {:<24} CWD", "AGENT", "SESSION", "TIMESTAMP");
+                println!("  {:<8} {:<12}  {:<24} {}", "─".repeat(8), "─".repeat(12), "─".repeat(24), "─".repeat(20));
                 for entry in &entries {
-                    println!("{}", serde_json::to_string(entry).unwrap_or_default());
+                    let agent_name = entry.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+                    let sid = entry.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let sid_short = if sid.len() > 12 { &sid[..12] } else { sid };
+                    let ts_raw = entry.get("modified_at").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let ts = format_timestamp(ts_raw);
+                    let cwd_val = entry.get("cwd").and_then(|v| v.as_str()).unwrap_or("");
+                    let cwd_display = if cwd_val.is_empty() { String::new() } else { truncate_cwd(cwd_val) };
+                    println!("  {:<8} {:<12}  {:<24} {}", agent_name, sid_short, ts, cwd_display);
                 }
+                println!("\n  {} session{} found.", entries.len(), if entries.len() == 1 { "" } else { "s" });
             }
         }
         Commands::Search { query, agent, cwd, limit, json } => {
@@ -626,9 +638,23 @@ fn run(cli: Cli) -> Result<()> {
 
             if json {
                 println!("{}", serde_json::to_string_pretty(&entries)?);
+            } else if entries.is_empty() {
+                println!("Search for \"{}\": no matching sessions found.", query);
             } else {
+                println!("Search for \"{}\": {} result{}\n",
+                    query, entries.len(), if entries.len() == 1 { "" } else { "s" });
                 for entry in &entries {
-                    println!("{}", serde_json::to_string(entry).unwrap_or_default());
+                    let agent_name = entry.get("agent").and_then(|v| v.as_str()).unwrap_or("");
+                    let sid = entry.get("session_id").and_then(|v| v.as_str()).unwrap_or("");
+                    let sid_short = if sid.len() > 12 { &sid[..12] } else { sid };
+                    let ts_raw = entry.get("modified_at").and_then(|v| v.as_str()).unwrap_or("unknown");
+                    let ts = format_timestamp(ts_raw);
+                    let snippet = entry.get("match_snippet")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| format!("\n    \"{}\"", s.trim()))
+                        .unwrap_or_default();
+                    println!("  {:<8} {:<12}  {}{}", agent_name, sid_short, ts, snippet);
                 }
             }
         }
@@ -913,4 +939,46 @@ fn format_agent_name(agent: &str) -> &'static str {
         "cursor" => "Cursor",
         _ => "Unknown",
     }
+}
+
+/// Format an ISO 8601 timestamp as a locale-like string (e.g., "3/17/2026, 4:54:38 PM").
+fn format_timestamp(iso: &str) -> String {
+    // Parse "YYYY-MM-DDThh:mm:ss" prefix
+    let parts: Vec<&str> = iso.splitn(2, 'T').collect();
+    if parts.len() < 2 {
+        return iso.to_string();
+    }
+    let date_parts: Vec<&str> = parts[0].split('-').collect();
+    let time_str = parts[1].trim_end_matches('Z').split('.').next().unwrap_or("");
+    let time_parts: Vec<&str> = time_str.split(':').collect();
+    if date_parts.len() < 3 || time_parts.len() < 3 {
+        return iso.to_string();
+    }
+    let year: u32 = date_parts[0].parse().unwrap_or(0);
+    let month: u32 = date_parts[1].parse().unwrap_or(0);
+    let day: u32 = date_parts[2].parse().unwrap_or(0);
+    let hour: u32 = time_parts[0].parse().unwrap_or(0);
+    let minute: u32 = time_parts[1].parse().unwrap_or(0);
+    let second: u32 = time_parts[2].parse().unwrap_or(0);
+
+    let (h12, ampm) = if hour == 0 {
+        (12, "AM")
+    } else if hour < 12 {
+        (hour, "AM")
+    } else if hour == 12 {
+        (12, "PM")
+    } else {
+        (hour - 12, "PM")
+    };
+
+    format!("{}/{}/{}, {}:{:02}:{:02} {}", month, day, year, h12, minute, second, ampm)
+}
+
+/// Truncate a CWD path: if >3 segments, show …/last/two.
+fn truncate_cwd(path: &str) -> String {
+    let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.len() <= 3 {
+        return path.to_string();
+    }
+    format!("…/{}", parts[parts.len() - 2..].join("/"))
 }

@@ -2266,6 +2266,7 @@ function runDiff(inputArgs) {
 
   const added = hunks.filter(h => h.tag === 'add').length;
   const removed = hunks.filter(h => h.tag === 'remove').length;
+  const equal = hunks.filter(h => h.tag === 'equal').length;
 
   const result = {
     agent,
@@ -2273,13 +2274,13 @@ function runDiff(inputArgs) {
     session_b: sessionB.session_id || toId,
     added_lines: added,
     removed_lines: removed,
+    equal_lines: equal,
     hunks,
   };
 
   if (asJson) {
     console.log(JSON.stringify(result, null, 2));
   } else {
-    const equal = result.hunks.filter(h => h.tag === 'equal').length;
     console.log(`Diff: ${result.agent} session ${result.session_a} vs ${result.session_b}`);
     console.log(`  +${result.added_lines} added, -${result.removed_lines} removed, ${equal} unchanged\n`);
 

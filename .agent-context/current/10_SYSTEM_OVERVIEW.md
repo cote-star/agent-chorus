@@ -1,8 +1,8 @@
 # System Overview
 
 ## Product Shape
-- npm package: `agent-chorus` v0.8.0 (binary: `chorus`, `chorus-node`)
-- Rust crate: `agent-chorus` v0.8.0 (binary: `chorus`)
+- npm package: `agent-chorus` v0.7.0 (binary: `chorus`, `chorus-node`)
+- Rust crate: `agent-chorus` v0.7.0 (binary: `chorus`)
 - 124 tracked files across Node scripts, Rust source, schemas, fixtures, and docs
 - Ships as a global CLI tool (`npm install -g agent-chorus`)
 

@@ -12,12 +12,13 @@ use std::path::{Path, PathBuf};
 const VALID_AGENTS: &[&str] = &["codex", "gemini", "claude", "cursor"];
 
 /// Validate that an agent name is recognized.
-fn validate_agent(name: &str) -> Result<()> {
+fn validate_agent(name: &str, context: &str) -> Result<()> {
     if VALID_AGENTS.contains(&name) {
         Ok(())
     } else {
         bail!(
-            "Unknown agent: {}. Valid: {}",
+            "Unknown agent for {}: {}. Valid: {}",
+            context,
             name,
             VALID_AGENTS.join(", ")
         )
@@ -46,8 +47,8 @@ fn message_file(cwd: &Path, agent: &str) -> PathBuf {
 
 /// Send a message from one agent to another.
 pub fn send_message(from: &str, to: &str, content: &str, cwd: &str) -> Result<Message> {
-    validate_agent(from)?;
-    validate_agent(to)?;
+    validate_agent(from, "--from")?;
+    validate_agent(to, "--to")?;
     let cwd_path = Path::new(cwd);
     let dir = messages_dir(cwd_path);
     fs::create_dir_all(&dir)
@@ -80,7 +81,7 @@ pub fn send_message(from: &str, to: &str, content: &str, cwd: &str) -> Result<Me
 
 /// Read all messages for a given agent.
 pub fn read_messages(agent: &str, cwd: &str) -> Result<Vec<Message>> {
-    validate_agent(agent)?;
+    validate_agent(agent, "--agent")?;
     let cwd_path = Path::new(cwd);
     let file = message_file(cwd_path, agent);
 
@@ -111,7 +112,7 @@ pub fn read_messages(agent: &str, cwd: &str) -> Result<Vec<Message>> {
 
 /// Clear all messages for a given agent.
 pub fn clear_messages(agent: &str, cwd: &str) -> Result<usize> {
-    validate_agent(agent)?;
+    validate_agent(agent, "--agent")?;
     let cwd_path = Path::new(cwd);
     let file = message_file(cwd_path, agent);
 
@@ -166,14 +167,16 @@ fn chrono_now() -> String {
         remaining_days -= md as i64;
     }
 
+    let millis = now.subsec_millis();
     format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         y,
         m + 1,
         remaining_days + 1,
         hours,
         minutes,
-        seconds
+        seconds,
+        millis
     )
 }
 

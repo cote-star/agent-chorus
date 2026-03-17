@@ -1,52 +1,31 @@
 # Release Notes
 
-## v0.8.0 (2026-03-17)
+## v0.7.0 (2026-03-17)
 
 ### Highlights
-- **Full Node/Rust parity** for all 11 features added since v0.7.0. Conformance suite passes 14/14 tests.
+- **Renamed**: `agent-bridge` / `bridge` → `agent-chorus` / `chorus`. All env vars, sentinels, output markers, and docs updated with backward-compatible fallbacks.
+- **Full Node/Rust parity**: Conformance suite passes 14/14 tests. Both implementations produce identical JSON output for read, compare, report, list, search, and diff.
 - **Jaccard-based comparison**: `chorus compare` now uses topic extraction + stop-word filtering + Jaccard similarity for pairwise agent comparison, replacing exact-match hashing. Tiered findings: >60% aligned (P3), >30% partial (P2), ≤30% divergent (P1).
 - **Assistant-only search**: `chorus search` now indexes only assistant/model messages instead of raw content. Results include a `match_snippet` field with a ~120-character context window.
 - **Teardown command** (new): `chorus teardown` removes managed blocks, scaffolding directory, and hook sentinels with `--dry-run` and `--global` support.
+- **Relevance Introspection** (new): `chorus relevance --list | --test <path> | --suggest` — inspect and test context-pack filtering patterns.
+- **Redaction Audit Trail** (new): `chorus read --audit-redactions` — shows what was redacted and why.
+- **Session Diff** (new): `chorus diff --agent X --from id1 --to id2` — line-level diff between two sessions with unchanged-line collapsing.
+- **Agent-to-Agent Messaging** (new): `chorus send` and `chorus messages` — simple JSONL message queue between agents with agent name validation.
+- **Context-pack v2**: agent-driven content model with `init` → agent fill → `seal` workflow, manifest integrity via `verify`, and configurable relevance engine.
+- **Security hardening**: trust model documentation, output boundary markers, `--metadata-only` flag, system directory guards, concurrent-read safety, and adversarial redaction test suite.
 
 ### Added
 - `chorus teardown [--cwd] [--dry-run] [--global] [--json]` — clean removal of Agent Chorus integration from a project.
 - `chorus compare --last N` — control how many messages to read from each source (default 10).
 - `match_snippet` field in `chorus search --json` output — shows context around the first search hit.
 - `detail` field in coordinator report findings — shows pairwise similarity breakdown.
+- `equal_lines` field in `chorus diff --json` output — count of unchanged lines.
 - Jaccard similarity with 62-word stop-word list for topic-based comparison.
 - Hierarchical CWD matching — session CWD can be an ancestor or descendant of the expected path.
-- Agent name validation in messaging commands (`send`, `messages`, `clear`).
+- Agent name validation in messaging commands (`send`, `messages`, `clear`) with flag-specific error context.
 - Discriminated error messages in update check (404 vs HTTP errors vs timeout vs transport).
-- Diff summary now includes unchanged line count and collapses long equal runs.
-- `cli/src/teardown.rs` — managed block removal, hook sentinel cleanup, `.agent-context/` preservation.
-
-### Changed
-- `chorus compare` uses Jaccard similarity instead of exact content hashing for divergence detection.
-- `chorus search` filters to assistant-only text before matching (Codex, Claude, Gemini, Cursor).
-- `chorus diff` human output now shows `+N added, -N removed, N unchanged` and collapses long equal runs with context windows.
-- Removed `--normalize` flag from `chorus compare` (superseded by Jaccard topic comparison).
-- `schemas/report.schema.json` — added optional `detail` field to findings.
-- `schemas/list-output.schema.json` — added optional `match_snippet` field.
-- Removed dead `normalize` field from Rust `ReportRequest` struct and unused `normalize_content` function.
-
-### Upgrade Notes
-- No breaking changes for existing CLI consumers. JSON output is backward-compatible (new fields are additive).
-- The `--normalize` flag on `chorus compare` is removed. Comparison now uses Jaccard similarity by default.
-- `chorus teardown --dry-run` is recommended before running teardown to preview what will be removed.
-- All golden fixtures regenerated from Node reference implementation.
-
-## v0.7.0 (2026-03-11)
-
-### Highlights
-- **Renamed**: `agent-bridge` / `bridge` → `agent-chorus` / `chorus`. All env vars, sentinels, output markers, and docs updated with backward-compatible fallbacks.
-- **Relevance Introspection** (new): `chorus relevance --list | --test <path> | --suggest` — inspect and test context-pack filtering patterns.
-- **Redaction Audit Trail** (new): `chorus read --audit-redactions` — shows what was redacted and why.
-- **Session Diff** (new): `chorus diff --agent X --from id1 --to id2` — line-level diff between two sessions.
-- **Agent-to-Agent Messaging** (new): `chorus send` and `chorus messages` — simple JSONL message queue between agents.
-- **Context-pack v2**: agent-driven content model with `init` → agent fill → `seal` workflow, manifest integrity via `verify`, and configurable relevance engine.
-- **Security hardening**: trust model documentation, output boundary markers, `--metadata-only` flag, system directory guards, concurrent-read safety, and adversarial redaction test suite.
-
-### Added
+- Human-mode formatted tables for `chorus list` and `chorus search` (Rust) — column headers, CWD truncation, result counts, match snippet display.
 - `chorus relevance --list` — show current include/exclude patterns and their source.
 - `chorus relevance --test <path>` — test whether a file path is relevant and which pattern matched.
 - `chorus relevance --suggest` — suggest patterns based on detected project conventions.
@@ -56,7 +35,8 @@
 - `chorus messages --agent X [--clear] [--json]` — read (and optionally clear) messages for an agent.
 - `schemas/message.schema.json` — JSON Schema for agent-to-agent messages.
 - `cli/src/diff.rs` — LCS-based line diff module.
-- `cli/src/messaging.rs` — JSONL message queue module.
+- `cli/src/messaging.rs` — JSONL message queue module with millisecond-precision timestamps.
+- `cli/src/teardown.rs` — managed block removal, hook sentinel cleanup, `.agent-context/` preservation.
 - `chorus context-pack init` — scaffolds template files, `GUIDE.md`, and `relevance.json`.
 - `chorus context-pack seal` — validates canonical files, generates manifest, snapshot, and history.
 - `chorus context-pack verify` — validates manifest checksums against actual file content.
@@ -79,6 +59,13 @@
 - **Sentinel markers renamed**: `agent-bridge:` → `agent-chorus:` with legacy sentinel detection in hook management.
 - **Output markers renamed**: `BEGIN/END BRIDGE OUTPUT` → `BEGIN/END CHORUS OUTPUT`, `bridge_output_version` → `chorus_output_version`.
 - **Setup directory renamed**: `.agent-bridge/` → `.agent-chorus/`.
+- `chorus compare` uses Jaccard similarity instead of exact content hashing for divergence detection.
+- `chorus search` filters to assistant-only text before matching (Codex, Claude, Gemini, Cursor).
+- `chorus diff` human output now shows `+N added, -N removed, N unchanged` and collapses long equal runs with context windows.
+- Removed `--normalize` flag from `chorus compare` (superseded by Jaccard topic comparison).
+- `schemas/report.schema.json` — added optional `detail` field to findings.
+- `schemas/list-output.schema.json` — added optional `match_snippet` field.
+- Removed dead `normalize` field from Rust `ReportRequest` struct and unused `normalize_content` function.
 - Hook installation uses sentinel markers (`# --- agent-chorus:pre-push:start/end ---`) to append to existing hooks instead of clobbering.
 - `repo_root` field in manifest.json now emits `"."` instead of the absolute path (prevents path leakage).
 - SKILL.md consolidated into CLAUDE.md and AGENTS.md; SKILL.md is now a redirect.
@@ -92,6 +79,7 @@
 - JSONL reader drops truncated last line for concurrent-read safety (both Node and Rust).
 - `read-output.schema.json` now includes `chorus_output_version`, allows nullable `content`, and optional `redactions` array.
 - All documentation updated from "build generates content" to "agent authors + seal finalizes".
+- All golden fixtures regenerated from Node reference implementation.
 
 ### Fixes
 - Fixed duplicate `sha256()` and `readJson()` declarations in `seal.cjs` from merge.
@@ -102,7 +90,7 @@
 - Added stale lockfile recovery (Node + Rust) for interrupted `seal` operations.
 - Added symlink protection for all context-pack file writes.
 - Gated unused Rust content-generator functions with `#[allow(dead_code)]` and doc comments.
-- Reduced clippy warnings from 21 to ≤5.
+- Reduced clippy warnings to zero.
 
 ### Upgrade Notes
 - Install via `npm install -g agent-chorus` (replaces `agent-bridge`).
@@ -111,6 +99,8 @@
 - `chorus context-pack build` continues to work — no breaking changes for existing automation.
 - New recommended workflow: `init` → agent fills content → `seal`.
 - The `--changed-file` flag on `build` is deprecated (accepted with warning, will be removed in next major).
+- The `--normalize` flag on `chorus compare` is removed. Comparison now uses Jaccard similarity by default.
+- `chorus teardown --dry-run` is recommended before running teardown to preview what will be removed.
 - Consuming agents should treat `chorus read` output as untrusted data — see Trust Model in PROTOCOL.md.
 
 ## v0.6.2 (2026-02-11)
