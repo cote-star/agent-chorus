@@ -6,7 +6,7 @@ Use this page for full command syntax, examples, output contracts, and operation
 
 ```bash
 chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json] [--metadata-only] [--audit-redactions]
-chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--normalize] [--json]
+chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--last=<N>] [--json]
 chorus report --handoff <handoff.json> [--cwd=<path>] [--json]
 chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
 chorus search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
@@ -17,6 +17,7 @@ chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
 chorus setup [--cwd=<path>] [--dry-run] [--force] [--context-pack] [--json]
 chorus doctor [--cwd=<path>] [--json]
 chorus context-pack <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [...]
+chorus teardown [--cwd=<path>] [--dry-run] [--global] [--json]
 ```
 
 ## Reading a Session
@@ -97,6 +98,8 @@ chorus search "authentication" --agent claude --json
 chorus search "bug fix" --agent codex --limit 3 --json
 ```
 
+Search results include a `match_snippet` field in JSON output showing ~120 characters of context around the first match. Only assistant/model messages are indexed.
+
 ## Comparing Agents
 
 ```bash
@@ -106,11 +109,11 @@ chorus compare --source codex --source gemini --source claude --json
 # Compare specific sessions
 chorus compare --source codex:fix-bug --source claude:fix-bug --json
 
-# Ignore whitespace differences
-chorus compare --source codex --source gemini --normalize --json
+# Read last 3 messages from each source before comparing
+chorus compare --source codex --source gemini --last 3 --json
 ```
 
-The `--normalize` flag collapses all whitespace before comparison.
+The `--last N` flag controls how many recent assistant messages to read from each source (default 10). Comparison uses Jaccard topic similarity.
 
 ## Reporting
 
@@ -204,7 +207,8 @@ chorus diff --agent claude --from fix-auth --to fix-auth-v2 --last 5 --json
   ],
   "added_lines": 5,
   "removed_lines": 3,
-  "summary": "5 lines added, 3 lines removed"
+  "equal_lines": 10,
+  "summary": "+5 added, -3 removed, 10 unchanged"
 }
 ```
 
@@ -260,6 +264,45 @@ Messages are stored in `.agent-chorus/messages/<target-agent>.jsonl` and never l
 ```
 
 Message schema: `schemas/message.schema.json`.
+
+## Teardown
+
+Remove Agent Chorus integration from a project.
+
+```bash
+# Preview what would be removed (recommended first step)
+chorus teardown --cwd . --dry-run --json
+
+# Actually remove integration
+chorus teardown --cwd .
+
+# Also remove global cache
+chorus teardown --cwd . --global
+```
+
+Teardown performs these operations:
+- Removes `<!-- agent-chorus:*:start/end -->` managed blocks from AGENTS.md, CLAUDE.md, GEMINI.md
+- Deletes the `.agent-chorus/` scaffolding directory
+- Removes hook sentinels from pre-push hooks
+- Preserves `.agent-context/` (contains project data; warns but does not delete)
+
+**JSON output:**
+
+```json
+{
+  "cwd": "/path/to/project",
+  "dry_run": false,
+  "global": false,
+  "operations": [
+    { "type": "integration", "path": "CLAUDE.md", "status": "cleaned", "note": "Removed managed block" },
+    { "type": "directory", "path": ".agent-chorus", "status": "deleted", "note": "Removed scaffolding directory" },
+    { "type": "hook", "path": ".git/hooks/pre-push", "status": "unchanged", "note": "No hook sentinel found" },
+    { "type": "context-pack", "path": ".agent-context", "status": "preserved", "note": "Contains project data; not removed by teardown" }
+  ],
+  "warnings": [],
+  "changed": 2
+}
+```
 
 ## Error Codes
 

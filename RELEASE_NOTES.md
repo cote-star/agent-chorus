@@ -1,5 +1,40 @@
 # Release Notes
 
+## v0.8.0 (2026-03-17)
+
+### Highlights
+- **Full Node/Rust parity** for all 11 features added since v0.7.0. Conformance suite passes 14/14 tests.
+- **Jaccard-based comparison**: `chorus compare` now uses topic extraction + stop-word filtering + Jaccard similarity for pairwise agent comparison, replacing exact-match hashing. Tiered findings: >60% aligned (P3), >30% partial (P2), ≤30% divergent (P1).
+- **Assistant-only search**: `chorus search` now indexes only assistant/model messages instead of raw content. Results include a `match_snippet` field with a ~120-character context window.
+- **Teardown command** (new): `chorus teardown` removes managed blocks, scaffolding directory, and hook sentinels with `--dry-run` and `--global` support.
+
+### Added
+- `chorus teardown [--cwd] [--dry-run] [--global] [--json]` — clean removal of Agent Chorus integration from a project.
+- `chorus compare --last N` — control how many messages to read from each source (default 10).
+- `match_snippet` field in `chorus search --json` output — shows context around the first search hit.
+- `detail` field in coordinator report findings — shows pairwise similarity breakdown.
+- Jaccard similarity with 62-word stop-word list for topic-based comparison.
+- Hierarchical CWD matching — session CWD can be an ancestor or descendant of the expected path.
+- Agent name validation in messaging commands (`send`, `messages`, `clear`).
+- Discriminated error messages in update check (404 vs HTTP errors vs timeout vs transport).
+- Diff summary now includes unchanged line count and collapses long equal runs.
+- `cli/src/teardown.rs` — managed block removal, hook sentinel cleanup, `.agent-context/` preservation.
+
+### Changed
+- `chorus compare` uses Jaccard similarity instead of exact content hashing for divergence detection.
+- `chorus search` filters to assistant-only text before matching (Codex, Claude, Gemini, Cursor).
+- `chorus diff` human output now shows `+N added, -N removed, N unchanged` and collapses long equal runs with context windows.
+- Removed `--normalize` flag from `chorus compare` (superseded by Jaccard topic comparison).
+- `schemas/report.schema.json` — added optional `detail` field to findings.
+- `schemas/list-output.schema.json` — added optional `match_snippet` field.
+- Removed dead `normalize` field from Rust `ReportRequest` struct and unused `normalize_content` function.
+
+### Upgrade Notes
+- No breaking changes for existing CLI consumers. JSON output is backward-compatible (new fields are additive).
+- The `--normalize` flag on `chorus compare` is removed. Comparison now uses Jaccard similarity by default.
+- `chorus teardown --dry-run` is recommended before running teardown to preview what will be removed.
+- All golden fixtures regenerated from Node reference implementation.
+
 ## v0.7.0 (2026-03-11)
 
 ### Highlights

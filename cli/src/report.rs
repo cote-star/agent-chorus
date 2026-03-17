@@ -11,6 +11,7 @@ pub struct SourceSpec {
     pub current_session: bool,
     pub cwd: Option<String>,
     pub chats_dir: Option<String>,
+    pub last_n: Option<usize>,
 }
 
 #[derive(Debug)]
@@ -20,7 +21,6 @@ pub struct ReportRequest {
     pub success_criteria: Vec<String>,
     pub sources: Vec<SourceSpec>,
     pub constraints: Vec<String>,
-    pub normalize: bool,
 }
 
 pub fn parse_source_arg(raw: &str) -> Result<SourceSpec> {
@@ -36,6 +36,7 @@ pub fn parse_source_arg(raw: &str) -> Result<SourceSpec> {
         current_session: session_id.is_none(),
         cwd: None,
         chats_dir: None,
+        last_n: None,
     })
 }
 
@@ -118,6 +119,7 @@ pub fn load_handoff(path: &str) -> Result<ReportRequest> {
             current_session,
             cwd,
             chats_dir: None,
+            last_n: None,
         });
     }
 
@@ -138,7 +140,6 @@ pub fn load_handoff(path: &str) -> Result<ReportRequest> {
         success_criteria,
         sources,
         constraints,
-        normalize: false,
     })
 }
 
@@ -176,35 +177,62 @@ pub fn build_report(request: &ReportRequest, default_cwd: &str) -> Value {
         }
     }
 
-    let unique_contents: HashSet<String> = successful
-        .iter()
-        .map(|(_, session, _)| {
-            let text = session.content.trim().to_string();
-            if request.normalize {
-                normalize_content(&text)
-            } else {
-                text
-            }
-        })
-        .collect();
+    let unique_count;
 
     if successful.len() >= 2 {
-        if unique_contents.len() > 1 {
+        let topic_sets: Vec<HashSet<String>> = successful
+            .iter()
+            .map(|(_, session, _)| extract_topics(&session.content))
+            .collect();
+
+        let mut pairs: Vec<(String, String, f64)> = Vec::new();
+        for i in 0..topic_sets.len() {
+            for j in (i + 1)..topic_sets.len() {
+                let sim = jaccard_similarity(&topic_sets[i], &topic_sets[j]);
+                pairs.push((
+                    successful[i].0.agent.clone(),
+                    successful[j].0.agent.clone(),
+                    sim,
+                ));
+            }
+        }
+
+        let avg_sim = pairs.iter().map(|(_, _, s)| s).sum::<f64>() / pairs.len() as f64;
+        unique_count = if avg_sim > 0.6 { 1 } else { successful.len() };
+
+        let pair_detail = pairs
+            .iter()
+            .map(|(a, b, s)| format!("{} \u{2194} {}: {:.0}%", a, b, s * 100.0))
+            .collect::<Vec<String>>()
+            .join(", ");
+
+        if avg_sim > 0.6 {
             findings.push(json!({
-                "severity": "P1",
-                "summary": "Divergent agent outputs detected",
+                "severity": "P3",
+                "summary": format!("Agent outputs are broadly aligned (similarity: {:.0}%)", avg_sim * 100.0),
+                "detail": pair_detail,
                 "evidence": successful.iter().map(|(_, _, tag)| tag.clone()).collect::<Vec<String>>(),
-                "confidence": 0.75
+                "confidence": 0.8
+            }));
+        } else if avg_sim > 0.3 {
+            findings.push(json!({
+                "severity": "P2",
+                "summary": format!("Agent outputs partially overlap (similarity: {:.0}%)", avg_sim * 100.0),
+                "detail": pair_detail,
+                "evidence": successful.iter().map(|(_, _, tag)| tag.clone()).collect::<Vec<String>>(),
+                "confidence": 0.7
             }));
         } else {
             findings.push(json!({
-                "severity": "P3",
-                "summary": "All available agent outputs are aligned",
+                "severity": "P1",
+                "summary": format!("Divergent agent outputs (similarity: {:.0}%)", avg_sim * 100.0),
+                "detail": pair_detail,
                 "evidence": successful.iter().map(|(_, _, tag)| tag.clone()).collect::<Vec<String>>(),
-                "confidence": 0.9
+                "confidence": 0.75
             }));
         }
     } else {
+        unique_count = 1;
         findings.push(json!({
             "severity": "P2",
             "summary": "Insufficient comparable sources",
@@ -218,7 +246,7 @@ pub fn build_report(request: &ReportRequest, default_cwd: &str) -> Value {
         recommended_next_actions
             .push("Provide valid session identifiers or cwd values for unavailable sources.".to_string());
     }
-    if unique_contents.len() > 1 {
+    if unique_count > 1 {
         recommended_next_actions
             .push("Inspect full transcripts for diverging sources before final decisions.".to_string());
     }
@@ -237,7 +265,7 @@ pub fn build_report(request: &ReportRequest, default_cwd: &str) -> Value {
         .map(|(source, error, _)| format!("Missing source {}: {}", source.agent, error))
         .collect::<Vec<String>>();
 
-    let verdict = compute_verdict(&request.mode, &missing, unique_contents.len(), successful.len());
+    let verdict = compute_verdict(&request.mode, &missing, unique_count, successful.len());
 
     json!({
         "mode": request.mode,
@@ -300,6 +328,9 @@ pub fn report_to_markdown(report: &Value) -> String {
                 "- **{}:** {} (evidence: {}; confidence: {:.2})",
                 severity, summary, evidence, confidence
             ));
+            if let Some(detail) = finding.get("detail").and_then(|d| d.as_str()) {
+                lines.push(format!("    Pairs: {}", detail));
+            }
         }
     }
 
@@ -324,15 +355,11 @@ pub fn report_to_markdown(report: &Value) -> String {
     lines.join("\n")
 }
 
-fn normalize_content(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<&str>>().join(" ")
-}
-
 fn read_source(source: &SourceSpec, default_cwd: &str) -> Result<Session> {
     let cwd = source.cwd.as_deref().unwrap_or(default_cwd);
     let adapter = adapters::get_adapter(&source.agent)
         .ok_or_else(|| anyhow!("Unsupported agent: {}", source.agent))?;
-    adapter.read_session(source.session_id.as_deref(), cwd, source.chats_dir.as_deref(), 1)
+    adapter.read_session(source.session_id.as_deref(), cwd, source.chats_dir.as_deref(), source.last_n.unwrap_or(10))
 }
 
 fn evidence_tag(source: &SourceSpec) -> String {
@@ -386,4 +413,33 @@ fn validate_mode(mode: &str) -> Result<()> {
         "verify" | "steer" | "analyze" | "feedback" => Ok(()),
         _ => Err(anyhow!("Unsupported mode: {}", mode)),
     }
+}
+
+const STOP_WORDS: &[&str] = &[
+    "this", "that", "with", "from", "have", "been", "were", "will", "would", "could",
+    "should", "their", "there", "they", "them", "then", "than", "these", "those", "some",
+    "what", "when", "which", "where", "while", "about", "into", "also", "your", "more",
+    "very", "just", "only", "each", "does", "done", "here", "such", "most",
+    "both", "other", "after", "before", "over", "under", "between",
+    "being", "make", "made", "like", "well", "back", "even", "still",
+    "want", "give", "many", "much", "same", "know", "need", "take",
+];
+
+pub fn extract_topics(text: &str) -> HashSet<String> {
+    let stop: HashSet<&str> = STOP_WORDS.iter().copied().collect();
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|w| w.len() >= 4)
+        .filter(|w| !stop.contains(w))
+        .map(|w| w.to_string())
+        .collect()
+}
+
+pub fn jaccard_similarity(a: &HashSet<String>, b: &HashSet<String>) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let intersection = a.intersection(b).count();
+    let union = a.union(b).count();
+    intersection as f64 / union as f64
 }

@@ -23,6 +23,9 @@
       },
       "file_path": {
         "type": "string"
+      },
+      "match_snippet": {
+        "type": ["string", "null"]
       }
     }
   }

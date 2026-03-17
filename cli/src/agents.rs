@@ -725,6 +725,176 @@ fn read_jsonl_lines(path: &Path) -> Result<Vec<String>> {
     Ok(lines)
 }
 
+/// Extract assistant/model text from a JSONL session file (Codex or Claude format).
+fn extract_assistant_text_jsonl(path: &Path, agent: &str) -> String {
+    let lines = match read_jsonl_lines(path) {
+        Ok(l) => l,
+        Err(_) => return String::new(),
+    };
+    let mut text = String::new();
+    for line in &lines {
+        let json: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        match agent {
+            "codex" => {
+                if json.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+                    if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
+                        text.push_str(content);
+                        text.push('\n');
+                    }
+                }
+            }
+            "claude" => {
+                if json.get("type").and_then(|v| v.as_str()) == Some("assistant") {
+                    if let Some(content_arr) = json.get("message")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                    {
+                        for block in content_arr {
+                            if let Some(t) = block.get("text").and_then(|v| v.as_str()) {
+                                text.push_str(t);
+                                text.push('\n');
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    text
+}
+
+/// Extract assistant/model text from a Gemini JSON session file.
+fn extract_assistant_text_json(path: &Path) -> String {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let json: Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+    let mut text = String::new();
+    // Gemini CLI format: { messages: [{ type: "gemini", content: "..." }] }
+    if let Some(messages) = json.get("messages").and_then(|m| m.as_array()) {
+        for msg in messages {
+            let msg_type = msg.get("type").or_else(|| msg.get("role"))
+                .and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+            if msg_type == "gemini" || msg_type == "model" || msg_type == "assistant" {
+                if let Some(c) = msg.get("content").and_then(|v| v.as_str()) {
+                    text.push_str(c);
+                    text.push('\n');
+                }
+                // Also handle parts array (API format)
+                if let Some(parts) = msg.get("parts").and_then(|p| p.as_array()) {
+                    for part in parts {
+                        if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                            text.push_str(t);
+                            text.push('\n');
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Fallback: history-based format
+    if text.is_empty() {
+        if let Some(history) = json.get("history").and_then(|h| h.as_array()) {
+            for turn in history {
+                let role = turn.get("role").and_then(|v| v.as_str()).unwrap_or("").to_lowercase();
+                if role != "user" {
+                    if let Some(parts) = turn.get("parts").and_then(|p| p.as_array()) {
+                        for part in parts {
+                            if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                                text.push_str(t);
+                                text.push('\n');
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    text
+}
+
+/// Extract assistant text from a Cursor session file.
+fn extract_assistant_text_cursor(path: &Path) -> String {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return String::new(),
+    };
+    let mut text = String::new();
+    // Try JSON format first
+    if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
+        let msgs = if parsed.is_array() {
+            parsed.as_array().cloned().unwrap_or_default()
+        } else if let Some(arr) = parsed.get("messages").and_then(|m| m.as_array()) {
+            arr.clone()
+        } else {
+            Vec::new()
+        };
+        for msg in &msgs {
+            if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+                if let Some(c) = msg.get("content").and_then(|v| v.as_str()) {
+                    text.push_str(c);
+                    text.push('\n');
+                }
+            }
+        }
+    }
+    // Fallback: try JSONL
+    if text.is_empty() {
+        for line in raw.lines() {
+            if let Ok(obj) = serde_json::from_str::<Value>(line) {
+                if obj.get("role").and_then(|v| v.as_str()) == Some("assistant") {
+                    if let Some(c) = obj.get("content").and_then(|v| v.as_str()) {
+                        text.push_str(c);
+                        text.push('\n');
+                    }
+                }
+            }
+        }
+    }
+    if text.is_empty() { raw } else { text }
+}
+
+/// Compute a ~120 character match snippet centered on the first occurrence of query.
+fn compute_match_snippet(text: &str, query: &str) -> Option<String> {
+    let text_lower = text.to_lowercase();
+    let query_lower = query.to_lowercase();
+    let pos = text_lower.find(&query_lower)?;
+
+    // Work with chars to avoid panicking on UTF-8 boundaries
+    let chars: Vec<char> = text.chars().collect();
+    // Find char index of the byte position
+    let mut byte_count = 0;
+    let mut char_pos = 0;
+    for (i, ch) in chars.iter().enumerate() {
+        if byte_count >= pos {
+            char_pos = i;
+            break;
+        }
+        byte_count += ch.len_utf8();
+    }
+
+    let start = char_pos.saturating_sub(60);
+    let end = (char_pos + query.len() + 60).min(chars.len());
+    let snippet: String = chars[start..end].iter().collect();
+    // Replace newlines with spaces
+    Some(snippet.replace(['\n', '\r'], " "))
+}
+
+/// Hierarchical CWD matching: exact match, ancestor, or descendant.
+fn cwd_matches_project(session_cwd: &Path, expected_cwd: &Path) -> bool {
+    session_cwd == expected_cwd
+        || expected_cwd.starts_with(session_cwd)
+        || session_cwd.starts_with(expected_cwd)
+}
+
 fn find_latest_by_cwd(
     files: &[FileEntry],
     expected_cwd: &Path,
@@ -732,7 +902,7 @@ fn find_latest_by_cwd(
 ) -> Option<PathBuf> {
     for file in files {
         if let Some(file_cwd) = cwd_extractor(&file.path) {
-            if file_cwd == expected_cwd {
+            if cwd_matches_project(&file_cwd, expected_cwd) {
                 return Some(file.path.clone());
             }
         }
@@ -1419,7 +1589,11 @@ pub fn list_codex_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_
     for file in files {
         let file_cwd = get_codex_session_cwd(&file.path);
         if let Some(expected) = expected_cwd.as_ref() {
-            if file_cwd.as_ref() != Some(expected) {
+            if let Some(ref file_cwd_path) = file_cwd {
+                if !cwd_matches_project(file_cwd_path, expected) {
+                    continue;
+                }
+            } else {
                 continue;
             }
         }
@@ -1447,7 +1621,11 @@ pub fn list_claude_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
     for file in files {
         let file_cwd = get_claude_session_cwd(&file.path);
         if let Some(expected) = expected_cwd.as_ref() {
-            if file_cwd.as_ref() != Some(expected) {
+            if let Some(ref file_cwd_path) = file_cwd {
+                if !cwd_matches_project(file_cwd_path, expected) {
+                    continue;
+                }
+            } else {
                 continue;
             }
         }
@@ -1505,21 +1683,18 @@ pub fn search_codex_sessions(query: &str, cwd: Option<&str>, limit: usize) -> Re
 
         let file_cwd = get_codex_session_cwd(&file.path);
         if let Some(expected) = expected_cwd.as_ref() {
-            if file_cwd.as_ref() != Some(expected) {
+            if let Some(ref file_cwd_path) = file_cwd {
+                if !cwd_matches_project(file_cwd_path, expected) {
+                    continue;
+                }
+            } else {
                 continue;
             }
         }
 
-        if fs::metadata(&file.path).map(|m| m.len() > MAX_FILE_SIZE).unwrap_or(false) {
-            continue;
-        }
-
-        let content = match fs::read_to_string(&file.path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        if content.to_ascii_lowercase().contains(&query_lower) {
+        let assistant_text = extract_assistant_text_jsonl(&file.path, "codex");
+        if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+            let snippet = compute_match_snippet(&assistant_text, query);
             let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
             entries.push(serde_json::json!({
                 "session_id": session_id,
@@ -1527,6 +1702,7 @@ pub fn search_codex_sessions(query: &str, cwd: Option<&str>, limit: usize) -> Re
                 "cwd": file_cwd.map(|p| p.to_string_lossy().to_string()),
                 "modified_at": file_modified_iso(&file.path),
                 "file_path": file.path.to_string_lossy().to_string(),
+                "match_snippet": snippet,
             }));
         }
     }
@@ -1546,21 +1722,18 @@ pub fn search_claude_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
 
         let file_cwd = get_claude_session_cwd(&file.path);
         if let Some(expected) = expected_cwd.as_ref() {
-            if file_cwd.as_ref() != Some(expected) {
+            if let Some(ref file_cwd_path) = file_cwd {
+                if !cwd_matches_project(file_cwd_path, expected) {
+                    continue;
+                }
+            } else {
                 continue;
             }
         }
 
-        if fs::metadata(&file.path).map(|m| m.len() > MAX_FILE_SIZE).unwrap_or(false) {
-            continue;
-        }
-
-        let content = match fs::read_to_string(&file.path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        if content.to_ascii_lowercase().contains(&query_lower) {
+        let assistant_text = extract_assistant_text_jsonl(&file.path, "claude");
+        if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+            let snippet = compute_match_snippet(&assistant_text, query);
             let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
             entries.push(serde_json::json!({
                 "session_id": session_id,
@@ -1568,6 +1741,7 @@ pub fn search_claude_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
                 "cwd": file_cwd.map(|p| p.to_string_lossy().to_string()),
                 "modified_at": file_modified_iso(&file.path),
                 "file_path": file.path.to_string_lossy().to_string(),
+                "match_snippet": snippet,
             }));
         }
     }
@@ -1591,16 +1765,9 @@ pub fn search_gemini_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
     for file in candidates {
         if entries.len() >= limit { break; }
 
-        if fs::metadata(&file.path).map(|m| m.len() > MAX_FILE_SIZE).unwrap_or(false) {
-            continue;
-        }
-
-        let content = match fs::read_to_string(&file.path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
-        if content.to_ascii_lowercase().contains(&query_lower) {
+        let assistant_text = extract_assistant_text_json(&file.path);
+        if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+            let snippet = compute_match_snippet(&assistant_text, query);
             let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
             entries.push(serde_json::json!({
                 "session_id": session_id,
@@ -1608,6 +1775,7 @@ pub fn search_gemini_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
                 "cwd": serde_json::Value::Null,
                 "modified_at": file_modified_iso(&file.path),
                 "file_path": file.path.to_string_lossy().to_string(),
+                "match_snippet": snippet,
             }));
         }
     }
@@ -1641,18 +1809,20 @@ pub fn search_cursor_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
             continue;
         }
 
-        let content = match fs::read_to_string(&file.path) {
-            Ok(c) => c,
-            Err(_) => continue,
-        };
-
+        // CWD filter still needs raw content (cursor files embed workspace paths)
         if let Some(expected) = expected_cwd_text.as_ref() {
-            if !content.to_ascii_lowercase().contains(expected) {
+            let raw = match fs::read_to_string(&file.path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            if !raw.to_ascii_lowercase().contains(expected) {
                 continue;
             }
         }
 
-        if content.to_ascii_lowercase().contains(&query_lower) {
+        let assistant_text = extract_assistant_text_cursor(&file.path);
+        if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+            let snippet = compute_match_snippet(&assistant_text, query);
             let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
             entries.push(serde_json::json!({
                 "session_id": session_id,
@@ -1660,6 +1830,7 @@ pub fn search_cursor_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
                 "cwd": serde_json::Value::Null,
                 "modified_at": file_modified_iso(&file.path),
                 "file_path": file.path.to_string_lossy().to_string(),
+                "match_snippet": snippet,
             }));
         }
     }

@@ -36,6 +36,7 @@
             "enum": ["P0", "P1", "P2", "P3"]
           },
           "summary": { "type": "string" },
+          "detail": { "type": "string" },
           "evidence": {
             "type": "array",
             "items": { "type": "string" }

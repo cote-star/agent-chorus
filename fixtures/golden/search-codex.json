@@ -3,7 +3,8 @@
     "session_id": "session-codex-fixture-0001",
     "agent": "codex",
     "cwd": "/workspace/demo",
-    "modified_at": "2026-02-08T08:34:50.021Z",
-    "file_path": "/tmp/session-codex-fixture-0001.jsonl"
+    "modified_at": "2026-03-17T15:54:38.575Z",
+    "file_path": "/Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/codex/sessions/2026/01/01/session-codex-fixture-0001.jsonl",
+    "match_snippet": "Codex fixture assistant output. "
   }
 ]

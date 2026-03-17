@@ -1,12 +1,12 @@
 {
-  "agent": "codex",
   "chorus_output_version": 1,
+  "agent": "codex",
+  "source": "/Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/codex/sessions/2026/01/01/session-codex-fixture-0001.jsonl",
   "content": "Codex fixture assistant output.",
-  "cwd": "/workspace/demo",
-  "message_count": 1,
-  "messages_returned": 1,
+  "warnings": [],
   "session_id": "session-codex-fixture-0001",
-  "source": "session-codex-fixture-0001.jsonl",
-  "timestamp": null,
-  "warnings": []
+  "cwd": "/workspace/demo",
+  "timestamp": "2026-03-17T15:54:38.575Z",
+  "message_count": 1,
+  "messages_returned": 1
 }

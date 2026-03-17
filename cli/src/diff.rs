@@ -12,6 +12,7 @@ pub struct DiffResult {
     pub session_b: String,
     pub added_lines: usize,
     pub removed_lines: usize,
+    pub equal_lines: usize,
     pub hunks: Vec<DiffHunk>,
 }
 
@@ -47,6 +48,7 @@ pub fn diff_sessions(
 
     let added = hunks.iter().filter(|h| h.tag == "add").count();
     let removed = hunks.iter().filter(|h| h.tag == "remove").count();
+    let equal = hunks.iter().filter(|h| h.tag == "equal").count();
 
     Ok(DiffResult {
         agent: agent.to_string(),
@@ -54,6 +56,7 @@ pub fn diff_sessions(
         session_b: session_b.session_id.unwrap_or_else(|| id_b.to_string()),
         added_lines: added,
         removed_lines: removed,
+        equal_lines: equal,
         hunks,
     })
 }

@@ -6,21 +6,22 @@
     "Highlight unavailable sources"
   ],
   "sources_used": [
-    "[codex:codex-fi] session-codex-fixture-0001.jsonl",
-    "[gemini:gemini-f] session-gemini-fixture-0001.json",
-    "[claude:claude-f] session-claude-fixture-0001.jsonl"
+    "[codex:codex-fi] /Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/codex/sessions/2026/01/01/session-codex-fixture-0001.jsonl",
+    "[gemini:gemini-f] /Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/gemini/tmp/demo/chats/session-gemini-fixture-0001.json",
+    "[claude:claude-f] /Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/claude/projects/sample/session-claude-fixture-0001.jsonl"
   ],
   "verdict": "ANALYSIS_COMPLETE",
   "findings": [
     {
-      "severity": "P1",
-      "summary": "Divergent agent outputs detected",
+      "severity": "P2",
+      "summary": "Agent outputs partially overlap (similarity: 60%)",
+      "detail": "codex ↔ gemini: 60%, codex ↔ claude: 60%, gemini ↔ claude: 60%",
       "evidence": [
         "[codex:codex-fi]",
         "[gemini:gemini-f]",
         "[claude:claude-f]"
       ],
-      "confidence": 0.75
+      "confidence": 0.7
     }
   ],
   "recommended_next_actions": [

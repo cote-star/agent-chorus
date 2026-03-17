@@ -159,15 +159,29 @@ pub fn run_worker() {
 }
 
 fn fetch_latest_version(timeout: std::time::Duration) -> Result<String> {
-    let resp = ureq::get(REGISTRY_URL)
-        .timeout(timeout)
-        .call()?;
-    
-    let json: serde_json::Value = resp.into_json()?;
-    json.get("version")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .ok_or_else(|| anyhow::anyhow!("No version field"))
+    match ureq::get(REGISTRY_URL).timeout(timeout).call() {
+        Ok(resp) => {
+            let json: serde_json::Value = resp.into_json()?;
+            json.get("version")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .ok_or_else(|| anyhow::anyhow!("No version field"))
+        }
+        Err(ureq::Error::Status(404, _)) => {
+            Err(anyhow::anyhow!("Package not published on registry (404)"))
+        }
+        Err(ureq::Error::Status(code, _)) => {
+            Err(anyhow::anyhow!("Registry returned HTTP {}", code))
+        }
+        Err(ureq::Error::Transport(ref transport)) => {
+            let detail = transport.to_string();
+            if detail.to_lowercase().contains("timeout") {
+                Err(anyhow::anyhow!("Registry unreachable: timeout"))
+            } else {
+                Err(anyhow::anyhow!("Registry unreachable: {}", detail))
+            }
+        }
+    }
 }
 
 fn read_cache(path: &PathBuf) -> Result<Cache> {

@@ -2,11 +2,27 @@
 //!
 //! Messages are stored in `.agent-chorus/messages/<target-agent>.jsonl`.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+
+/// Valid agent names for messaging.
+const VALID_AGENTS: &[&str] = &["codex", "gemini", "claude", "cursor"];
+
+/// Validate that an agent name is recognized.
+fn validate_agent(name: &str) -> Result<()> {
+    if VALID_AGENTS.contains(&name) {
+        Ok(())
+    } else {
+        bail!(
+            "Unknown agent: {}. Valid: {}",
+            name,
+            VALID_AGENTS.join(", ")
+        )
+    }
+}
 
 /// A single message between agents.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -30,6 +46,8 @@ fn message_file(cwd: &Path, agent: &str) -> PathBuf {
 
 /// Send a message from one agent to another.
 pub fn send_message(from: &str, to: &str, content: &str, cwd: &str) -> Result<Message> {
+    validate_agent(from)?;
+    validate_agent(to)?;
     let cwd_path = Path::new(cwd);
     let dir = messages_dir(cwd_path);
     fs::create_dir_all(&dir)
@@ -62,6 +80,7 @@ pub fn send_message(from: &str, to: &str, content: &str, cwd: &str) -> Result<Me
 
 /// Read all messages for a given agent.
 pub fn read_messages(agent: &str, cwd: &str) -> Result<Vec<Message>> {
+    validate_agent(agent)?;
     let cwd_path = Path::new(cwd);
     let file = message_file(cwd_path, agent);
 
@@ -92,6 +111,7 @@ pub fn read_messages(agent: &str, cwd: &str) -> Result<Vec<Message>> {
 
 /// Clear all messages for a given agent.
 pub fn clear_messages(agent: &str, cwd: &str) -> Result<usize> {
+    validate_agent(agent)?;
     let cwd_path = Path::new(cwd);
     let file = message_file(cwd_path, agent);
 

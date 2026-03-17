@@ -7,6 +7,7 @@ pub mod relevance;
 mod report;
 mod utils;
 pub mod update_check;
+mod teardown;
 
 
 use anyhow::{Context, Result};
@@ -68,13 +69,13 @@ enum Commands {
         #[arg(long)]
         cwd: Option<String>,
 
-        /// Apply whitespace normalization before comparing
-        #[arg(long)]
-        normalize: bool,
-
         /// Emit structured JSON instead of markdown
         #[arg(long)]
         json: bool,
+
+        /// Number of last messages to read from each source
+        #[arg(long, default_value = "10")]
+        last: usize,
     },
 
     /// Build a report from a handoff packet JSON file
@@ -140,6 +141,25 @@ enum Commands {
         /// Working directory to scope search
         #[arg(long)]
         cwd: Option<String>,
+    },
+
+    /// Reverse setup: remove managed blocks, scaffolding, and hooks
+    Teardown {
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Preview changes without executing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Also remove global cache (~/.cache/agent-chorus/)
+        #[arg(long)]
+        global: bool,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 
     /// Build/sync/install context-pack automation
@@ -459,6 +479,7 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::Relevance { json, .. } => *json,
         Commands::Send { json, .. } => *json,
         Commands::Messages { json, .. } => *json,
+        Commands::Teardown { json, .. } => *json,
         Commands::ContextPack { .. } => false,
         #[cfg(feature = "update-check")]
         Commands::UpdateWorker => false,
@@ -543,12 +564,16 @@ fn run(cli: Cli) -> Result<()> {
                 println!("--- END CHORUS OUTPUT ---");
             }
         }
-        Commands::Compare { sources, cwd, normalize, json } => {
+        Commands::Compare { sources, cwd, json, last } => {
             let effective_cwd = effective_cwd(cwd);
-            let source_specs = sources
+            let mut source_specs = sources
                 .iter()
                 .map(|raw| report::parse_source_arg(raw))
                 .collect::<Result<Vec<report::SourceSpec>>>()?;
+
+            for spec in &mut source_specs {
+                spec.last_n = Some(last.max(1));
+            }
 
             let request = report::ReportRequest {
                 mode: "analyze".to_string(),
@@ -559,7 +584,6 @@ fn run(cli: Cli) -> Result<()> {
                 ],
                 sources: source_specs,
                 constraints: Vec::new(),
-                normalize,
             };
 
             let result = report::build_report(&request, &effective_cwd);
@@ -621,13 +645,49 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 println!("Diff: {} session {} vs {}", result.agent, result.session_a, result.session_b);
-                println!("  +{} added, -{} removed\n", result.added_lines, result.removed_lines);
+                println!("  +{} added, -{} removed, {} unchanged\n", result.added_lines, result.removed_lines, result.equal_lines);
+
+                // Collapse consecutive equal runs > 5 lines
+                const CONTEXT_LINES: usize = 2;
+                let mut equal_run: Vec<&str> = Vec::new();
+
+                let flush_equal_run = |run: &[&str]| {
+                    if run.len() <= 5 {
+                        for line in run {
+                            println!("  {}", line);
+                        }
+                    } else {
+                        for line in &run[..CONTEXT_LINES] {
+                            println!("  {}", line);
+                        }
+                        println!("  ... ({} unchanged lines)", run.len() - 2 * CONTEXT_LINES);
+                        for line in &run[run.len() - CONTEXT_LINES..] {
+                            println!("  {}", line);
+                        }
+                    }
+                };
+
                 for hunk in &result.hunks {
                     match hunk.tag.as_str() {
-                        "add" => println!("+ {}", hunk.content),
-                        "remove" => println!("- {}", hunk.content),
-                        _ => println!("  {}", hunk.content),
+                        "equal" => {
+                            equal_run.push(&hunk.content);
+                        }
+                        _ => {
+                            if !equal_run.is_empty() {
+                                flush_equal_run(&equal_run);
+                                equal_run.clear();
+                            }
+                            match hunk.tag.as_str() {
+                                "add" => println!("+ {}", hunk.content),
+                                "remove" => println!("- {}", hunk.content),
+                                _ => println!("  {}", hunk.content),
+                            }
+                        }
                     }
+                }
+                // Flush remaining equal lines
+                if !equal_run.is_empty() {
+                    flush_equal_run(&equal_run);
                 }
             }
         }
@@ -704,6 +764,33 @@ fn run(cli: Cli) -> Result<()> {
                 let count = messaging::clear_messages(&agent, &effective)?;
                 if !json {
                     println!("Cleared {} message(s).", count);
+                }
+            }
+        }
+        Commands::Teardown { cwd, dry_run, json, global } => {
+            let effective_cwd = effective_cwd(cwd);
+            let result = teardown::run_teardown(&effective_cwd, dry_run, global)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&json!({
+                    "cwd": result.cwd,
+                    "dry_run": result.dry_run,
+                    "global": result.global,
+                    "operations": result.operations,
+                    "warnings": result.warnings,
+                    "changed": result.changed,
+                }))?);
+            } else {
+                let mode = if result.dry_run { "(dry run) " } else { "" };
+                println!("Agent Chorus teardown {}complete for {}", mode, result.cwd);
+                for warning in &result.warnings {
+                    println!("- [warn] {}", warning);
+                }
+                for op in &result.operations {
+                    let status = op.get("status").and_then(|s| s.as_str()).unwrap_or("unknown");
+                    let path = op.get("path").and_then(|s| s.as_str()).unwrap_or("");
+                    let note = op.get("note").and_then(|s| s.as_str()).unwrap_or("");
+                    println!("- [{}] {} ({})", status, path, note);
                 }
             }
         }
