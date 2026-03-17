@@ -153,16 +153,26 @@ function search(query, cwd, limit) {
     try {
       // Try parsing as JSON to extract assistant content
       const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) {
-        for (const msg of parsed) {
-          if (msg.role === 'assistant' && msg.content) {
-            assistantText += (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)) + '\n';
-          }
+      // Handle { messages: [...] } wrapper (like read() expects)
+      const msgs = Array.isArray(parsed) ? parsed
+        : (Array.isArray(parsed.messages) ? parsed.messages : []);
+      for (const msg of msgs) {
+        if (msg.role === 'assistant' && msg.content) {
+          assistantText += (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)) + '\n';
         }
       }
     } catch (_e) {
-      // Fallback to raw content for non-JSON formats
-      assistantText = raw;
+      // Fallback: try JSONL line-by-line, then raw content
+      const lines = raw.split('\n').filter(Boolean);
+      for (const line of lines) {
+        try {
+          const obj = JSON.parse(line);
+          if (obj.role === 'assistant' && typeof obj.content === 'string') {
+            assistantText += obj.content + '\n';
+          }
+        } catch (_) { /* skip */ }
+      }
+      if (!assistantText) assistantText = raw;
     }
 
     const lower = assistantText.toLowerCase();

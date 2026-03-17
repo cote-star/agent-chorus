@@ -202,9 +202,25 @@ function search(query, cwd, limit) {
     try {
       const session = JSON.parse(content);
       if (Array.isArray(session.messages)) {
+        // Gemini CLI uses { type: 'gemini', content: '...' }
         for (const msg of session.messages) {
-          if (msg.role === 'model' && Array.isArray(msg.parts)) {
-            for (const part of msg.parts) {
+          const type = (msg.type || msg.role || '').toLowerCase();
+          if (type === 'gemini' || type === 'model' || type === 'assistant') {
+            if (typeof msg.content === 'string') {
+              assistantText += msg.content + '\n';
+            } else if (Array.isArray(msg.parts)) {
+              for (const part of msg.parts) {
+                if (part.text) assistantText += part.text + '\n';
+              }
+            }
+          }
+        }
+      }
+      // Also handle the history-based format (Gemini API style)
+      if (!assistantText && Array.isArray(session.history)) {
+        for (const turn of session.history) {
+          if ((turn.role || '').toLowerCase() !== 'user' && Array.isArray(turn.parts)) {
+            for (const part of turn.parts) {
               if (part.text) assistantText += part.text + '\n';
             }
           }
