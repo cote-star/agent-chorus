@@ -1,8 +1,8 @@
 # System Overview
 
 ## Product Shape
-- npm package: `agent-chorus` v0.7.0 (binary: `chorus`, `chorus-node`)
-- Rust crate: `agent-chorus` v0.7.0 (binary: `chorus`)
+- npm package: `agent-chorus` v0.8.0 (binary: `chorus`, `chorus-node`)
+- Rust crate: `agent-chorus` v0.8.0 (binary: `chorus`)
 - 124 tracked files across Node scripts, Rust source, schemas, fixtures, and docs
 - Ships as a global CLI tool (`npm install -g agent-chorus`)
 
@@ -25,7 +25,9 @@
 | `chorus relevance` | Inspect context-pack relevance patterns | `relevance.rs`, `relevance.cjs` |
 | `chorus send` / `messages` | Agent-to-agent messaging | `messaging.rs`, `read_session.cjs` |
 | `chorus setup` / `doctor` | Bootstrap and diagnose installation | `main.rs`, `read_session.cjs` |
+| `chorus teardown` | Cleanly reverse setup (managed blocks, scaffolding) | `read_session.cjs` |
 | `chorus context-pack *` | Init, seal, verify, build context packs | `context_pack.rs`, `context_pack/*.cjs` |
+| `chorus trash-talk` | Roast agents based on session activity (easter egg) | `read_session.cjs` |
 
 ## Tracked Path Density
 | Directory | Files | Content |

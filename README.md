@@ -2,7 +2,7 @@
 
 ![CI Status](https://github.com/cote-star/agent-chorus/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.7.0-green.svg)
+![Version](https://img.shields.io/badge/version-0.8.0-green.svg)
 [![Star History](https://img.shields.io/github/stars/cote-star/agent-chorus?style=social)](https://github.com/cote-star/agent-chorus)
 
 **Let your AI agents talk about each other.**
@@ -64,16 +64,16 @@ Source file, session ID, and timestamp on every response. Secrets auto-redacted 
 ### 1. Install
 
 ```bash
-npm install -g agent-chorus
+npm install -g agent-chorus    # requires Node >= 18
 # or
-cargo install agent-chorus
+cargo install agent-chorus     # requires Rust >= 1.74
 ```
 
 ### 2. Setup
 
 ```bash
 chorus setup
-chorus doctor # Checks health, context pack state, and updates
+chorus doctor # Check session paths, provider wiring, and updates
 ```
 
 From zero to a working skill query in under a minute:
@@ -114,7 +114,7 @@ After `chorus setup`, provider instructions follow this behavior:
 ## How It Works
 
 1. **Ask naturally** - "What is Claude doing?" / "Did Gemini finish the API?"
-2. **Agent runs chorus** - Your agent calls `chorus read`, `chorus compare`, `chorus diff`, `chorus send`, etc. behind the scenes.
+2. **Agent runs chorus** - Your agent calls `chorus read`, `chorus list`, `chorus search`, `chorus compare`, `chorus diff`, `chorus send`, `chorus messages`, etc. behind the scenes.
 3. **Evidence-backed answer** - Sources cited, divergences flagged, no hallucination.
 
 **Tenets:**

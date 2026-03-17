@@ -3,7 +3,7 @@
 ## Snapshot
 - Repo: `agent-chorus`
 - Branch at generation: `main`
-- Generated at: `2026-03-12`
+- Generated at: `2026-03-17`
 
 ## Read Order (Token-Efficient)
 1. Read this file.
@@ -17,7 +17,7 @@
 - **Dual implementation**: Node.js (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`) with conformance-tested parity.
 - **Quality gate**: `npm run check` runs conformance, README examples, package contents, and JSON schema validation.
 - **Core risk**: Any change to CLI output format or command flags must land in both implementations, schemas, and golden fixtures simultaneously.
-- **Version**: 0.7.0 (npm `agent-chorus` + crate `agent-chorus`).
+- **Version**: 0.8.0 (npm `agent-chorus` + crate `agent-chorus`).
 
 ## Scope Rule
 For "understand this repo end-to-end" requests:
