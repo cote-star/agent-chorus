@@ -111,6 +111,16 @@ function printHelp(topic = null) {
     lines.push('  --force (replace existing managed blocks)');
     lines.push('  --context-pack (also build context pack and install hooks)');
     lines.push('  --json');
+    lines.push('');
+    lines.push('setup creates or updates:');
+    lines.push('  CLAUDE.md / AGENTS.md / GEMINI.md  chorus managed blocks for agent wiring');
+    lines.push('  .agent-chorus/                      provider snippets and intent contract');
+    lines.push('  .gitignore                          adds .agent-chorus/ to prevent tracking');
+    lines.push('  claude plugin                       auto-installs Claude Code plugin if claude CLI is present');
+    lines.push('');
+    lines.push('Run teardown to reverse all per-project operations.');
+    lines.push('The Claude Code plugin is global — uninstall separately if desired:');
+    lines.push('  claude plugin uninstall agent-chorus');
   } else if (topic === 'teardown') {
     lines.push('');
     lines.push('teardown options:');
@@ -120,13 +130,21 @@ function printHelp(topic = null) {
     lines.push('  --json');
     lines.push('');
     lines.push('Removes managed blocks from CLAUDE.md/AGENTS.md/GEMINI.md,');
-    lines.push('deletes .agent-chorus/ scaffolding, and removes pre-push hook sentinel.');
+    lines.push('deletes .agent-chorus/ scaffolding, removes pre-push hook sentinel,');
+    lines.push('and removes .agent-chorus/ from .gitignore.');
     lines.push('Context pack (.agent-context/) is preserved — remove manually if desired.');
+    lines.push('');
+    lines.push('Note: the Claude Code plugin is NOT removed by teardown (it is global).');
+    lines.push('To uninstall the plugin: claude plugin uninstall agent-chorus');
   } else if (topic === 'doctor') {
     lines.push('');
     lines.push('doctor options:');
     lines.push('  --cwd <path> (default: current directory)');
     lines.push('  --json');
+    lines.push('');
+    lines.push('Checks: version, session directories, setup completeness, provider');
+    lines.push('instruction wiring, session availability, context pack state,');
+    lines.push('Claude Code plugin installation, and update status.');
   } else if (topic === 'context-pack') {
     lines.push('');
     lines.push('context-pack usage:');
@@ -202,6 +220,43 @@ const setupProviders = [
   { agent: 'claude', targetFile: 'CLAUDE.md' },
   { agent: 'gemini', targetFile: 'GEMINI.md' },
 ];
+
+function getPackageRoot() {
+  return path.resolve(__dirname, '..');
+}
+
+function isCommandAvailable(cmd) {
+  try {
+    execFileSync('which', [cmd], { stdio: 'pipe' });
+    return true;
+  } catch { return false; }
+}
+
+function getClaudePluginStatus() {
+  try {
+    const output = execFileSync('claude', ['plugin', 'list'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    });
+    return { installed: output.includes('agent-chorus') };
+  } catch { return { installed: false }; }
+}
+
+function installClaudePlugin(packageRoot, dryRun) {
+  if (dryRun) return { status: 'planned', note: 'Would install agent-chorus Claude Code plugin' };
+  try {
+    execFileSync('claude', ['plugin', 'marketplace', 'add', packageRoot], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    execFileSync('claude', ['plugin', 'install', 'agent-chorus'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return { status: 'created', note: 'Installed agent-chorus Claude Code plugin' };
+  } catch (err) {
+    const cmd = `claude plugin marketplace add "${packageRoot}" && claude plugin install agent-chorus`;
+    return { status: 'error', note: `Plugin install failed — run manually: ${cmd}` };
+  }
+}
 
 function expandHome(filepath) {
   if (!filepath) return filepath;
@@ -1780,6 +1835,54 @@ function runSetup(inputArgs) {
     }
   }
 
+  // Gitignore: ensure .agent-chorus/ is excluded from git tracking
+  const gitignorePath = path.join(cwd, '.gitignore');
+  const gitignoreEntry = '.agent-chorus/';
+  const gitignoreExists = fs.existsSync(gitignorePath);
+  const gitignoreContent = gitignoreExists ? fs.readFileSync(gitignorePath, 'utf8') : '';
+  const alreadyIgnored = gitignoreContent.split('\n').some(l => {
+    const t = l.trim();
+    return t === '.agent-chorus/' || t === '.agent-chorus';
+  });
+  if (!alreadyIgnored) {
+    if (!dryRun) {
+      const sep = gitignoreContent.length > 0 && !gitignoreContent.endsWith('\n') ? '\n' : '';
+      fs.writeFileSync(gitignorePath, gitignoreContent + sep + gitignoreEntry + '\n', 'utf8');
+    }
+    operations.push({
+      type: 'gitignore',
+      path: gitignorePath,
+      status: dryRun ? 'planned' : (gitignoreExists ? 'updated' : 'created'),
+      note: dryRun ? 'Would add .agent-chorus/ to .gitignore' : 'Added .agent-chorus/ to .gitignore',
+    });
+  } else {
+    operations.push({
+      type: 'gitignore',
+      path: gitignorePath,
+      status: 'unchanged',
+      note: '.agent-chorus/ already in .gitignore',
+    });
+  }
+
+  // Claude Code plugin: auto-install if claude CLI is available and plugin is not yet wired
+  const packageRoot = getPackageRoot();
+  if (isCommandAvailable('claude')) {
+    const pluginStatus = getClaudePluginStatus();
+    if (!pluginStatus.installed) {
+      const pluginResult = installClaudePlugin(packageRoot, dryRun);
+      operations.push({ type: 'plugin', path: 'claude plugin', ...pluginResult });
+    } else {
+      operations.push({ type: 'plugin', path: 'claude plugin', status: 'unchanged', note: 'agent-chorus Claude Code plugin already installed' });
+    }
+  } else {
+    operations.push({
+      type: 'plugin',
+      path: 'claude plugin',
+      status: 'skipped',
+      note: `claude CLI not found — install plugin manually: claude plugin marketplace add "${packageRoot}" && claude plugin install agent-chorus`,
+    });
+  }
+
   const changedCount = operations.filter(op => op.status === 'created' || op.status === 'updated').length;
   const result = {
     cwd,
@@ -1858,7 +1961,25 @@ function runTeardown(inputArgs) {
     });
   }
 
-  // 3. Remove pre-push hook sentinel (checks core.hooksPath, .githooks/, .git/hooks/)
+  // 3. Remove .agent-chorus/ from .gitignore if present
+  const gitignorePath = path.join(cwd, '.gitignore');
+  if (fs.existsSync(gitignorePath)) {
+    const content = fs.readFileSync(gitignorePath, 'utf8');
+    const filtered = content.split('\n').filter(l => {
+      const t = l.trim();
+      return t !== '.agent-chorus/' && t !== '.agent-chorus';
+    });
+    if (filtered.length !== content.split('\n').length) {
+      if (!dryRun) {
+        fs.writeFileSync(gitignorePath, filtered.join('\n'), 'utf8');
+      }
+      operations.push({ type: 'gitignore', path: gitignorePath, status: dryRun ? 'planned' : 'updated', note: 'Removed .agent-chorus/ from .gitignore' });
+    } else {
+      operations.push({ type: 'gitignore', path: gitignorePath, status: 'unchanged', note: '.agent-chorus/ not in .gitignore' });
+    }
+  }
+
+  // 4. Remove pre-push hook sentinel (checks core.hooksPath, .githooks/, .git/hooks/)
   const hookResult = removeHookSentinel(cwd, dryRun);
   operations.push({
     type: 'hook',
@@ -1867,7 +1988,7 @@ function runTeardown(inputArgs) {
     note: hookResult.message,
   });
 
-  // 4. Warn about .agent-context/ (never auto-delete — contains project data)
+  // 5. Warn about .agent-context/ (never auto-delete — contains project data)
   const contextPackDir = path.join(cwd, '.agent-context');
   if (fs.existsSync(contextPackDir)) {
     warnings.push(`Context pack at ${contextPackDir} preserved (contains project data). Remove manually if desired.`);
@@ -2041,6 +2162,20 @@ function runDoctor(inputArgs) {
     }
   } catch (e) {
     // silently ignore missing update module or runtime errors
+  }
+
+  // Claude Code plugin check
+  if (isCommandAvailable('claude')) {
+    const pluginStatus = getClaudePluginStatus();
+    addCheck(
+      'claude_plugin',
+      pluginStatus.installed ? 'pass' : 'warn',
+      pluginStatus.installed
+        ? 'agent-chorus Claude Code plugin installed'
+        : `Claude Code plugin not installed — run: chorus setup (or manually: claude plugin marketplace add "${getPackageRoot()}" && claude plugin install agent-chorus)`
+    );
+  } else {
+    addCheck('claude_plugin', 'warn', 'claude CLI not found — Claude Code plugin status unknown');
   }
 
   let hooksPath = null;

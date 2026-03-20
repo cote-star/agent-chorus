@@ -74,7 +74,57 @@ pub fn run_teardown(cwd: &str, dry_run: bool, global: bool) -> Result<TeardownRe
         }));
     }
 
-    // 3. Remove pre-push hook sentinel
+    // 3. Remove .agent-chorus/ from .gitignore
+    let gitignore_path = cwd_path.join(".gitignore");
+    if gitignore_path.exists() {
+        match fs::read_to_string(&gitignore_path) {
+            Ok(content) => {
+                let filtered: Vec<&str> = content
+                    .lines()
+                    .filter(|l| l.trim() != ".agent-chorus/" && l.trim() != ".agent-chorus")
+                    .collect();
+                let new_content = filtered.join("\n") + "\n";
+                if new_content != content {
+                    let status = if dry_run {
+                        "planned"
+                    } else {
+                        fs::write(&gitignore_path, &new_content).ok();
+                        "updated"
+                    };
+                    operations.push(json!({
+                        "type": "gitignore",
+                        "path": ".gitignore",
+                        "status": status,
+                        "note": "Removed .agent-chorus/ from .gitignore"
+                    }));
+                } else {
+                    operations.push(json!({
+                        "type": "gitignore",
+                        "path": ".gitignore",
+                        "status": "unchanged",
+                        "note": "No .agent-chorus/ entry found"
+                    }));
+                }
+            }
+            Err(e) => {
+                operations.push(json!({
+                    "type": "gitignore",
+                    "path": ".gitignore",
+                    "status": "error",
+                    "note": format!("Could not read .gitignore: {}", e)
+                }));
+            }
+        }
+    } else {
+        operations.push(json!({
+            "type": "gitignore",
+            "path": ".gitignore",
+            "status": "skipped",
+            "note": "No .gitignore found"
+        }));
+    }
+
+    // 4. Remove pre-push hook sentinel
     let hook_result = remove_hook_sentinel(cwd_path, dry_run);
     operations.push(json!({
         "type": "hook",
@@ -83,7 +133,7 @@ pub fn run_teardown(cwd: &str, dry_run: bool, global: bool) -> Result<TeardownRe
         "note": hook_result.message,
     }));
 
-    // 4. Warn about .agent-context/ (never auto-delete)
+    // 5. Warn about .agent-context/ (never auto-delete)
     let context_pack_dir = cwd_path.join(".agent-context");
     if context_pack_dir.exists() {
         warnings.push(format!(
@@ -98,7 +148,7 @@ pub fn run_teardown(cwd: &str, dry_run: bool, global: bool) -> Result<TeardownRe
         }));
     }
 
-    // 5. If --global: remove cache directory
+    // 6. If --global: remove cache directory
     if global {
         if let Some(cache_dir) = dirs::cache_dir().map(|d| d.join("agent-chorus")) {
             if cache_dir.exists() {

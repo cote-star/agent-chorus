@@ -1,0 +1,13 @@
+{
+  "name": "agent-chorus",
+  "version": "0.8.0",
+  "description": "Cross-agent session visibility — read, compare, diff, and coordinate across Codex, Claude, Gemini, and Cursor sessions.",
+  "author": {
+    "name": "cote-star",
+    "url": "https://github.com/cote-star"
+  },
+  "homepage": "https://github.com/cote-star/agent-chorus#readme",
+  "repository": "https://github.com/cote-star/agent-chorus",
+  "license": "MIT",
+  "keywords": ["multi-agent", "cross-agent", "session", "chorus", "codex", "claude", "gemini", "cursor"]
+}

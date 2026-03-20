@@ -265,6 +265,88 @@ Messages are stored in `.agent-chorus/messages/<target-agent>.jsonl` and never l
 
 Message schema: `schemas/message.schema.json`.
 
+## Setup
+
+Wire Agent Chorus into a project. Creates provider scaffolding, injects managed blocks into agent instruction files, updates `.gitignore`, and auto-installs the Claude Code plugin if the `claude` CLI is present.
+
+```bash
+# Wire chorus into the current project
+chorus setup
+
+# Preview what would be created (no writes)
+chorus setup --dry-run --json
+
+# Replace existing managed blocks (idempotent refresh)
+chorus setup --force
+
+# Also initialize context pack and install pre-push hook
+chorus setup --context-pack
+```
+
+Setup performs these operations:
+
+| Operation | File / Target | Notes |
+|---|---|---|
+| `file` | `.agent-chorus/INTENTS.md` | Intent contract (skipped if exists unless --force) |
+| `file` | `.agent-chorus/providers/{claude,codex,gemini}.md` | Per-agent trigger snippets |
+| `integration` | `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` | Managed blocks injected or created |
+| `gitignore` | `.gitignore` | `.agent-chorus/` appended if not already present |
+| `plugin` | `claude plugin` | Auto-installs Claude Code skill plugin if `claude` CLI is available |
+
+**JSON output:**
+
+```json
+{
+  "cwd": "/path/to/project",
+  "dry_run": false,
+  "force": false,
+  "operations": [
+    { "type": "file", "path": ".agent-chorus/INTENTS.md", "status": "created", "note": "Created intent contract" },
+    { "type": "integration", "path": "CLAUDE.md", "status": "updated", "note": "Managed block written" },
+    { "type": "gitignore", "path": ".gitignore", "status": "updated", "note": "Added .agent-chorus/ to .gitignore" },
+    { "type": "plugin", "path": "claude plugin", "status": "created", "note": "Installed agent-chorus Claude Code plugin" }
+  ],
+  "warnings": [],
+  "changed": 4
+}
+```
+
+**Notes:**
+- Safe to re-run — existing managed blocks and snippets are left unchanged unless `--force` is given
+- The Claude Code plugin install is global (user scope). It is not reversed by `teardown`. To uninstall: `claude plugin uninstall agent-chorus`
+- If `claude` CLI is not found, plugin installation is skipped with a `skipped` status and manual instructions
+
+## Doctor
+
+Check whether Agent Chorus is correctly wired for the current project.
+
+```bash
+chorus doctor
+chorus doctor --cwd /path/to/project
+chorus doctor --json
+```
+
+Doctor reports on: version, session directory availability, setup completeness (scaffolding + managed blocks), session discoverability for each agent, context pack state, Claude Code plugin installation, and update status.
+
+**Example output:**
+
+```
+Agent Chorus doctor: PASS (/path/to/project)
+- PASS version: agent-chorus v0.7.0
+- PASS codex_sessions_dir: Found: ~/.codex/sessions
+- PASS claude_projects_dir: Found: ~/.claude/projects
+- PASS gemini_tmp_dir: Found: ~/.gemini/tmp
+- PASS setup_intents: Found: .agent-chorus/INTENTS.md
+- PASS snippet_claude: Found: .agent-chorus/providers/claude.md
+- PASS integration_claude: Managed block present in CLAUDE.md
+- PASS sessions_claude: At least one claude session discovered
+- PASS context_pack_state: State: SEALED_VALID
+- PASS update_status: Up to date (0.7.0)
+- PASS claude_plugin: agent-chorus Claude Code plugin installed
+```
+
+**JSON output (`--json`):** array of `{ id, status, detail }` check objects, where `status` is `"pass"`, `"warn"`, or `"fail"`.
+
 ## Teardown
 
 Remove Agent Chorus integration from a project.
@@ -283,8 +365,11 @@ chorus teardown --cwd . --global
 Teardown performs these operations:
 - Removes `<!-- agent-chorus:*:start/end -->` managed blocks from AGENTS.md, CLAUDE.md, GEMINI.md
 - Deletes the `.agent-chorus/` scaffolding directory
+- Removes `.agent-chorus/` from `.gitignore`
 - Removes hook sentinels from pre-push hooks
 - Preserves `.agent-context/` (contains project data; warns but does not delete)
+
+**Note:** the Claude Code plugin is **not** removed by teardown — it is a global install. To uninstall: `claude plugin uninstall agent-chorus`
 
 **JSON output:**
 
@@ -294,13 +379,14 @@ Teardown performs these operations:
   "dry_run": false,
   "global": false,
   "operations": [
-    { "type": "integration", "path": "CLAUDE.md", "status": "cleaned", "note": "Removed managed block" },
+    { "type": "integration", "path": "CLAUDE.md", "status": "updated", "note": "Managed block removed" },
     { "type": "directory", "path": ".agent-chorus", "status": "deleted", "note": "Removed scaffolding directory" },
+    { "type": "gitignore", "path": ".gitignore", "status": "updated", "note": "Removed .agent-chorus/ from .gitignore" },
     { "type": "hook", "path": ".git/hooks/pre-push", "status": "unchanged", "note": "No hook sentinel found" },
     { "type": "context-pack", "path": ".agent-context", "status": "preserved", "note": "Contains project data; not removed by teardown" }
   ],
   "warnings": [],
-  "changed": 2
+  "changed": 3
 }
 ```
 

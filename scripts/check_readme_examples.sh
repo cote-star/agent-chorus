@@ -110,4 +110,23 @@ node "$ROOT/scripts/compare_read_output.cjs" "$report_node_json" "$report_rust_j
 node "$ROOT/scripts/compare_read_output.cjs" "$list_node_json" "$list_rust_json" "readme-list"
 node "$ROOT/scripts/compare_read_output.cjs" "$search_node_json" "$search_rust_json" "readme-search"
 
+# --- Node-only admin command smoke tests ---
+SETUP_TMP=$(mktemp -d)
+node "$ROOT/scripts/read_session.cjs" setup --cwd "$SETUP_TMP" --dry-run --json > /tmp/setup_dry.json
+node -e "JSON.parse(require('fs').readFileSync('/tmp/setup_dry.json','utf8'))" || { echo "FAIL setup --dry-run --json: not valid JSON"; exit 1; }
+echo "PASS setup --dry-run --json"
+rm -rf "$SETUP_TMP"
+
+TEARDOWN_TMP=$(mktemp -d)
+node "$ROOT/scripts/read_session.cjs" teardown --cwd "$TEARDOWN_TMP" --dry-run --json > /tmp/teardown_dry.json
+node -e "JSON.parse(require('fs').readFileSync('/tmp/teardown_dry.json','utf8'))" || { echo "FAIL teardown --dry-run --json: not valid JSON"; exit 1; }
+echo "PASS teardown --dry-run --json"
+rm -rf "$TEARDOWN_TMP"
+
+DOCTOR_TMP=$(mktemp -d)
+node "$ROOT/scripts/read_session.cjs" doctor --cwd "$DOCTOR_TMP" --json > /tmp/doctor_out.json || true
+node -e "JSON.parse(require('fs').readFileSync('/tmp/doctor_out.json','utf8'))" || { echo "FAIL doctor --json: not valid JSON"; exit 1; }
+echo "PASS doctor --json"
+rm -rf "$DOCTOR_TMP"
+
 echo "README command checks complete."

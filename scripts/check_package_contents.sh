@@ -23,8 +23,12 @@ const requiredPaths = [
   'docs/architecture.svg',
   'README.md',
   'PROTOCOL.md',
+  'SKILL.md',
   'LICENSE',
   'schemas/read-output.schema.json',
+  '.claude-plugin/plugin.json',
+  '.claude-plugin/marketplace.json',
+  'skills/agent-chorus/SKILL.md',
 ];
 
 const forbiddenPrefixes = [

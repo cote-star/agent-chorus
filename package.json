@@ -1,6 +1,6 @@
 {
   "name": "agent-chorus",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Local-first CLI to read, compare, and hand off context across Codex, Claude, Gemini, and Cursor sessions.",
   "keywords": [
     "agent-chorus",
@@ -50,7 +50,10 @@
     "LICENSE",
     "PROTOCOL.md",
     "README.md",
-    "schemas"
+    "SKILL.md",
+    "schemas",
+    ".claude-plugin",
+    "skills"
   ],
   "devDependencies": {
     "ajv": "^8.17.1",
