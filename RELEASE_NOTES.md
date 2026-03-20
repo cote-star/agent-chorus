@@ -1,5 +1,28 @@
 # Release Notes
 
+## v0.8.0 — 2026-03-20
+
+### Added
+- `chorus setup` now auto-appends `.agent-chorus/` to `.gitignore`
+- `chorus setup` auto-installs the Agent Chorus Claude Code skill plugin if `claude` CLI is present
+- `chorus doctor` now checks Claude Code plugin installation status
+- `chorus teardown` now removes `.agent-chorus/` from `.gitignore`
+- New Claude Code plugin system: `.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `skills/agent-chorus/SKILL.md`
+- Package is now a self-describing marketplace — `claude plugin marketplace add <package-root>` works out of the box
+
+### Changed
+- PROTOCOL.md: split CLI contract into dual-parity and Node-only admin sections; rules 15–17 updated
+- CLI_REFERENCE.md: added full Setup, Doctor, and Teardown operation tables
+- Skill file updated from thin redirect to full trigger/intent/command reference
+
+### Fixes
+- Rust `teardown` now removes `.agent-chorus/` from `.gitignore` (parity with Node)
+- Node `isSystemDirectory` now allows macOS temp dirs (`/var/folders/`) matching Rust parity
+
+### Upgrade Notes
+- Run `chorus setup --force` to pick up gitignore auto-management and plugin auto-install in existing projects
+- To install the Claude Code plugin manually: `claude plugin marketplace add $(npm root -g)/agent-chorus && claude plugin install agent-chorus`
+
 ## v0.7.0 (2026-03-17)
 
 ### Highlights

@@ -771,6 +771,8 @@ const SYSTEM_DIRS = new Set(['/etc', '/usr', '/var', '/bin', '/sbin', '/System',
 
 function isSystemDirectory(dirPath) {
   const resolved = path.resolve(dirPath);
+  // macOS temp dirs live under /var/folders — allow those
+  if (resolved.startsWith('/var/folders/') || resolved.startsWith('/private/var/folders/')) return false;
   for (const sysDir of SYSTEM_DIRS) {
     if (resolved === sysDir || resolved.startsWith(sysDir + path.sep)) return true;
   }
