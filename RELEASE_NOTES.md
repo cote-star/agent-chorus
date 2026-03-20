@@ -1,5 +1,11 @@
 # Release Notes
 
+## v0.8.1 — 2026-03-20
+
+### Fixes
+- `marketplace.json`: removed unrecognized root keys (`$schema`, `description`) and changed `source` from `"."` to `"./"` — `claude plugin marketplace add` now works correctly for all users
+- Node `isSystemDirectory` now allows macOS temp dirs (`/var/folders/`) matching Rust parity — fixes `setup`/`teardown` `--dry-run` in temp directories
+
 ## v0.8.0 — 2026-03-20
 
 ### Added
