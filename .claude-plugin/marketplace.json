@@ -1,7 +1,5 @@
 {
-  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "agent-chorus",
-  "description": "Cross-agent session visibility — read, compare, diff, and coordinate across Codex, Claude, Gemini, and Cursor sessions.",
   "owner": {
     "name": "cote-star",
     "url": "https://github.com/cote-star"
@@ -11,7 +9,7 @@
       "name": "agent-chorus",
       "description": "Cross-agent session visibility — read, compare, diff, and coordinate across Codex, Claude, Gemini, and Cursor sessions.",
       "category": "development",
-      "source": ".",
+      "source": "./",
       "homepage": "https://github.com/cote-star/agent-chorus#readme"
     }
   ]
