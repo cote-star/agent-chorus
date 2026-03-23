@@ -152,6 +152,12 @@ pub fn init(options: InitOptions) -> Result<()> {
         write_text(&guide_path, &build_guide())?;
     }
 
+    // Auto-install the pre-push hook so freshness warnings fire on every main push.
+    match install_hooks(&repo_root.to_string_lossy(), false) {
+        Ok(_) => println!("[context-pack] pre-push hook installed"),
+        Err(_) => eprintln!("[context-pack] WARN: could not auto-install pre-push hook — run `chorus context-pack install-hooks` manually"),
+    }
+
     println!(
         "[context-pack] init completed: {}",
         rel_path(&current_dir, &repo_root)
@@ -161,6 +167,94 @@ pub fn init(options: InitOptions) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn check_content_quality(current_dir: &Path) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    // CODE_MAP: Risk column presence and non-empty values
+    let code_map_path = current_dir.join("20_CODE_MAP.md");
+    if let Ok(content) = fs::read_to_string(&code_map_path) {
+        let has_risk_header = content.lines().any(|l| {
+            let lower = l.to_lowercase();
+            l.contains('|') && lower.contains("risk")
+        });
+        if !has_risk_header {
+            warnings.push("20_CODE_MAP.md: no Risk column found — add a Risk column to each table row (e.g. \"Silent failure if missed\")".to_string());
+        } else {
+            let empty_risk_count = content.lines().filter(|l| {
+                l.starts_with('|') &&
+                !l.contains("---") &&
+                !l.to_lowercase().contains("risk") &&
+                {
+                    let cells: Vec<&str> = l.split('|').map(|c| c.trim()).filter(|c| !c.is_empty()).collect();
+                    cells.last().map(|c| c.is_empty()).unwrap_or(false)
+                }
+            }).count();
+            if empty_risk_count > 0 {
+                warnings.push(format!("20_CODE_MAP.md: {empty_risk_count} row(s) have an empty Risk column — fill with \"Silent failure if missed\", \"KeyError at runtime\", etc."));
+            }
+        }
+    }
+
+    // BEHAVIORAL_INVARIANTS: checklist has rows with explicit file paths
+    let invariants_path = current_dir.join("30_BEHAVIORAL_INVARIANTS.md");
+    if let Ok(content) = fs::read_to_string(&invariants_path) {
+        let table_rows: Vec<&str> = content.lines().filter(|l| {
+            l.starts_with('|') &&
+            !l.contains("---") &&
+            !l.to_lowercase().contains("change") &&
+            !l.to_lowercase().contains("files that must")
+        }).collect();
+        if table_rows.is_empty() {
+            warnings.push("30_BEHAVIORAL_INVARIANTS.md: Update Checklist has no rows — add at least one change-type row with explicit file paths".to_string());
+        } else {
+            let has_file_path = table_rows.iter().any(|row| {
+                // Look for path-like tokens: word chars + slash or dot + word chars
+                let re_like = row.contains('/') || row.chars().filter(|c| *c == '.').count() > 0;
+                re_like && row.len() > 20
+            });
+            if !has_file_path {
+                warnings.push("30_BEHAVIORAL_INVARIANTS.md: checklist rows do not appear to name explicit file paths — rows should list files by path, not just description".to_string());
+            }
+        }
+    }
+
+    // SYSTEM_OVERVIEW: runtime or silent failure modes section
+    let overview_path = current_dir.join("10_SYSTEM_OVERVIEW.md");
+    if let Ok(content) = fs::read_to_string(&overview_path) {
+        let has_runtime = content.lines().any(|l| {
+            l.starts_with("## ") && (l.to_lowercase().contains("runtime") || l.to_lowercase().contains("silent failure"))
+        });
+        if !has_runtime {
+            warnings.push("10_SYSTEM_OVERVIEW.md: no Runtime Architecture or Silent Failure Modes section found — agents need runtime behavior documented to diagnose silent failures".to_string());
+        }
+    }
+
+    warnings
+}
+
+fn is_hook_installed(repo_root: &Path) -> bool {
+    let hooks_path = run_git(&["config", "--get", "core.hooksPath"], repo_root, true)
+        .unwrap_or_default();
+    let hooks_dir = if hooks_path.trim().is_empty() {
+        repo_root.join(".githooks")
+    } else {
+        let p = Path::new(hooks_path.trim());
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            repo_root.join(hooks_path.trim())
+        }
+    };
+    let pre_push = hooks_dir.join("pre-push");
+    if !pre_push.exists() {
+        return false;
+    }
+    fs::read_to_string(&pre_push).map(|content| {
+        content.contains("# --- agent-chorus:pre-push:start ---") ||
+        content.contains("# --- agent-bridge:pre-push:start ---")
+    }).unwrap_or(false)
 }
 
 pub fn seal(options: SealOptions) -> Result<()> {
@@ -282,6 +376,15 @@ pub fn seal(options: SealOptions) -> Result<()> {
         || previous_manifest.is_none()
         || previous_stable.as_deref() != Some(manifest.stable_checksum.as_str())
         || previous_head != head_sha;
+
+    let quality_warnings = check_content_quality(&current_dir);
+    for w in &quality_warnings {
+        eprintln!("[context-pack] WARN: {w}");
+    }
+
+    if !is_hook_installed(&repo_root) {
+        eprintln!("[context-pack] WARN: pre-push hook is not installed — run `chorus context-pack install-hooks` to enable staleness detection on main pushes");
+    }
 
     if changed {
         let mut snapshot_id = format!(
@@ -1402,12 +1505,17 @@ fn build_template_start_here(
 4. Use `20_CODE_MAP.md` to deep dive only relevant files.
 5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.
 
+## Task-Type Routing
+**Impact analysis** (list every file that must change): read `30_BEHAVIORAL_INVARIANTS.md` Update Checklist *before* `20_CODE_MAP.md` — the checklist has the full blast radius per change type. CODE_MAP alone is not exhaustive.
+**Navigation / lookup** (find a file, find a value): start with `20_CODE_MAP.md` Scope Rule.
+**Planning** (add a new feature/module): follow the Extension Recipe in `20_CODE_MAP.md`, then cross-check the BEHAVIORAL_INVARIANTS checklist for that change type.
+**Diagnosis** (silent failures, unexpected output): start with `10_SYSTEM_OVERVIEW.md` Silent Failure Modes, then the relevant diagnostic row in `30_BEHAVIORAL_INVARIANTS.md`.
+
 ## Fast Facts
 <!-- AGENT: Replace with 3-5 bullets covering product, languages/entry points, quality gate, core risk. -->
 
 ## Scope Rule
-For "understand this repo end-to-end" requests:
-<!-- AGENT: Provide scope/navigation rules (when to open code, what to read first). -->
+<!-- AGENT: Provide navigation rules — what to open first for each area of the codebase, what to skip. -->
 "#
     )
 }
@@ -1423,6 +1531,12 @@ fn build_template_system_overview() -> String {
 ## Runtime Architecture
 <!-- AGENT: Describe primary execution flow in 3-5 numbered steps. -->
 
+## Silent Failure Modes
+<!-- AGENT: List any code paths where a failure produces no error — null return, silent drop, unchecked default.
+These are the hardest things to find by reading code and the most valuable to have written down.
+Example: "If selector has no match in prompts.yml, resolver returns null — Spark UDF propagates as null row with no error logged."
+If none are known, write "None identified." -->
+
 ## Command/API Surface
 <!-- AGENT: Table | Command/Endpoint | Intent | Primary Source Files | -->
 
@@ -1436,12 +1550,19 @@ fn build_template_code_map() -> String {
     r#"# Code Map
 
 ## High-Impact Paths
-<!-- AGENT: Identify 8-15 key paths.
-| Path | What | Why It Matters | Change Risk |
-| --- | --- | --- | --- | -->
+
+> **This table is a navigation index, not a complete blast-radius list.** For impact analysis tasks,
+> read `30_BEHAVIORAL_INVARIANTS.md` Update Checklist first — it has the full file set per change type.
+> Use this table to navigate to those files once you know which are relevant. Verify coverage with grep.
+
+<!-- AGENT: Identify 8-15 key paths. Use [Approach 1], [Approach 2], or [Both] in the Approach column
+if the repo has coexisting architectural patterns — omit the column if there is only one approach.
+Risk must be filled: use "Silent failure if missed", "KeyError at runtime", "Build drift", etc.
+| Path | Approach | What | Why It Matters | Risk |
+| --- | --- | --- | --- | --- | -->
 
 ## Extension Recipe
-<!-- AGENT: Describe how to add a new module/adapter/plugin if applicable. -->
+<!-- AGENT: Describe how to add a new module/adapter/plugin. List all files that must change together. -->
 "#
     .to_string()
 }
@@ -1452,10 +1573,16 @@ fn build_template_invariants() -> String {
 <!-- AGENT: List contract-level constraints to preserve. -->
 
 ## Core Invariants
-<!-- AGENT: 3-8 numbered items covering protocol/error/schema/flag invariants. -->
+<!-- AGENT: 3-8 numbered items. Each must be a testable statement, not a description.
+Good: "Every selector in a spec must match an entry in prompts.yml — missing match raises ValueError at sync time."
+Bad: "Prompts must be valid." -->
 
 ## Update Checklist Before Merging Behavior Changes
-<!-- AGENT: List files/areas that must be updated together when behavior changes. -->
+<!-- AGENT: One row per common change type. The "Files that must change together" column must list
+explicit file paths — not descriptions, not directory names. Agents will use these rows as a checklist.
+If a missed file causes a silent production failure, say so explicitly in the row.
+| Change type | Files that must change together |
+| --- | --- | -->
 "#
     .to_string()
 }
@@ -1473,11 +1600,10 @@ fn build_template_operations() -> String {
 <!-- AGENT: Describe how releases are triggered and what they produce. -->
 
 ## Context Pack Maintenance
-1. Initialize scaffolding: `chorus context-pack init`
+1. Initialize scaffolding: `chorus context-pack init` (pre-push hook installed automatically)
 2. Have your agent fill in the template sections.
 3. Seal the pack: `chorus context-pack seal`
-4. Install pre-push hook: `chorus context-pack install-hooks`
-5. When freshness warnings appear, update content then run `chorus context-pack seal`
+4. When freshness warnings appear on push, update content then run `chorus context-pack seal`
 
 ## Rollback/Recovery
 - Restore latest snapshot: `chorus context-pack rollback`
