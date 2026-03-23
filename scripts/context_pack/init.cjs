@@ -163,6 +163,16 @@ Risk must be filled: use "Silent failure if missed", "KeyError at runtime", "Bui
 | Path | Approach | What | Why It Matters | Risk |
 | --- | --- | --- | --- | --- | -->
 
+## Quick Lookup Shortcuts
+<!-- AGENT: Add 4-6 common lookup patterns. Map intent to exact file and what to look for.
+| I need to find... | Open this file | Look for |
+| --- | --- | --- | -->
+
+## Cross-Cutting Tracing Flows
+<!-- AGENT: For changes that ripple through multiple layers, document the full chain.
+Example: "New parameter through call chain: schema → step → client → wrapper → tests"
+List files in dependency order so agents trace the change correctly. -->
+
 ## Extension Recipe
 <!-- AGENT: Describe how to add a new module/adapter/plugin. List all files that must change together. -->
 `;
