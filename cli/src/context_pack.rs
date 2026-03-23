@@ -1790,3 +1790,153 @@ while read -r local_ref local_sha remote_ref remote_sha; do
 done"#
     .to_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn test_dir(name: &str) -> PathBuf {
+        let dir = env::temp_dir().join(format!("chorus_cp_test_{}", name));
+        // Clean up from any previous run (idempotent)
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create test dir");
+        dir
+    }
+
+    // --- upsert_context_pack_block tests ---
+
+    #[test]
+    fn upsert_creates_file_when_missing() {
+        let dir = test_dir("upsert_creates");
+        let file = dir.join("CLAUDE.md");
+        let block = "## Context Pack\n\nRead the pack.";
+        let marker = "agent-chorus:context-pack:claude";
+
+        upsert_context_pack_block(&file, block, marker).unwrap();
+
+        let content = fs::read_to_string(&file).unwrap();
+        assert!(content.contains("<!-- agent-chorus:context-pack:claude:start -->"));
+        assert!(content.contains("## Context Pack"));
+        assert!(content.contains("<!-- agent-chorus:context-pack:claude:end -->"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_prepends_when_no_markers() {
+        let dir = test_dir("upsert_prepends");
+        let file = dir.join("CLAUDE.md");
+        fs::write(&file, "# Existing Content\n\nSome instructions.\n").unwrap();
+
+        let block = "## Context Pack\n\nRead the pack.";
+        let marker = "agent-chorus:context-pack:claude";
+
+        upsert_context_pack_block(&file, block, marker).unwrap();
+
+        let content = fs::read_to_string(&file).unwrap();
+        // Managed block should come before existing content
+        let block_pos = content.find("<!-- agent-chorus:context-pack:claude:start -->").unwrap();
+        let existing_pos = content.find("# Existing Content").unwrap();
+        assert!(block_pos < existing_pos, "managed block should be prepended");
+        // Existing content preserved
+        assert!(content.contains("Some instructions."));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_replaces_existing_block() {
+        let dir = test_dir("upsert_replaces");
+        let file = dir.join("CLAUDE.md");
+        let marker = "agent-chorus:context-pack:claude";
+
+        // Write initial content with a managed block in the middle
+        let initial = "# Header\n\n\
+            <!-- agent-chorus:context-pack:claude:start -->\n\
+            ## Old Block\n\
+            <!-- agent-chorus:context-pack:claude:end -->\n\n\
+            # Footer\n";
+        fs::write(&file, initial).unwrap();
+
+        let new_block = "## New Block\n\nUpdated instructions.";
+        upsert_context_pack_block(&file, new_block, marker).unwrap();
+
+        let content = fs::read_to_string(&file).unwrap();
+        assert!(!content.contains("Old Block"), "old block should be replaced");
+        assert!(content.contains("New Block"), "new block should be present");
+        assert!(content.contains("Updated instructions."));
+        // Surrounding content preserved
+        assert!(content.contains("# Header"));
+        assert!(content.contains("# Footer"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn upsert_is_idempotent() {
+        let dir = test_dir("upsert_idempotent");
+        let file = dir.join("CLAUDE.md");
+        let block = "## Context Pack\n\nRead the pack.";
+        let marker = "agent-chorus:context-pack:claude";
+
+        upsert_context_pack_block(&file, block, marker).unwrap();
+        let first = fs::read_to_string(&file).unwrap();
+
+        upsert_context_pack_block(&file, block, marker).unwrap();
+        let second = fs::read_to_string(&file).unwrap();
+
+        assert_eq!(first, second, "running upsert twice should produce identical content");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- update_start_here_snapshot tests ---
+
+    #[test]
+    fn snapshot_replaces_three_metadata_lines() {
+        let dir = test_dir("snapshot_metadata");
+        let start_here = dir.join("00_START_HERE.md");
+
+        let initial = "# Context Pack: Start Here\n\n\
+            ## Snapshot\n\
+            - Repo: `my-repo`\n\
+            - Branch at generation: `main`\n\
+            - HEAD commit: `abc1234`\n\
+            - Generated at: `2026-01-01T00:00:00Z`\n\n\
+            ## Read Order\n\
+            1. 10_SYSTEM_OVERVIEW.md\n";
+        fs::write(&start_here, initial).unwrap();
+
+        update_start_here_snapshot(&dir, "feature-x", Some("def5678"), "2026-03-23T12:00:00Z")
+            .unwrap();
+
+        let content = fs::read_to_string(&start_here).unwrap();
+        assert!(content.contains("- Branch at generation: `feature-x`"));
+        assert!(content.contains("- HEAD commit: `def5678`"));
+        assert!(content.contains("- Generated at: `2026-03-23T12:00:00Z`"));
+        // Repo line and rest of file preserved
+        assert!(content.contains("- Repo: `my-repo`"));
+        assert!(content.contains("## Read Order"));
+        assert!(content.contains("1. 10_SYSTEM_OVERVIEW.md"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn snapshot_noop_when_file_missing() {
+        let dir = test_dir("snapshot_noop");
+        // Don't create 00_START_HERE.md — it should be a no-op
+        let result =
+            update_start_here_snapshot(&dir, "main", Some("abc1234"), "2026-03-23T12:00:00Z");
+        assert!(result.is_ok(), "should return Ok when file is missing");
+        assert!(
+            !dir.join("00_START_HERE.md").exists(),
+            "should not create the file"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
