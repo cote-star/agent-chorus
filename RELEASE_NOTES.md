@@ -1,5 +1,17 @@
 # Release Notes
 
+## v0.8.2 — 2026-03-23
+
+### Changed
+- `chorus context-pack init` now auto-installs the pre-push hook after scaffolding templates — no manual `install-hooks` step required
+- `chorus context-pack seal` now warns if the pre-push hook is not installed, so the gap is visible on every seal run
+- `40_OPERATIONS_AND_RELEASE.md` template updated: "Install pre-push hook" removed as a manual step (it is now automatic)
+
+### Why
+Context packs were going stale silently. The hook existed but was never wired into the init flow, so repos got a context pack with no freshness detection. This closes the installation gap: every `init` now leaves the repo with staleness detection active from the first push.
+
+---
+
 ## v0.8.1 — 2026-03-20
 
 ### Fixes

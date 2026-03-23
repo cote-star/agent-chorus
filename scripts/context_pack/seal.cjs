@@ -187,6 +187,20 @@ function acquireLock(lockPath) {
   }
 }
 
+function isHookInstalled(repoRoot) {
+  const hooksPath = runGit(['config', '--get', 'core.hooksPath'], repoRoot, true);
+  const hooksDir = hooksPath
+    ? path.join(repoRoot, hooksPath)
+    : path.join(repoRoot, '.githooks');
+  const prePushPath = path.join(hooksDir, 'pre-push');
+  if (!fs.existsSync(prePushPath)) return false;
+  const content = fs.readFileSync(prePushPath, 'utf8');
+  return (
+    content.includes('# --- agent-chorus:pre-push:start ---') ||
+    content.includes('# --- agent-bridge:pre-push:start ---')
+  );
+}
+
 function main() {
   const opts = parseArgs(process.argv);
   const repoRoot = runGit(['rev-parse', '--show-toplevel'], opts.cwd, true) || opts.cwd;
@@ -288,6 +302,12 @@ function main() {
       );
     } else {
       console.log('[context-pack] unchanged; no new snapshot created');
+    }
+
+    if (!isHookInstalled(repoRoot)) {
+      console.warn(
+        '[context-pack] WARN: pre-push hook is not installed — run `chorus context-pack install-hooks` to enable staleness detection on main pushes'
+      );
     }
   } catch (error) {
     console.error(error.message || error);

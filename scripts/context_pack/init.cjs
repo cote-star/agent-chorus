@@ -176,11 +176,10 @@ function templateOperations() {
 <!-- AGENT: Describe how releases are triggered and what they produce. -->
 
 ## Context Pack Maintenance
-1. Initialize scaffolding: \`chorus context-pack init\`
+1. Initialize scaffolding: \`chorus context-pack init\` (pre-push hook installed automatically)
 2. Have your agent fill in the template sections.
 3. Seal the pack: \`chorus context-pack seal\`
-4. Install pre-push hook: \`chorus context-pack install-hooks\`
-5. When freshness warnings appear, update content then run \`chorus context-pack seal\`
+4. When freshness warnings appear on push, update content then run \`chorus context-pack seal\`
 
 ## Rollback/Recovery
 - Restore latest snapshot: \`chorus context-pack rollback\`
@@ -232,6 +231,18 @@ function main() {
 
   if (!fs.existsSync(guidePath) || opts.force) {
     safeWriteText(guidePath, guideContent());
+  }
+
+  // Auto-install the pre-push hook so freshness warnings fire on every main push.
+  const installHooksScript = path.join(__dirname, 'install_hooks.cjs');
+  try {
+    execFileSync(process.execPath, [installHooksScript, '--cwd', repoRoot], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      encoding: 'utf8',
+    });
+    console.log('[context-pack] pre-push hook installed');
+  } catch (_err) {
+    console.warn('[context-pack] WARN: could not auto-install pre-push hook — run `chorus context-pack install-hooks` manually');
   }
 
   console.log(
