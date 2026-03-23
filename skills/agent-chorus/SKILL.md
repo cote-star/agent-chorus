@@ -1,7 +1,7 @@
 ---
 name: agent-chorus
 description: This skill should be used when the user asks "What is Claude doing?", "What did Gemini say?", "What is Codex working on?", "Compare Codex and Claude outputs.", "Read session from Cursor.", "How did that session change?", "Send a message to Codex.", "Any messages for me?", "What was redacted?", "Which files are relevant?", or any request to inspect, compare, diff, search, summarize, or coordinate activity across Codex, Claude, Gemini, or Cursor agents using chorus.
-version: 0.8.1
+version: 0.8.3
 ---
 
 # Agent Chorus Skill
@@ -60,6 +60,15 @@ When this skill is triggered:
 | "Send a message to Codex." | `chorus send --from claude --to codex --message "<text>" --cwd <path>` |
 | "Any messages for me?" | `chorus messages --agent claude --cwd <path> --json` |
 | "Which files are relevant?" | `chorus relevance --list --cwd <path> --json` |
+
+## Context Pack Usage
+
+When working in a repo that has `.agent-context/current/`:
+
+1. **Impact analysis tasks** (list all files that must change): read `30_BEHAVIORAL_INVARIANTS.md` Update Checklist *before* `20_CODE_MAP.md`. The checklist has the full blast radius per change type. CODE_MAP is a navigation index — it is not exhaustive.
+2. **Navigation tasks** (find a file, find a value): start with `20_CODE_MAP.md`.
+3. **Diagnosis tasks** (silent failures, unexpected output): start with `10_SYSTEM_OVERVIEW.md` Silent Failure Modes section.
+4. Never treat CODE_MAP as a complete list of affected files for a given change — always cross-reference BEHAVIORAL_INVARIANTS and verify with grep.
 
 ## Output Quality Bar
 

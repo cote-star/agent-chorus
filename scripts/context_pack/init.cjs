@@ -109,12 +109,17 @@ function templateStartHere(repoName, branch, headSha, generatedAt) {
 4. Use \`20_CODE_MAP.md\` to deep dive only relevant files.
 5. Use \`40_OPERATIONS_AND_RELEASE.md\` for tests, release, and maintenance.
 
+## Task-Type Routing
+**Impact analysis** (list every file that must change): read \`30_BEHAVIORAL_INVARIANTS.md\` Update Checklist *before* \`20_CODE_MAP.md\` — the checklist has the full blast radius per change type. CODE_MAP alone is not exhaustive.
+**Navigation / lookup** (find a file, find a value): start with \`20_CODE_MAP.md\` Scope Rule.
+**Planning** (add a new feature/module): follow the Extension Recipe in \`20_CODE_MAP.md\`, then cross-check the BEHAVIORAL_INVARIANTS checklist for that change type.
+**Diagnosis** (silent failures, unexpected output): start with \`10_SYSTEM_OVERVIEW.md\` Silent Failure Modes, then the relevant diagnostic row in \`30_BEHAVIORAL_INVARIANTS.md\`.
+
 ## Fast Facts
 <!-- AGENT: Replace with 3-5 bullets covering product, languages/entry points, quality gate, core risk. -->
 
 ## Scope Rule
-For "understand this repo end-to-end" requests:
-<!-- AGENT: Provide scope/navigation rules (when to open code, what to read first). -->
+<!-- AGENT: Provide navigation rules — what to open first for each area of the codebase, what to skip. -->
 `;
 }
 
@@ -129,6 +134,12 @@ function templateSystemOverview() {
 ## Runtime Architecture
 <!-- AGENT: Describe primary execution flow in 3-5 numbered steps. -->
 
+## Silent Failure Modes
+<!-- AGENT: List any code paths where a failure produces no error — null return, silent drop, unchecked default.
+These are the hardest things to find by reading code and the most valuable to have written down.
+Example: "If selector has no match in prompts.yml, resolver returns null — Spark UDF propagates as null row with no error logged."
+If none are known, write "None identified." -->
+
 ## Command/API Surface
 <!-- AGENT: Table | Command/Endpoint | Intent | Primary Source Files | -->
 
@@ -141,12 +152,19 @@ function templateCodeMap() {
   return `# Code Map
 
 ## High-Impact Paths
-<!-- AGENT: Identify 8-15 key paths.
-| Path | What | Why It Matters | Change Risk |
-| --- | --- | --- | --- | -->
+
+> **This table is a navigation index, not a complete blast-radius list.** For impact analysis tasks,
+> read \`30_BEHAVIORAL_INVARIANTS.md\` Update Checklist first — it has the full file set per change type.
+> Use this table to navigate to those files once you know which are relevant. Verify coverage with grep.
+
+<!-- AGENT: Identify 8-15 key paths. Use [Approach 1], [Approach 2], or [Both] in the Approach column
+if the repo has coexisting architectural patterns — omit the column if there is only one approach.
+Risk must be filled: use "Silent failure if missed", "KeyError at runtime", "Build drift", etc.
+| Path | Approach | What | Why It Matters | Risk |
+| --- | --- | --- | --- | --- | -->
 
 ## Extension Recipe
-<!-- AGENT: Describe how to add a new module/adapter/plugin if applicable. -->
+<!-- AGENT: Describe how to add a new module/adapter/plugin. List all files that must change together. -->
 `;
 }
 
@@ -156,10 +174,16 @@ function templateInvariants() {
 <!-- AGENT: List contract-level constraints to preserve. -->
 
 ## Core Invariants
-<!-- AGENT: 3-8 numbered items covering protocol/error/schema/flag invariants. -->
+<!-- AGENT: 3-8 numbered items. Each must be a testable statement, not a description.
+Good: "Every selector in a spec must match an entry in prompts.yml — missing match raises ValueError at sync time."
+Bad: "Prompts must be valid." -->
 
 ## Update Checklist Before Merging Behavior Changes
-<!-- AGENT: List files/areas that must be updated together when behavior changes. -->
+<!-- AGENT: One row per common change type. The "Files that must change together" column must list
+explicit file paths — not descriptions, not directory names. Agents will use these rows as a checklist.
+If a missed file causes a silent production failure, say so explicitly in the row.
+| Change type | Files that must change together |
+| --- | --- | -->
 `;
 }
 

@@ -1,5 +1,40 @@
 # Release Notes
 
+## v0.8.3 — 2026-03-23
+
+### Changed — context-pack templates
+
+**`00_START_HERE.md` template:** Task-Type Routing section added. Agents now get explicit routing at orientation time:
+- Impact analysis → read `30_BEHAVIORAL_INVARIANTS.md` first, CODE_MAP second
+- Navigation → CODE_MAP Scope Rule
+- Diagnosis → SYSTEM_OVERVIEW Silent Failure Modes first
+
+**`10_SYSTEM_OVERVIEW.md` template:** Silent Failure Modes subsection added. Any code path where a failure produces no error (null return, silent drop, unchecked default) must be documented here.
+
+**`20_CODE_MAP.md` template:** Three changes:
+- Incompleteness note added before the table: agents must not treat CODE_MAP as a complete blast-radius list
+- `Risk` column required on every row — must name the failure mode ("Silent failure if missed", "KeyError at runtime"), not just "High/Medium/Low"
+- `Approach` column added for repos with coexisting architectural patterns
+
+**`30_BEHAVIORAL_INVARIANTS.md` template:** Checklist rows must name explicit file paths, not descriptions. Added examples showing good vs bad row content.
+
+### Changed — `chorus context-pack seal` content quality warnings
+
+Seal now emits advisory warnings (never blocks) for:
+- `20_CODE_MAP.md` missing a Risk column or having empty Risk values
+- `30_BEHAVIORAL_INVARIANTS.md` Update Checklist with no rows, or rows without explicit file paths
+- `10_SYSTEM_OVERVIEW.md` missing a Runtime Architecture or Silent Failure Modes section
+
+### Changed — skill
+
+`skills/agent-chorus/SKILL.md`: Context Pack Usage section added. Agents with the chorus plugin now have explicit instructions: read BEHAVIORAL_INVARIANTS before CODE_MAP for impact analysis; CODE_MAP is a navigation index not an exhaustive list.
+
+### Why
+
+Run 2 of the stream-models context pack experiment identified these as the highest-leverage template interventions. The BEHAVIORAL_INVARIANTS blast-radius requirement was the single change that prevented a systematic file exclusion error across all agents and conditions.
+
+---
+
 ## v0.8.2 — 2026-03-23
 
 ### Changed

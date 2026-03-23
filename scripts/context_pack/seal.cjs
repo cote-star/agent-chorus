@@ -187,6 +187,62 @@ function acquireLock(lockPath) {
   }
 }
 
+/**
+ * Content quality warnings — advisory only, never block the seal.
+ * Returns an array of warning strings (empty = all good).
+ */
+function checkContentQuality(currentDir) {
+  const warnings = [];
+
+  // CODE_MAP: check for Risk column and non-empty values
+  const codeMapPath = path.join(currentDir, '20_CODE_MAP.md');
+  if (fs.existsSync(codeMapPath)) {
+    const codeMap = fs.readFileSync(codeMapPath, 'utf8');
+    const hasRiskHeader = /\|\s*Risk\b/i.test(codeMap);
+    if (!hasRiskHeader) {
+      warnings.push('20_CODE_MAP.md: no Risk column found — add a Risk column to each table row (e.g. "Silent failure if missed")');
+    } else {
+      // Count table data rows (not header/separator) missing a risk value in the last column
+      const tableRows = codeMap.split('\n').filter((l) => /^\|/.test(l) && !/^\|\s*[-:]+/.test(l) && !/Risk/i.test(l));
+      const emptyRisk = tableRows.filter((row) => {
+        const cells = row.split('|').map((c) => c.trim()).filter(Boolean);
+        return cells.length > 0 && cells[cells.length - 1] === '';
+      });
+      if (emptyRisk.length > 0) {
+        warnings.push(`20_CODE_MAP.md: ${emptyRisk.length} row(s) have an empty Risk column — fill with "Silent failure if missed", "KeyError at runtime", etc.`);
+      }
+    }
+  }
+
+  // BEHAVIORAL_INVARIANTS: check for at least one checklist row with a file path
+  const invariantsPath = path.join(currentDir, '30_BEHAVIORAL_INVARIANTS.md');
+  if (fs.existsSync(invariantsPath)) {
+    const invariants = fs.readFileSync(invariantsPath, 'utf8');
+    const tableRows = invariants.split('\n').filter((l) => /^\|/.test(l) && !/^\|\s*[-:]+/.test(l) && !/Change.*type/i.test(l) && !/Files.*must/i.test(l));
+    if (tableRows.length === 0) {
+      warnings.push('30_BEHAVIORAL_INVARIANTS.md: Update Checklist has no rows — add at least one change-type row with explicit file paths');
+    } else {
+      // Check if any row contains an explicit file path (contains a dot in a path-like token)
+      const hasFilePath = tableRows.some((row) => /\b\w[\w/.-]+\.\w+/.test(row));
+      if (!hasFilePath) {
+        warnings.push('30_BEHAVIORAL_INVARIANTS.md: checklist rows do not appear to name explicit file paths — rows should list files by path, not just description');
+      }
+    }
+  }
+
+  // SYSTEM_OVERVIEW: check for runtime behavior or silent failure modes section
+  const overviewPath = path.join(currentDir, '10_SYSTEM_OVERVIEW.md');
+  if (fs.existsSync(overviewPath)) {
+    const overview = fs.readFileSync(overviewPath, 'utf8');
+    const hasRuntimeSection = /##\s+(Runtime|Silent Failure)/i.test(overview);
+    if (!hasRuntimeSection) {
+      warnings.push('10_SYSTEM_OVERVIEW.md: no Runtime Architecture or Silent Failure Modes section found — agents need runtime behavior documented to diagnose silent failures');
+    }
+  }
+
+  return warnings;
+}
+
 function isHookInstalled(repoRoot) {
   const hooksPath = runGit(['config', '--get', 'core.hooksPath'], repoRoot, true);
   const hooksDir = hooksPath
@@ -302,6 +358,11 @@ function main() {
       );
     } else {
       console.log('[context-pack] unchanged; no new snapshot created');
+    }
+
+    const qualityWarnings = checkContentQuality(currentDir);
+    for (const w of qualityWarnings) {
+      console.warn(`[context-pack] WARN: ${w}`);
     }
 
     if (!isHookInstalled(repoRoot)) {
