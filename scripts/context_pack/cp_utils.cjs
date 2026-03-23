@@ -58,10 +58,41 @@ function safeWriteTextAtomic(filePath, text) {
     fs.renameSync(tmp, filePath);
 }
 
+/**
+ * Upsert a managed block into a file (prepend if new, replace if exists).
+ * Block is delimited by HTML comment markers:
+ *   <!-- {markerPrefix}:start -->  ...  <!-- {markerPrefix}:end -->
+ *
+ * Idempotent — running twice produces the same result.
+ */
+function upsertContextPackBlock(filePath, block, markerPrefix) {
+    const startMarker = `<!-- ${markerPrefix}:start -->`;
+    const endMarker = `<!-- ${markerPrefix}:end -->`;
+    const managedBlock = `${startMarker}\n${block}\n${endMarker}`;
+
+    if (fs.existsSync(filePath)) {
+        let content = fs.readFileSync(filePath, 'utf8');
+        const startIdx = content.indexOf(startMarker);
+        const endIdx = content.indexOf(endMarker);
+        if (startIdx !== -1 && endIdx !== -1) {
+            // Replace existing managed block in place
+            content = content.slice(0, startIdx) + managedBlock + content.slice(endIdx + endMarker.length);
+        } else {
+            // Prepend before existing content
+            content = managedBlock + '\n\n' + content;
+        }
+        safeWriteText(filePath, content);
+    } else {
+        // Create file with just the block
+        safeWriteText(filePath, managedBlock + '\n');
+    }
+}
+
 module.exports = {
     runGit,
     ensureDir,
     isProcessRunning,
     safeWriteText,
     safeWriteTextAtomic,
+    upsertContextPackBlock,
 };

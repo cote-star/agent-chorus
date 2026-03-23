@@ -68,8 +68,34 @@ const {
   runGit,
   ensureDir,
   isProcessRunning,
+  safeWriteText,
   safeWriteTextAtomic,
 } = require('./cp_utils.cjs');
+
+/**
+ * Update the Snapshot metadata lines in 00_START_HERE.md so they stay in sync
+ * with manifest.json.  Only touches Branch, HEAD commit, and Generated at —
+ * preserves everything else (Repo line, user-written content).
+ */
+function updateStartHereSnapshot(currentDir, branch, headSha, generatedAt) {
+  const startHerePath = path.join(currentDir, '00_START_HERE.md');
+  if (!fs.existsSync(startHerePath)) return;
+
+  let content = fs.readFileSync(startHerePath, 'utf8');
+  content = content.replace(
+    /^- Branch at generation: `.+`$/m,
+    `- Branch at generation: \`${branch}\``
+  );
+  content = content.replace(
+    /^- HEAD commit: `.+`$/m,
+    `- HEAD commit: \`${headSha || 'unknown'}\``
+  );
+  content = content.replace(
+    /^- Generated at: `.+`$/m,
+    `- Generated at: \`${generatedAt}\``
+  );
+  safeWriteTextAtomic(startHerePath, content);
+}
 
 function sha256(input) {
   return crypto.createHash('sha256').update(input).digest('hex');
@@ -305,6 +331,11 @@ function main() {
     }
 
     const generatedAt = new Date().toISOString();
+
+    // Update 00_START_HERE.md snapshot metadata BEFORE collecting file checksums
+    // so the manifest reflects the updated content.
+    updateStartHereSnapshot(currentDir, branch, headSha, generatedAt);
+
     const filesMeta = collectFilesMeta(currentDir, REQUIRED_FILES);
 
     const manifest = buildManifest({

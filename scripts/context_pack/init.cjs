@@ -36,7 +36,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-const { runGit, ensureDir, safeWriteText } = require('./cp_utils.cjs');
+const { runGit, ensureDir, safeWriteText, upsertContextPackBlock } = require('./cp_utils.cjs');
 
 function isNonEmptyDir(dirPath) {
   if (!fs.existsSync(dirPath)) return false;
@@ -266,6 +266,26 @@ function main() {
   if (!fs.existsSync(guidePath) || opts.force) {
     safeWriteText(guidePath, guideContent());
   }
+
+  // Wire agent config files with context-pack routing instructions.
+  const routingBlock = `## Context Pack
+
+When asked to understand this repository:
+
+1. Read \`.agent-context/current/00_START_HERE.md\` first.
+2. Follow the read order defined in that file.
+3. Only open project files when the context pack identifies a specific target.`;
+
+  const agentConfigs = [
+    ['CLAUDE.md', 'agent-chorus:context-pack:claude'],
+    ['AGENTS.md', 'agent-chorus:context-pack:codex'],
+    ['GEMINI.md', 'agent-chorus:context-pack:gemini'],
+  ];
+
+  for (const [filename, marker] of agentConfigs) {
+    upsertContextPackBlock(path.join(repoRoot, filename), routingBlock, marker);
+  }
+  console.log('[context-pack] agent config files wired (CLAUDE.md, AGENTS.md, GEMINI.md)');
 
   // Auto-install the pre-push hook so freshness warnings fire on every main push.
   const installHooksScript = path.join(__dirname, 'install_hooks.cjs');

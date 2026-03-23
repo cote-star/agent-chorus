@@ -152,6 +152,18 @@ pub fn init(options: InitOptions) -> Result<()> {
         write_text(&guide_path, &build_guide())?;
     }
 
+    // Wire agent config files with context-pack routing instructions.
+    let routing_block = build_context_pack_routing_block();
+    let agent_configs = [
+        ("CLAUDE.md", "agent-chorus:context-pack:claude"),
+        ("AGENTS.md", "agent-chorus:context-pack:codex"),
+        ("GEMINI.md", "agent-chorus:context-pack:gemini"),
+    ];
+    for (filename, marker) in &agent_configs {
+        upsert_context_pack_block(&repo_root.join(filename), &routing_block, marker)?;
+    }
+    println!("[context-pack] agent config files wired (CLAUDE.md, AGENTS.md, GEMINI.md)");
+
     // Auto-install the pre-push hook so freshness warnings fire on every main push.
     match install_hooks(&repo_root.to_string_lossy(), false) {
         Ok(_) => println!("[context-pack] pre-push hook installed"),
@@ -332,6 +344,10 @@ pub fn seal(options: SealOptions) -> Result<()> {
     let reason = options
         .reason
         .unwrap_or_else(|| "manual-seal".to_string());
+
+    // Update 00_START_HERE.md snapshot metadata BEFORE collecting file checksums
+    // so the manifest reflects the updated content.
+    update_start_here_snapshot(&current_dir, branch.trim(), head_sha.as_deref(), &generated_at)?;
 
     let files_meta = collect_files_meta(
         &current_dir,
@@ -1463,6 +1479,94 @@ cargo test --manifest-path cli/Cargo.toml
 - Restore named snapshot: `chorus context-pack rollback --snapshot <snapshot_id>`
 "#
     .to_string()
+}
+
+/// Update the Snapshot metadata lines in 00_START_HERE.md so they stay in sync
+/// with manifest.json.  Only touches Branch, HEAD commit, and Generated at.
+fn update_start_here_snapshot(
+    current_dir: &Path,
+    branch: &str,
+    head_sha: Option<&str>,
+    generated_at: &str,
+) -> Result<()> {
+    let start_here = current_dir.join("00_START_HERE.md");
+    if !start_here.exists() {
+        return Ok(());
+    }
+    let content = fs::read_to_string(&start_here)
+        .with_context(|| format!("Failed to read {}", start_here.display()))?;
+
+    let mut result = String::with_capacity(content.len());
+    for line in content.lines() {
+        if line.starts_with("- Branch at generation: `") {
+            result.push_str(&format!("- Branch at generation: `{}`", branch));
+        } else if line.starts_with("- HEAD commit: `") {
+            result.push_str(&format!(
+                "- HEAD commit: `{}`",
+                head_sha.unwrap_or("unknown")
+            ));
+        } else if line.starts_with("- Generated at: `") {
+            result.push_str(&format!("- Generated at: `{}`", generated_at));
+        } else {
+            result.push_str(line);
+        }
+        result.push('\n');
+    }
+    // Preserve trailing newline behavior of original
+    if !content.ends_with('\n') {
+        result.pop();
+    }
+
+    write_text_atomic(&start_here, &result)?;
+    Ok(())
+}
+
+/// Build the routing block content for agent config files.
+fn build_context_pack_routing_block() -> String {
+    "## Context Pack\n\
+     \n\
+     When asked to understand this repository:\n\
+     \n\
+     1. Read `.agent-context/current/00_START_HERE.md` first.\n\
+     2. Follow the read order defined in that file.\n\
+     3. Only open project files when the context pack identifies a specific target."
+        .to_string()
+}
+
+/// Upsert a managed block into a file (prepend if new, replace if exists).
+/// Block is delimited by HTML comment markers.
+/// Idempotent — running twice produces the same result.
+fn upsert_context_pack_block(
+    file_path: &Path,
+    block: &str,
+    marker_prefix: &str,
+) -> Result<()> {
+    let start_marker = format!("<!-- {}:start -->", marker_prefix);
+    let end_marker = format!("<!-- {}:end -->", marker_prefix);
+    let managed_block = format!("{}\n{}\n{}", start_marker, block, end_marker);
+
+    if file_path.exists() {
+        let content = fs::read_to_string(file_path)
+            .with_context(|| format!("Failed to read {}", file_path.display()))?;
+        let new_content = if let (Some(start_idx), Some(end_idx)) =
+            (content.find(&start_marker), content.find(&end_marker))
+        {
+            // Replace existing managed block in place
+            format!(
+                "{}{}{}",
+                &content[..start_idx],
+                managed_block,
+                &content[end_idx + end_marker.len()..]
+            )
+        } else {
+            // Prepend before existing content
+            format!("{}\n\n{}", managed_block, content)
+        };
+        write_text(file_path, &new_content)?;
+    } else {
+        write_text(file_path, &format!("{}\n", managed_block))?;
+    }
+    Ok(())
 }
 
 fn default_relevance_json() -> String {
