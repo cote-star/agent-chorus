@@ -14,6 +14,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 const MAX_CHANGED_FILES_DISPLAYED: usize = 12;
+const REQUIRED_FILES: &[&str] = &[
+    "00_START_HERE.md",
+    "10_SYSTEM_OVERVIEW.md",
+    "20_CODE_MAP.md",
+    "30_BEHAVIORAL_INVARIANTS.md",
+    "40_OPERATIONS_AND_RELEASE.md",
+];
+const STRUCTURED_FILES: &[&str] = &[
+    "routes.json",
+    "completeness_contract.json",
+    "reporting_rules.json",
+];
+const TASK_FAMILIES: &[&str] = &["lookup", "impact_analysis", "planning", "diagnosis"];
 
 pub struct BuildOptions {
     pub reason: Option<String>,
@@ -138,6 +151,12 @@ pub fn init(options: InitOptions) -> Result<()> {
         ("20_CODE_MAP.md", build_template_code_map()),
         ("30_BEHAVIORAL_INVARIANTS.md", build_template_invariants()),
         ("40_OPERATIONS_AND_RELEASE.md", build_template_operations()),
+        ("routes.json", build_routes_json()),
+        (
+            "completeness_contract.json",
+            build_completeness_contract_json(),
+        ),
+        ("reporting_rules.json", build_reporting_rules_json()),
     ];
 
     for (name, content) in templates {
@@ -153,14 +172,25 @@ pub fn init(options: InitOptions) -> Result<()> {
     }
 
     // Wire agent config files with context-pack routing instructions.
-    let routing_block = build_context_pack_routing_block();
     let agent_configs = [
-        ("CLAUDE.md", "agent-chorus:context-pack:claude"),
-        ("AGENTS.md", "agent-chorus:context-pack:codex"),
-        ("GEMINI.md", "agent-chorus:context-pack:gemini"),
+        (
+            "CLAUDE.md",
+            "agent-chorus:context-pack:claude",
+            build_context_pack_routing_block("claude"),
+        ),
+        (
+            "AGENTS.md",
+            "agent-chorus:context-pack:codex",
+            build_context_pack_routing_block("codex"),
+        ),
+        (
+            "GEMINI.md",
+            "agent-chorus:context-pack:gemini",
+            build_context_pack_routing_block("gemini"),
+        ),
     ];
-    for (filename, marker) in &agent_configs {
-        upsert_context_pack_block(&repo_root.join(filename), &routing_block, marker)?;
+    for (filename, marker, routing_block) in &agent_configs {
+        upsert_context_pack_block(&repo_root.join(filename), routing_block, marker)?;
     }
     println!("[context-pack] agent config files wired (CLAUDE.md, AGENTS.md, GEMINI.md)");
 
@@ -175,7 +205,7 @@ pub fn init(options: InitOptions) -> Result<()> {
         rel_path(&current_dir, &repo_root)
     );
     println!(
-        "[context-pack] next: ask your agent to fill AGENT sections, then run `chorus context-pack seal`"
+        "[context-pack] next: fill markdown + structured files, then run `chorus context-pack seal`"
     );
 
     Ok(())
@@ -312,13 +342,7 @@ pub fn seal(options: SealOptions) -> Result<()> {
     let _lock = acquire_lock(&lock_path)?;
     ensure_dir(&snapshots_dir)?;
 
-    let required_files = vec![
-        "00_START_HERE.md",
-        "10_SYSTEM_OVERVIEW.md",
-        "20_CODE_MAP.md",
-        "30_BEHAVIORAL_INVARIANTS.md",
-        "40_OPERATIONS_AND_RELEASE.md",
-    ];
+    let required_files = required_files_for_mode(&current_dir);
 
     for file in &required_files {
         let path = current_dir.join(file);
@@ -340,6 +364,8 @@ pub fn seal(options: SealOptions) -> Result<()> {
         }
     }
 
+    validate_structured_layer(&repo_root, &current_dir)?;
+
     let generated_at = now_stamp();
     let reason = options
         .reason
@@ -351,10 +377,7 @@ pub fn seal(options: SealOptions) -> Result<()> {
 
     let files_meta = collect_files_meta(
         &current_dir,
-        &required_files
-            .iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>(),
+        &required_files,
     )?;
 
     let previous_manifest = read_json(&manifest_path)?;
@@ -1521,16 +1544,486 @@ fn update_start_here_snapshot(
     Ok(())
 }
 
+fn has_structured_layer(current_dir: &Path) -> bool {
+    current_dir.join("routes.json").exists()
+}
+
+fn required_files_for_mode(current_dir: &Path) -> Vec<String> {
+    let mut files = REQUIRED_FILES
+        .iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    if has_structured_layer(current_dir) {
+        files.extend(STRUCTURED_FILES.iter().map(|value| value.to_string()));
+    }
+    files
+}
+
+fn walk_files(root_dir: &Path, current_dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    for entry in fs::read_dir(current_dir)
+        .with_context(|| format!("Failed to read {}", current_dir.display()))?
+    {
+        let entry =
+            entry.with_context(|| format!("Failed to read entry in {}", current_dir.display()))?;
+        let entry_path = entry.path();
+        if entry.file_name() == ".git" {
+            continue;
+        }
+        if entry_path.is_dir() {
+            walk_files(root_dir, &entry_path, out)?;
+        } else if entry_path.is_file() {
+            out.push(rel_path(&entry_path, root_dir).replace('\\', "/"));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_pattern_matches(repo_root: &Path, pattern: &str) -> Result<Vec<String>> {
+    let normalized = pattern.replace('\\', "/");
+    if !normalized.contains('*') && !normalized.contains('?') && !normalized.contains('[') {
+        let target = repo_root.join(&normalized);
+        if target.exists() {
+            return Ok(vec![normalized]);
+        }
+        return Ok(Vec::new());
+    }
+
+    let glob = Glob::new(&normalized)
+        .with_context(|| format!("Invalid glob pattern in structured pack: {}", pattern))?;
+    let mut builder = GlobSetBuilder::new();
+    builder.add(glob);
+    let matcher = builder
+        .build()
+        .with_context(|| format!("Failed to compile glob pattern {}", pattern))?;
+
+    let mut files = Vec::new();
+    walk_files(repo_root, repo_root, &mut files)?;
+    Ok(files
+        .into_iter()
+        .filter(|file_path| matcher.is_match(file_path))
+        .collect())
+}
+
+fn validate_pattern_matches(repo_root: &Path, pattern: &str, label: &str) -> Result<()> {
+    if resolve_pattern_matches(repo_root, pattern)?.is_empty() {
+        return Err(anyhow!(
+            "[context-pack] seal failed: {} did not match any files: {}",
+            label,
+            pattern
+        ));
+    }
+    Ok(())
+}
+
+fn validate_structured_layer(repo_root: &Path, current_dir: &Path) -> Result<()> {
+    let routes_path = current_dir.join("routes.json");
+    if !routes_path.exists() {
+        return Ok(());
+    }
+
+    let completeness_path = current_dir.join("completeness_contract.json");
+    let reporting_path = current_dir.join("reporting_rules.json");
+
+    for required_path in [&completeness_path, &reporting_path] {
+        if !required_path.exists() {
+            return Err(anyhow!(
+                "[context-pack] seal failed: structured mode requires {}",
+                rel_path(required_path, repo_root)
+            ));
+        }
+    }
+
+    let routes = read_json(&routes_path)?
+        .ok_or_else(|| anyhow!("[context-pack] seal failed: routes.json is missing"))?;
+    let completeness = read_json(&completeness_path)?.ok_or_else(|| {
+        anyhow!("[context-pack] seal failed: completeness_contract.json is missing")
+    })?;
+    let reporting = read_json(&reporting_path)?
+        .ok_or_else(|| anyhow!("[context-pack] seal failed: reporting_rules.json is missing"))?;
+
+    let routes_map = routes
+        .get("task_routes")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| anyhow!("[context-pack] seal failed: routes.json must define task_routes"))?;
+    let completeness_map = completeness
+        .get("task_families")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| {
+            anyhow!(
+                "[context-pack] seal failed: completeness_contract.json must define task_families"
+            )
+        })?;
+    let reporting_map = reporting
+        .get("task_families")
+        .and_then(|value| value.as_object())
+        .ok_or_else(|| {
+            anyhow!(
+                "[context-pack] seal failed: reporting_rules.json must define task_families"
+            )
+        })?;
+
+    for task in TASK_FAMILIES {
+        let route = routes_map
+            .get(*task)
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] seal failed: routes.json is missing task_routes.{}",
+                    task
+                )
+            })?;
+        let completeness_entry = completeness_map
+            .get(*task)
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] seal failed: completeness_contract.json is missing task_families.{}",
+                    task
+                )
+            })?;
+        let reporting_entry = reporting_map
+            .get(*task)
+            .and_then(|value| value.as_object())
+            .ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] seal failed: reporting_rules.json is missing task_families.{}",
+                    task
+                )
+            })?;
+
+        let completeness_ref = route
+            .get("completeness_ref")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] seal failed: routes.json task_routes.{} must define completeness_ref",
+                    task
+                )
+            })?;
+        if completeness_ref != *task {
+            return Err(anyhow!(
+                "[context-pack] seal failed: routes.json completeness_ref for {} must equal {}",
+                task,
+                task
+            ));
+        }
+        let reporting_ref = route
+            .get("reporting_ref")
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] seal failed: routes.json task_routes.{} must define reporting_ref",
+                    task
+                )
+            })?;
+        if reporting_ref != *task {
+            return Err(anyhow!(
+                "[context-pack] seal failed: routes.json reporting_ref for {} must equal {}",
+                task,
+                task
+            ));
+        }
+
+        for key in ["pack_read_order", "fallback_files"] {
+            if let Some(entries) = route.get(key).and_then(|value| value.as_array()) {
+                for entry in entries {
+                    let entry = entry.as_str().ok_or_else(|| {
+                        anyhow!(
+                            "[context-pack] seal failed: routes.json {} entries must be strings",
+                            key
+                        )
+                    })?;
+                    let target_path = current_dir.join(entry);
+                    if !target_path.exists() {
+                        return Err(anyhow!(
+                            "[context-pack] seal failed: routes.json references missing pack file {}",
+                            entry
+                        ));
+                    }
+                }
+            }
+        }
+
+        for key in [
+            "contractually_required_files",
+            "required_file_families",
+            "required_chain_members",
+        ] {
+            if let Some(entries) = completeness_entry.get(key).and_then(|value| value.as_array()) {
+                for entry in entries {
+                    let pattern = entry.as_str().ok_or_else(|| {
+                        anyhow!(
+                            "[context-pack] seal failed: completeness_contract.json {} entries must be strings",
+                            key
+                        )
+                    })?;
+                    validate_pattern_matches(repo_root, pattern, &format!("completeness_contract.json {}", key))?;
+                }
+            }
+        }
+
+        let optional_budget = reporting_entry
+            .get("optional_verify_budget")
+            .and_then(|value| value.as_i64())
+            .ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] seal failed: reporting_rules.json optional_verify_budget must be an integer for {}",
+                    task
+                )
+            })?;
+        if optional_budget < 0 {
+            return Err(anyhow!(
+                "[context-pack] seal failed: reporting_rules.json optional_verify_budget must be a non-negative integer for {}",
+                task
+            ));
+        }
+
+        for key in ["groupable_families", "never_enumerate_individually"] {
+            if let Some(entries) = reporting_entry.get(key).and_then(|value| value.as_array()) {
+                for entry in entries {
+                    let pattern = entry.as_str().ok_or_else(|| {
+                        anyhow!(
+                            "[context-pack] seal failed: reporting_rules.json {} entries must be strings",
+                            key
+                        )
+                    })?;
+                    validate_pattern_matches(repo_root, pattern, &format!("reporting_rules.json {}", key))?;
+                }
+            }
+        }
+    }
+
+    if let Some(entries) = reporting
+        .get("global_rules")
+        .and_then(|value| value.get("authoritative_vs_derived_paths"))
+        .and_then(|value| value.as_array())
+    {
+        for entry in entries {
+            let entry = entry.as_object().ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] seal failed: reporting_rules.json authoritative_vs_derived_paths entries must be objects"
+                )
+            })?;
+            let pattern = entry
+                .get("pattern")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "[context-pack] seal failed: reporting_rules.json authoritative_vs_derived_paths entries must contain pattern"
+                    )
+                })?;
+            let role = entry
+                .get("role")
+                .and_then(|value| value.as_str())
+                .ok_or_else(|| {
+                    anyhow!(
+                        "[context-pack] seal failed: reporting_rules.json authoritative_vs_derived_paths entries must contain role"
+                    )
+                })?;
+            validate_pattern_matches(
+                repo_root,
+                pattern,
+                "reporting_rules.json authoritative_vs_derived_paths",
+            )?;
+            if role == "authoritative" && pattern.contains("_generated/") {
+                return Err(anyhow!(
+                    "[context-pack] seal failed: generated files cannot be marked as authoritative edit targets"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Build the routing block content for agent config files.
-fn build_context_pack_routing_block() -> String {
-    "## Context Pack\n\
-     \n\
-     When asked to understand this repository:\n\
-     \n\
-     1. Read `.agent-context/current/00_START_HERE.md` first.\n\
-     2. Follow the read order defined in that file.\n\
-     3. Only open project files when the context pack identifies a specific target."
-        .to_string()
+fn build_context_pack_routing_block(agent_kind: &str) -> String {
+    if agent_kind == "codex" {
+        "## Context Pack\n\
+         \n\
+         When asked to understand this repository:\n\
+         \n\
+         1. Read `.agent-context/current/00_START_HERE.md`.\n\
+         2. Read `.agent-context/current/routes.json`.\n\
+         3. Identify the active task type in `routes.json`.\n\
+         4. Read the matching entries in `completeness_contract.json` and `reporting_rules.json`.\n\
+         5. Do not open repo files before those steps unless a referenced structured file is missing.\n\
+         \n\
+         If `.agent-context/current/routes.json` is missing, fall back to the markdown pack only."
+            .to_string()
+    } else {
+        "## Context Pack\n\
+         \n\
+         When asked to understand this repository:\n\
+         \n\
+         1. Read `.agent-context/current/00_START_HERE.md` first.\n\
+         2. Follow the read order defined in that file.\n\
+         3. Use the structured files if present for task routing, grouped reporting, and stop conditions.\n\
+         4. Only open project files when the context pack identifies a specific target."
+            .to_string()
+    }
+}
+
+fn build_routes_json() -> String {
+    serde_json::to_string_pretty(&json!({
+        "schema_version": 1,
+        "task_routes": {
+            "lookup": {
+                "description": "Find a value, threshold, URL, or authoritative file.",
+                "pack_read_order": ["00_START_HERE.md", "20_CODE_MAP.md", "reporting_rules.json"],
+                "fallback_files": ["30_BEHAVIORAL_INVARIANTS.md"],
+                "completeness_ref": "lookup",
+                "reporting_ref": "lookup"
+            },
+            "impact_analysis": {
+                "description": "List every file or file family that must change.",
+                "pack_read_order": [
+                    "00_START_HERE.md",
+                    "30_BEHAVIORAL_INVARIANTS.md",
+                    "completeness_contract.json",
+                    "reporting_rules.json",
+                    "20_CODE_MAP.md"
+                ],
+                "fallback_files": ["10_SYSTEM_OVERVIEW.md"],
+                "completeness_ref": "impact_analysis",
+                "reporting_ref": "impact_analysis"
+            },
+            "planning": {
+                "description": "Write an implementation plan with files, commands, and validation.",
+                "pack_read_order": [
+                    "00_START_HERE.md",
+                    "20_CODE_MAP.md",
+                    "30_BEHAVIORAL_INVARIANTS.md",
+                    "completeness_contract.json",
+                    "reporting_rules.json"
+                ],
+                "fallback_files": ["40_OPERATIONS_AND_RELEASE.md"],
+                "completeness_ref": "planning",
+                "reporting_ref": "planning"
+            },
+            "diagnosis": {
+                "description": "Rank likely root causes and cite the runtime path.",
+                "pack_read_order": [
+                    "00_START_HERE.md",
+                    "10_SYSTEM_OVERVIEW.md",
+                    "30_BEHAVIORAL_INVARIANTS.md",
+                    "completeness_contract.json",
+                    "reporting_rules.json"
+                ],
+                "fallback_files": ["20_CODE_MAP.md"],
+                "completeness_ref": "diagnosis",
+                "reporting_ref": "diagnosis"
+            }
+        }
+    })).unwrap_or_else(|_| "{}".to_string()) + "\n"
+}
+
+fn build_completeness_contract_json() -> String {
+    serde_json::to_string_pretty(&json!({
+        "schema_version": 1,
+        "task_families": {
+            "lookup": {
+                "minimum_sufficient_evidence": [
+                    "exact answer",
+                    "authoritative source path",
+                    "one supporting chain only if the task asks for authority"
+                ],
+                "required_chain_members": [],
+                "contractually_required_files": [],
+                "required_file_families": []
+            },
+            "impact_analysis": {
+                "minimum_sufficient_evidence": [
+                    "complete blast radius",
+                    "required file families",
+                    "contractually required pass-through layers"
+                ],
+                "required_chain_members": [],
+                "contractually_required_files": [],
+                "required_file_families": []
+            },
+            "planning": {
+                "minimum_sufficient_evidence": [
+                    "files to create or modify",
+                    "commands in order",
+                    "validation criteria"
+                ],
+                "required_chain_members": [],
+                "contractually_required_files": [],
+                "required_file_families": []
+            },
+            "diagnosis": {
+                "minimum_sufficient_evidence": [
+                    "ranked root causes",
+                    "runtime path or failure chain",
+                    "confirmation method for each cause"
+                ],
+                "required_chain_members": [],
+                "contractually_required_files": [],
+                "required_file_families": []
+            }
+        }
+    })).unwrap_or_else(|_| "{}".to_string()) + "\n"
+}
+
+fn build_reporting_rules_json() -> String {
+    serde_json::to_string_pretty(&json!({
+        "schema_version": 1,
+        "global_rules": {
+            "grouped_reporting_default": true,
+            "authoritative_vs_derived_paths": []
+        },
+        "task_families": {
+            "lookup": {
+                "optional_verify_budget": 1,
+                "stop_after": "Stop after the authoritative source and one optional supporting check.",
+                "stop_unless": [
+                    "a structured artifact references a missing file",
+                    "markdown and structured artifacts disagree",
+                    "code contradicts the structured contract",
+                    "the task explicitly asks for concrete instances rather than grouped families"
+                ],
+                "groupable_families": [],
+                "never_enumerate_individually": []
+            },
+            "impact_analysis": {
+                "optional_verify_budget": 2,
+                "stop_after": "Stop after the blast radius is complete and required families are grouped correctly.",
+                "stop_unless": [
+                    "a structured artifact references a missing file",
+                    "markdown and structured artifacts disagree",
+                    "code contradicts the structured contract",
+                    "the task explicitly asks for concrete instances rather than grouped families"
+                ],
+                "groupable_families": [],
+                "never_enumerate_individually": []
+            },
+            "planning": {
+                "optional_verify_budget": 2,
+                "stop_after": "Stop after the plan is executable without further repo browsing.",
+                "stop_unless": [
+                    "a structured artifact references a missing file",
+                    "markdown and structured artifacts disagree",
+                    "code contradicts the structured contract",
+                    "the task explicitly asks for concrete instances rather than grouped families"
+                ],
+                "groupable_families": [],
+                "never_enumerate_individually": []
+            },
+            "diagnosis": {
+                "optional_verify_budget": 3,
+                "stop_after": "Stop after the ranked runtime chain is established and each cause has a confirmation method.",
+                "stop_unless": [
+                    "a structured artifact references a missing file",
+                    "markdown and structured artifacts disagree",
+                    "code contradicts the structured contract",
+                    "the task explicitly asks for concrete instances rather than grouped families"
+                ],
+                "groupable_families": [],
+                "never_enumerate_individually": []
+            }
+        }
+    })).unwrap_or_else(|_| "{}".to_string()) + "\n"
 }
 
 /// Upsert a managed block into a file (prepend if new, replace if exists).
@@ -1615,6 +2108,16 @@ fn build_template_start_here(
 **Planning** (add a new feature/module): follow the Extension Recipe in `20_CODE_MAP.md`, then cross-check the BEHAVIORAL_INVARIANTS checklist for that change type.
 **Diagnosis** (silent failures, unexpected output): start with `10_SYSTEM_OVERVIEW.md` Silent Failure Modes, then the relevant diagnostic row in `30_BEHAVIORAL_INVARIANTS.md`.
 
+## Structured Routing
+- Read `routes.json` after this file to identify the task family before opening repo files.
+- Read the matching entries in `completeness_contract.json` and `reporting_rules.json`.
+- Treat the structured files as authoritative for stop conditions, grouped reporting, and contractual completeness.
+
+## Stop Rules
+- Stop when the minimum sufficient evidence for the active task is satisfied.
+- Use optional verification sparingly and stay within the task-family verify budget.
+- Continue exploring only when a structured file is missing, the pack disagrees with the repo, or the task explicitly asks for concrete instances instead of grouped families.
+
 ## Fast Facts
 <!-- AGENT: Replace with 3-5 bullets covering product, languages/entry points, quality gate, core risk. -->
 
@@ -1675,6 +2178,14 @@ Risk must be filled: use "Silent failure if missed", "KeyError at runtime", "Bui
 Example: "New parameter through call chain: schema → step → client → wrapper → tests"
 List files in dependency order so agents trace the change correctly. -->
 
+## Minimum Sufficient Evidence
+<!-- AGENT: For each common task family, define the minimum file set needed before an answer is complete.
+Keep this short. Example:
+- Lookup: authoritative source file + one support check.
+- Impact analysis: invariant checklist row + grouped file families.
+- Planning: target files + commands + validation.
+- Diagnosis: runtime path + likely failure point + confirmation method. -->
+
 ## Extension Recipe
 <!-- AGENT: Describe how to add a new module/adapter/plugin. List all files that must change together. -->
 "#
@@ -1697,6 +2208,10 @@ explicit file paths — not descriptions, not directory names. Agents will use t
 If a missed file causes a silent production failure, say so explicitly in the row.
 | Change type | Files that must change together |
 | --- | --- | -->
+
+## Often Reviewed But Not Always Required
+<!-- AGENT: List files that are commonly inspected during debugging or planning but are not contractually
+required for every change. Separate these from the must-change checklist so agents do not over-read. -->
 "#
     .to_string()
 }
@@ -1733,14 +2248,16 @@ This guide tells AI agents how to fill in the context pack templates.
 
 ## Process
 1. Read each file in `.agent-context/current/` in numeric order.
-2. For each `<!-- AGENT: ... -->` block, replace it with repository-derived content.
-3. After filling all sections, run `chorus context-pack seal` to finalize (manifest + snapshot).
+2. Fill the markdown templates with repository-derived content.
+3. Fill the structured files (`routes.json`, `completeness_contract.json`, `reporting_rules.json`) with deterministic repo-specific rules.
+4. After filling all sections, run `chorus context-pack seal` to finalize (manifest + snapshot).
 
 ## Quality Criteria
 - Content must be factual and verifiable from the repository.
 - Prefer concise bullets over long prose.
 - Keep total word count under ~2000 words across all files.
 - Do not include secrets or credentials.
+- Keep structured artifacts explicit and deterministic; do not auto-generate them from freeform prose.
 - If unsure, note `TBD` rather than inventing details.
 
 ## When to Update

@@ -14,6 +14,14 @@ const REQUIRED_FILES = [
   '40_OPERATIONS_AND_RELEASE.md',
 ];
 
+const STRUCTURED_FILES = [
+  'routes.json',
+  'completeness_contract.json',
+  'reporting_rules.json',
+];
+
+const TASK_FAMILIES = ['lookup', 'impact_analysis', 'planning', 'diagnosis'];
+
 function parseArgs(argv) {
   const opts = {
     reason: 'manual-seal',
@@ -104,6 +112,186 @@ function sha256(input) {
 function readJson(filePath) {
   if (!fs.existsSync(filePath)) return null;
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function hasStructuredLayer(currentDir) {
+  return fs.existsSync(path.join(currentDir, 'routes.json'));
+}
+
+function requiredFilesForMode(currentDir) {
+  return hasStructuredLayer(currentDir)
+    ? REQUIRED_FILES.concat(STRUCTURED_FILES)
+    : REQUIRED_FILES.slice();
+}
+
+function walkFiles(rootDir, currentDir = rootDir, acc = []) {
+  for (const entry of fs.readdirSync(currentDir, { withFileTypes: true })) {
+    if (entry.name === '.git') continue;
+    const absolutePath = path.join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      walkFiles(rootDir, absolutePath, acc);
+    } else if (entry.isFile()) {
+      acc.push(path.relative(rootDir, absolutePath).replace(/\\/g, '/'));
+    }
+  }
+  return acc;
+}
+
+function globToRegExp(pattern) {
+  const normalized = pattern.replace(/\\/g, '/');
+  let regex = '^';
+  for (let i = 0; i < normalized.length; i += 1) {
+    const char = normalized[i];
+    const next = normalized[i + 1];
+    if (char === '*') {
+      if (next === '*') {
+        regex += '.*';
+        i += 1;
+      } else {
+        regex += '[^/]*';
+      }
+    } else if (char === '?') {
+      regex += '.';
+    } else if ('\\.[]{}()+-^$|'.includes(char)) {
+      regex += `\\${char}`;
+    } else {
+      regex += char;
+    }
+  }
+  regex += '$';
+  return new RegExp(regex);
+}
+
+function resolvePatternMatches(repoRoot, pattern) {
+  const normalized = pattern.replace(/\\/g, '/');
+  if (!/[?*]/.test(normalized)) {
+    return fs.existsSync(path.join(repoRoot, normalized)) ? [normalized] : [];
+  }
+  const matcher = globToRegExp(normalized);
+  return walkFiles(repoRoot).filter((filePath) => matcher.test(filePath));
+}
+
+function readRequiredJson(filePath, label) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    throw new Error(`[context-pack] seal failed: could not parse ${label}: ${error.message}`);
+  }
+}
+
+function validateStructuredLayer(repoRoot, currentDir) {
+  const routesPath = path.join(currentDir, 'routes.json');
+  if (!fs.existsSync(routesPath)) {
+    return;
+  }
+
+  const completenessPath = path.join(currentDir, 'completeness_contract.json');
+  const reportingPath = path.join(currentDir, 'reporting_rules.json');
+
+  for (const requiredPath of [completenessPath, reportingPath]) {
+    if (!fs.existsSync(requiredPath)) {
+      throw new Error(
+        `[context-pack] seal failed: structured mode requires ${path.relative(repoRoot, requiredPath)}`
+      );
+    }
+  }
+
+  const routes = readRequiredJson(routesPath, 'routes.json');
+  const completeness = readRequiredJson(completenessPath, 'completeness_contract.json');
+  const reporting = readRequiredJson(reportingPath, 'reporting_rules.json');
+
+  if (!routes.task_routes || typeof routes.task_routes !== 'object') {
+    throw new Error('[context-pack] seal failed: routes.json must define task_routes');
+  }
+  if (!completeness.task_families || typeof completeness.task_families !== 'object') {
+    throw new Error('[context-pack] seal failed: completeness_contract.json must define task_families');
+  }
+  if (!reporting.task_families || typeof reporting.task_families !== 'object') {
+    throw new Error('[context-pack] seal failed: reporting_rules.json must define task_families');
+  }
+
+  for (const task of TASK_FAMILIES) {
+    const route = routes.task_routes[task];
+    const completenessEntry = completeness.task_families[task];
+    const reportingEntry = reporting.task_families[task];
+
+    if (!route) {
+      throw new Error(`[context-pack] seal failed: routes.json is missing task_routes.${task}`);
+    }
+    if (!completenessEntry) {
+      throw new Error(`[context-pack] seal failed: completeness_contract.json is missing task_families.${task}`);
+    }
+    if (!reportingEntry) {
+      throw new Error(`[context-pack] seal failed: reporting_rules.json is missing task_families.${task}`);
+    }
+
+    if (route.completeness_ref !== task) {
+      throw new Error(`[context-pack] seal failed: routes.json completeness_ref for ${task} must equal ${task}`);
+    }
+    if (route.reporting_ref !== task) {
+      throw new Error(`[context-pack] seal failed: routes.json reporting_ref for ${task} must equal ${task}`);
+    }
+
+    for (const ref of route.pack_read_order || []) {
+      const targetPath = path.join(currentDir, ref);
+      if (!fs.existsSync(targetPath)) {
+        throw new Error(`[context-pack] seal failed: routes.json references missing pack file ${ref}`);
+      }
+    }
+    for (const ref of route.fallback_files || []) {
+      const targetPath = path.join(currentDir, ref);
+      if (!fs.existsSync(targetPath)) {
+        throw new Error(`[context-pack] seal failed: routes.json references missing fallback file ${ref}`);
+      }
+    }
+
+    for (const pattern of completenessEntry.contractually_required_files || []) {
+      if (resolvePatternMatches(repoRoot, pattern).length === 0) {
+        throw new Error(`[context-pack] seal failed: completeness_contract.json pattern did not match any files: ${pattern}`);
+      }
+    }
+    for (const pattern of completenessEntry.required_file_families || []) {
+      if (resolvePatternMatches(repoRoot, pattern).length === 0) {
+        throw new Error(`[context-pack] seal failed: completeness_contract.json family did not match any files: ${pattern}`);
+      }
+    }
+    for (const pattern of completenessEntry.required_chain_members || []) {
+      if (resolvePatternMatches(repoRoot, pattern).length === 0) {
+        throw new Error(`[context-pack] seal failed: completeness_contract.json chain member did not match any files: ${pattern}`);
+      }
+    }
+
+    const optionalBudget = reportingEntry.optional_verify_budget;
+    if (!Number.isInteger(optionalBudget) || optionalBudget < 0) {
+      throw new Error(`[context-pack] seal failed: reporting_rules.json optional_verify_budget must be a non-negative integer for ${task}`);
+    }
+
+    for (const pattern of reportingEntry.groupable_families || []) {
+      if (resolvePatternMatches(repoRoot, pattern).length === 0) {
+        throw new Error(`[context-pack] seal failed: reporting_rules.json groupable family did not match any files: ${pattern}`);
+      }
+    }
+    for (const pattern of reportingEntry.never_enumerate_individually || []) {
+      if (resolvePatternMatches(repoRoot, pattern).length === 0) {
+        throw new Error(`[context-pack] seal failed: reporting_rules.json anti-enumeration pattern did not match any files: ${pattern}`);
+      }
+    }
+  }
+
+  for (const entry of reporting.global_rules?.authoritative_vs_derived_paths || []) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error('[context-pack] seal failed: reporting_rules.json authoritative_vs_derived_paths entries must be objects');
+    }
+    if (typeof entry.pattern !== 'string' || typeof entry.role !== 'string') {
+      throw new Error('[context-pack] seal failed: reporting_rules.json authoritative_vs_derived_paths entries must contain pattern and role');
+    }
+    if (resolvePatternMatches(repoRoot, entry.pattern).length === 0) {
+      throw new Error(`[context-pack] seal failed: reporting_rules.json path rule did not match any files: ${entry.pattern}`);
+    }
+    if (entry.role === 'authoritative' && entry.pattern.includes('_generated/')) {
+      throw new Error('[context-pack] seal failed: generated files cannot be marked as authoritative edit targets');
+    }
+  }
 }
 
 function collectFilesMeta(currentDir, relativePaths) {
@@ -310,7 +498,9 @@ function main() {
   try {
     ensureDir(snapshotsDir);
 
-    for (const file of REQUIRED_FILES) {
+    const requiredFiles = requiredFilesForMode(currentDir);
+
+    for (const file of requiredFiles) {
       const filePath = path.join(currentDir, file);
       if (!fs.existsSync(filePath)) {
         throw new Error(
@@ -330,13 +520,15 @@ function main() {
       }
     }
 
+    validateStructuredLayer(repoRoot, currentDir);
+
     const generatedAt = new Date().toISOString();
 
     // Update 00_START_HERE.md snapshot metadata BEFORE collecting file checksums
     // so the manifest reflects the updated content.
     updateStartHereSnapshot(currentDir, branch, headSha, generatedAt);
 
-    const filesMeta = collectFilesMeta(currentDir, REQUIRED_FILES);
+    const filesMeta = collectFilesMeta(currentDir, requiredFiles);
 
     const manifest = buildManifest({
       generatedAt,

@@ -62,6 +62,12 @@ check "init-creates-agent-configs" '
   grep -q "<!-- agent-chorus:context-pack:gemini:start -->" "$T7/GEMINI.md"
 '
 
+check "init-creates-structured-files" '
+  [[ -f "$T7/.agent-context/current/routes.json" ]] &&
+  [[ -f "$T7/.agent-context/current/completeness_contract.json" ]] &&
+  [[ -f "$T7/.agent-context/current/reporting_rules.json" ]]
+'
+
 # --- Test 8: init-idempotent ---
 T8="$TMP_DIR/t8"
 make_repo "$T8"
@@ -101,6 +107,44 @@ check "seal-syncs-snapshot-metadata" '
   [[ -f "$T10/.agent-context/current/00_START_HERE.md" ]] &&
   SEAL_BRANCH=$(node -e "console.log(JSON.parse(require(\"fs\").readFileSync(\"$MANIFEST\",\"utf8\")).branch)" 2>/dev/null) &&
   grep -q "Branch at generation: \`$SEAL_BRANCH\`" "$T10/.agent-context/current/00_START_HERE.md"
+'
+
+# --- Test 10b: seal-markdown-only-mode ---
+T10B="$TMP_DIR/t10b"
+make_repo "$T10B"
+run_node_init "$T10B" >/dev/null 2>&1
+for f in "$T10B/.agent-context/current/"*.md; do
+  sed -i '' 's/<!-- AGENT:.*-->/Filled by test/g' "$f" 2>/dev/null || true
+done
+rm -f \
+  "$T10B/.agent-context/current/routes.json" \
+  "$T10B/.agent-context/current/completeness_contract.json" \
+  "$T10B/.agent-context/current/reporting_rules.json"
+run_node_seal "$T10B" >/dev/null 2>&1
+
+check "seal-markdown-only-mode" '
+  [[ -f "$T10B/.agent-context/current/manifest.json" ]] &&
+  MANIFEST_FILES=$(node -e "let m=JSON.parse(require(\"fs\").readFileSync(\"$T10B/.agent-context/current/manifest.json\",\"utf8\")); console.log((m.files||[]).map(f=>f.path).sort().join(\",\"))" 2>/dev/null) &&
+  [[ "$MANIFEST_FILES" == "00_START_HERE.md,10_SYSTEM_OVERVIEW.md,20_CODE_MAP.md,30_BEHAVIORAL_INVARIANTS.md,40_OPERATIONS_AND_RELEASE.md" ]]
+'
+
+# --- Test 10c: seal-structured-invalid-ref-fails ---
+T10C="$TMP_DIR/t10c"
+make_repo "$T10C"
+run_node_init "$T10C" >/dev/null 2>&1
+for f in "$T10C/.agent-context/current/"*.md; do
+  sed -i '' 's/<!-- AGENT:.*-->/Filled by test/g' "$f" 2>/dev/null || true
+done
+node -e '
+  const fs = require("fs");
+  const file = process.argv[1];
+  const data = JSON.parse(fs.readFileSync(file, "utf8"));
+  data.task_routes.lookup.pack_read_order = ["00_START_HERE.md", "missing-pack-file.md"];
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+' "$T10C/.agent-context/current/routes.json"
+
+check "seal-structured-invalid-ref-fails" '
+  ! run_node_seal "$T10C" >/dev/null 2>&1
 '
 
 # --- Test 11: node-rust-init-parity ---

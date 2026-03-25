@@ -76,8 +76,9 @@ This guide tells AI agents how to fill in the context pack templates.
 
 ## Process
 1. Read each file in \`.agent-context/current/\` in numeric order.
-2. For each \`<!-- AGENT: ... -->\` block, replace it with repository-derived content.
-3. After filling all sections, run \`chorus context-pack seal\` to finalize (manifest + snapshot).
+2. Fill the markdown templates with repository-derived content.
+3. Update the structured files (\`routes.json\`, \`completeness_contract.json\`, \`reporting_rules.json\`) so they describe routing, completeness, and reporting rules.
+4. After filling all sections, run \`chorus context-pack seal\` to finalize (manifest + snapshot).
 
 ## Quality Criteria
 - Content must be factual and verifiable from the repository.
@@ -85,6 +86,7 @@ This guide tells AI agents how to fill in the context pack templates.
 - Keep total word count under ~2000 words across all files.
 - Do not include secrets or credentials.
 - If unsure, note \`TBD\` rather than inventing details.
+- Structured artifacts should stay deterministic and explicit. Do not auto-generate them from prose in v1.
 
 ## When to Update
 - After significant architectural or contract changes.
@@ -115,11 +117,20 @@ function templateStartHere(repoName, branch, headSha, generatedAt) {
 **Planning** (add a new feature/module): follow the Extension Recipe in \`20_CODE_MAP.md\`, then cross-check the BEHAVIORAL_INVARIANTS checklist for that change type.
 **Diagnosis** (silent failures, unexpected output): start with \`10_SYSTEM_OVERVIEW.md\` Silent Failure Modes, then the relevant diagnostic row in \`30_BEHAVIORAL_INVARIANTS.md\`.
 
+## Structured Routing
+- If \`routes.json\` exists, use it as the authoritative task router before opening repo files.
+- Use \`completeness_contract.json\` for "what must be included" and \`reporting_rules.json\` for "how to report it".
+- If the structured layer and markdown disagree, continue exploring and report the mismatch explicitly.
+
 ## Fast Facts
 <!-- AGENT: Replace with 3-5 bullets covering product, languages/entry points, quality gate, core risk. -->
 
 ## Scope Rule
 <!-- AGENT: Provide navigation rules — what to open first for each area of the codebase, what to skip. -->
+
+## Stop Rules
+<!-- AGENT: Describe when a task has enough evidence to stop. Keep this short and operational.
+Call out grouped reporting defaults, generated-file avoidance, and any cases where agents may keep exploring because the pack and repo diverge. -->
 `;
 }
 
@@ -173,6 +184,11 @@ Risk must be filled: use "Silent failure if missed", "KeyError at runtime", "Bui
 Example: "New parameter through call chain: schema → step → client → wrapper → tests"
 List files in dependency order so agents trace the change correctly. -->
 
+## Minimum Sufficient Evidence
+<!-- AGENT: For the 3-5 most common task types, say what minimum evidence closes the task.
+Example: "Lookup closes after authoritative file + exact value + one supporting chain if requested."
+These rules should align with reporting_rules.json. -->
+
 ## Extension Recipe
 <!-- AGENT: Describe how to add a new module/adapter/plugin. List all files that must change together. -->
 `;
@@ -194,6 +210,11 @@ explicit file paths — not descriptions, not directory names. Agents will use t
 If a missed file causes a silent production failure, say so explicitly in the row.
 | Change type | Files that must change together |
 | --- | --- | -->
+
+## Often Reviewed But Not Always Required
+<!-- AGENT: List files or file families that are commonly inspected during a task but should not
+automatically be included in the final answer unless the task demands them. This section exists to
+separate contractual completeness from optional verification. -->
 `;
 }
 
@@ -219,6 +240,193 @@ function templateOperations() {
 - Restore latest snapshot: \`chorus context-pack rollback\`
 - Restore named snapshot: \`chorus context-pack rollback --snapshot <snapshot_id>\`
 `;
+}
+
+function templateRoutesJson() {
+  return `${JSON.stringify({
+    schema_version: 1,
+    task_routes: {
+      lookup: {
+        description: 'Find a value, threshold, URL, or authoritative file.',
+        pack_read_order: ['00_START_HERE.md', '20_CODE_MAP.md', 'reporting_rules.json'],
+        fallback_files: ['30_BEHAVIORAL_INVARIANTS.md'],
+        completeness_ref: 'lookup',
+        reporting_ref: 'lookup',
+      },
+      impact_analysis: {
+        description: 'List every file or file family that must change.',
+        pack_read_order: [
+          '00_START_HERE.md',
+          '30_BEHAVIORAL_INVARIANTS.md',
+          'completeness_contract.json',
+          'reporting_rules.json',
+          '20_CODE_MAP.md',
+        ],
+        fallback_files: ['10_SYSTEM_OVERVIEW.md'],
+        completeness_ref: 'impact_analysis',
+        reporting_ref: 'impact_analysis',
+      },
+      planning: {
+        description: 'Write an implementation plan with files, commands, and validation.',
+        pack_read_order: [
+          '00_START_HERE.md',
+          '20_CODE_MAP.md',
+          '30_BEHAVIORAL_INVARIANTS.md',
+          'completeness_contract.json',
+          'reporting_rules.json',
+        ],
+        fallback_files: ['40_OPERATIONS_AND_RELEASE.md'],
+        completeness_ref: 'planning',
+        reporting_ref: 'planning',
+      },
+      diagnosis: {
+        description: 'Rank likely root causes and cite the runtime path.',
+        pack_read_order: [
+          '00_START_HERE.md',
+          '10_SYSTEM_OVERVIEW.md',
+          '30_BEHAVIORAL_INVARIANTS.md',
+          'completeness_contract.json',
+          'reporting_rules.json',
+        ],
+        fallback_files: ['20_CODE_MAP.md'],
+        completeness_ref: 'diagnosis',
+        reporting_ref: 'diagnosis',
+      },
+    },
+  }, null, 2)}\n`;
+}
+
+function templateCompletenessContractJson() {
+  return `${JSON.stringify({
+    schema_version: 1,
+    task_families: {
+      lookup: {
+        minimum_sufficient_evidence: [
+          'exact answer',
+          'authoritative source path',
+          'one supporting chain only if the task asks for authority',
+        ],
+        required_chain_members: [],
+        contractually_required_files: [],
+        required_file_families: [],
+      },
+      impact_analysis: {
+        minimum_sufficient_evidence: [
+          'complete blast radius',
+          'required file families',
+          'contractually required pass-through layers',
+        ],
+        required_chain_members: [],
+        contractually_required_files: [],
+        required_file_families: [],
+      },
+      planning: {
+        minimum_sufficient_evidence: [
+          'files to create or modify',
+          'commands in order',
+          'validation criteria',
+        ],
+        required_chain_members: [],
+        contractually_required_files: [],
+        required_file_families: [],
+      },
+      diagnosis: {
+        minimum_sufficient_evidence: [
+          'ranked root causes',
+          'runtime path or failure chain',
+          'confirmation method for each cause',
+        ],
+        required_chain_members: [],
+        contractually_required_files: [],
+        required_file_families: [],
+      },
+    },
+  }, null, 2)}\n`;
+}
+
+function templateReportingRulesJson() {
+  return `${JSON.stringify({
+    schema_version: 1,
+    global_rules: {
+      grouped_reporting_default: true,
+      authoritative_vs_derived_paths: [],
+    },
+    task_families: {
+      lookup: {
+        optional_verify_budget: 1,
+        stop_after: 'Stop after the authoritative source and one optional supporting check.',
+        stop_unless: [
+          'a structured artifact references a missing file',
+          'markdown and structured artifacts disagree',
+          'code contradicts the structured contract',
+          'the task explicitly asks for concrete instances rather than grouped families',
+        ],
+        groupable_families: [],
+        never_enumerate_individually: [],
+      },
+      impact_analysis: {
+        optional_verify_budget: 2,
+        stop_after: 'Stop after the blast radius is complete and required families are grouped correctly.',
+        stop_unless: [
+          'a structured artifact references a missing file',
+          'markdown and structured artifacts disagree',
+          'code contradicts the structured contract',
+          'the task explicitly asks for concrete instances rather than grouped families',
+        ],
+        groupable_families: [],
+        never_enumerate_individually: [],
+      },
+      planning: {
+        optional_verify_budget: 2,
+        stop_after: 'Stop after the plan is executable without further repo browsing.',
+        stop_unless: [
+          'a structured artifact references a missing file',
+          'markdown and structured artifacts disagree',
+          'code contradicts the structured contract',
+          'the task explicitly asks for concrete instances rather than grouped families',
+        ],
+        groupable_families: [],
+        never_enumerate_individually: [],
+      },
+      diagnosis: {
+        optional_verify_budget: 3,
+        stop_after: 'Stop after the ranked runtime chain is established and each cause has a confirmation method.',
+        stop_unless: [
+          'a structured artifact references a missing file',
+          'markdown and structured artifacts disagree',
+          'code contradicts the structured contract',
+          'the task explicitly asks for concrete instances rather than grouped families',
+        ],
+        groupable_families: [],
+        never_enumerate_individually: [],
+      },
+    },
+  }, null, 2)}\n`;
+}
+
+function buildContextPackRoutingBlock(agentKind) {
+  if (agentKind === 'codex') {
+    return `## Context Pack
+
+When asked to understand this repository:
+
+1. Read \`.agent-context/current/00_START_HERE.md\`.
+2. Read \`.agent-context/current/routes.json\`.
+3. Identify the active task type in \`routes.json\`.
+4. Read the matching entries in \`completeness_contract.json\` and \`reporting_rules.json\`.
+5. Do not open repo files before those steps unless a referenced structured file is missing.
+
+If \`.agent-context/current/routes.json\` is missing, fall back to the markdown pack only.`;
+  }
+
+  return `## Context Pack
+
+When asked to understand this repository:
+
+1. Read \`.agent-context/current/00_START_HERE.md\` first.
+2. Follow the read order defined in that file.
+3. Use the structured files if present for task routing, grouped reporting, and stop conditions.
+4. Only open project files when the context pack identifies a specific target.`;
 }
 
 function main() {
@@ -253,6 +461,9 @@ function main() {
     ['20_CODE_MAP.md', templateCodeMap()],
     ['30_BEHAVIORAL_INVARIANTS.md', templateInvariants()],
     ['40_OPERATIONS_AND_RELEASE.md', templateOperations()],
+    ['routes.json', templateRoutesJson()],
+    ['completeness_contract.json', templateCompletenessContractJson()],
+    ['reporting_rules.json', templateReportingRulesJson()],
   ];
 
   for (const [filename, content] of outputs) {
@@ -268,21 +479,13 @@ function main() {
   }
 
   // Wire agent config files with context-pack routing instructions.
-  const routingBlock = `## Context Pack
-
-When asked to understand this repository:
-
-1. Read \`.agent-context/current/00_START_HERE.md\` first.
-2. Follow the read order defined in that file.
-3. Only open project files when the context pack identifies a specific target.`;
-
   const agentConfigs = [
-    ['CLAUDE.md', 'agent-chorus:context-pack:claude'],
-    ['AGENTS.md', 'agent-chorus:context-pack:codex'],
-    ['GEMINI.md', 'agent-chorus:context-pack:gemini'],
+    ['CLAUDE.md', 'agent-chorus:context-pack:claude', buildContextPackRoutingBlock('claude')],
+    ['AGENTS.md', 'agent-chorus:context-pack:codex', buildContextPackRoutingBlock('codex')],
+    ['GEMINI.md', 'agent-chorus:context-pack:gemini', buildContextPackRoutingBlock('gemini')],
   ];
 
-  for (const [filename, marker] of agentConfigs) {
+  for (const [filename, marker, routingBlock] of agentConfigs) {
     upsertContextPackBlock(path.join(repoRoot, filename), routingBlock, marker);
   }
   console.log('[context-pack] agent config files wired (CLAUDE.md, AGENTS.md, GEMINI.md)');
@@ -303,7 +506,7 @@ When asked to understand this repository:
     `[context-pack] init completed: ${relPath(currentDir, repoRoot)}`
   );
   console.log(
-    '[context-pack] next: ask your agent to fill AGENT sections, then run `chorus context-pack seal`'
+    '[context-pack] next: fill markdown + structured files, then run `chorus context-pack seal`'
   );
 }
 
