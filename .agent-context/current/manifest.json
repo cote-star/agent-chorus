@@ -2,14 +2,14 @@
   "base_sha": null,
   "branch": "main",
   "build_reason": "manual-seal",
-  "bytes_total": 25408,
+  "bytes_total": 25870,
   "cargo_version": "unknown",
   "changed_files": [],
   "files": [
     {
       "bytes": 3003,
       "path": "00_START_HERE.md",
-      "sha256": "afd92a30376cf100d37d110d040511f1d05f8a02b99e943188e2c708532376d7",
+      "sha256": "74350309efc5fe3bfd58b86151cd029cd00c0720a9663c7fabb2b2066e3c1cae",
       "words": 407
     },
     {
@@ -19,16 +19,16 @@
       "words": 518
     },
     {
-      "bytes": 4584,
+      "bytes": 4921,
       "path": "20_CODE_MAP.md",
-      "sha256": "1bae5f1f5b79ea646252889310190cbcae607dc41dad1573bc3116faddd8b4e8",
-      "words": 632
+      "sha256": "19c0c9921fb6e07e2f671f9dc85ff60c012f201cbf200280ded5c7669b86637a",
+      "words": 675
     },
     {
-      "bytes": 4702,
+      "bytes": 4827,
       "path": "30_BEHAVIORAL_INVARIANTS.md",
-      "sha256": "26281010eaea0352500b10d06cde36935389dcf7a4fdc22b07f438de10ebe90e",
-      "words": 573
+      "sha256": "24c1622e71e55e1bb2194e8ae0f4b9d1a6ec21a741f43727b23a409928145673",
+      "words": 585
     },
     {
       "bytes": 1647,
@@ -56,13 +56,13 @@
     }
   ],
   "files_count": 8,
-  "generated_at": "2026-03-26T10:27:15Z",
-  "head_sha": "e568d1f2b08cba0ff86f1416f48db9104b1dc579",
-  "pack_checksum": "8030a1e576d28f446919fdd043f25281334985243b84a0833871ef095514c61d",
+  "generated_at": "2026-03-26T15:22:33Z",
+  "head_sha": "879c7265e5b318faee3ce775a14aba4d81b14d9a",
+  "pack_checksum": "501c85bf5a7b78dbd3a37370261816d21be73c4cd67b745e530ecde917baea06",
   "package_version": "unknown",
   "repo_name": "agent-chorus",
   "repo_root": ".",
   "schema_version": 1,
-  "stable_checksum": "ebaefa5560545c251210be68fe0dde186c797964fe9337f906ccd992f43a5957",
-  "words_total": 2961
+  "stable_checksum": "945d324c3052cff2cd7b6f2cb7ee3db346f3d4e1587a07dac7f9208ac511313a",
+  "words_total": 3016
 }

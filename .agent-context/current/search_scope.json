@@ -47,7 +47,8 @@
       "search_directories": [
         "cli/src/",
         "scripts/",
-        "schemas/"
+        "schemas/",
+        "skills/"
       ],
       "exclude_from_search": [
         "fixtures/",

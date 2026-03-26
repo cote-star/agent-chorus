@@ -22,6 +22,7 @@
 | New redaction pattern | `cli/src/agents.rs` (`redact_sensitive_text`), `scripts/adapters/utils.cjs` (`redactSecrets`). Silent failure if one is missed — secret passes through in output. |
 | New context-pack artifact | `cli/src/context_pack.rs` (build function + init list + seal validation), `scripts/context_pack/init.cjs` (template function + outputs array), `scripts/context_pack/seal.cjs` (validation), `scripts/test_context_pack.sh` |
 | Context-pack template change | `cli/src/context_pack.rs` (Rust template), `scripts/context_pack/init.cjs` (Node template). Must change both — parity tested by `test_context_pack.sh`. |
+| Skill definition change | `skills/context-pack/SKILL.md`. Update `wip/context-pack-skill/evolution/` log with rationale. |
 
 ## File Families
 - `scripts/adapters/*.cjs` (5 files) — one per agent. Report as family when discussing adapter-layer changes. Inspect one representative.

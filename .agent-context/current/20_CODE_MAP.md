@@ -16,6 +16,8 @@
 | `scripts/context_pack/*.cjs` | Node context-pack commands | Mirror of Rust context-pack | Parity break if Rust not updated | authoritative |
 | `schemas/*.json` | JSON Schema definitions | Output contract for all commands | Breaking change for consumers | authoritative |
 | `fixtures/golden/*.json` | Golden output files | Conformance test baselines | Must update when output changes | derived |
+| `skills/context-pack/SKILL.md` | Context-pack creation skill | Three-flow skill definition (create/update/catchup) | Governs how agents create and maintain packs | authoritative |
+| `tests/behaviour/` | Agent behaviour experiments | Experiment protocol, ground truth, result schema | Validates context pack effectiveness | reference |
 | `PROTOCOL.md` | CLI contract specification | Canonical source of truth for behavior | Governs both implementations | authoritative |
 | `cli/src/diff.rs` | Session diff logic | LCS-based line comparison | Self-contained | authoritative |
 | `cli/src/messaging.rs` | Agent-to-agent messaging | JSONL message queue | Self-contained | authoritative |
