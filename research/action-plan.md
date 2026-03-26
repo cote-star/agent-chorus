@@ -363,8 +363,9 @@ Copies bare results from `stream-models` into the worktree, validates all 24 JSO
 | 6b | Structured Layer (Run 4) | ✅ Complete — three-layer architecture validated |
 | 7 | Integration and Release (v0.9.0) | ✅ Complete — published to npm + crates.io |
 | 8 | Generalize (agent-chorus stress test) | ✅ Complete — Run 5, templates work on CLI/library |
-| 8b | Context-Pack Creation Skill | **▶ NEXT** |
-| 9 | Showcase and Present | ⬜ After Phase 8b |
+| 8b | Context-Pack Creation Skill | ✅ Complete — SKILL.md written, tested on trust-stream-frontend |
+| 8c | Frontend Validation (Run 6) | ✅ Complete — 3rd repo type, all SC passed |
+| 9 | Showcase and Present | **▶ NEXT** |
 | 10 | Document and Guide | ⬜ After Phase 9 |
 
 ---
