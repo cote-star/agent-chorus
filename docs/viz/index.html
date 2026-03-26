@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Context Packs — What, Why, How + Results</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e4e4e7;
+    --muted: #9ca3af;
+    --accent: #6366f1;
+    --green: #22c55e;
+    --red: #ef4444;
+    --amber: #f59e0b;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+    --teal: #14b8a6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: var(--bg); color: var(--text); line-height: 1.6; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+  h1 { font-size: 2.5rem; font-weight: 800; margin-bottom: 0.5rem; background: linear-gradient(135deg, var(--accent), var(--purple)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  h2 { font-size: 1.8rem; font-weight: 700; margin: 3rem 0 1.5rem; color: var(--text); }
+  h3 { font-size: 1.2rem; font-weight: 600; margin: 1.5rem 0 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+  p, li { color: var(--muted); font-size: 1rem; }
+  p { margin-bottom: 1rem; }
+  .subtitle { font-size: 1.2rem; color: var(--muted); margin-bottom: 3rem; }
+  .hero-stat { display: inline-block; font-size: 3.5rem; font-weight: 800; margin: 0.5rem 1.5rem 0.5rem 0; }
+  .hero-stat .label { display: block; font-size: 0.85rem; color: var(--muted); font-weight: 400; }
+  .hero-stat.green { color: var(--green); }
+  .hero-stat.blue { color: var(--blue); }
+  .hero-stat.purple { color: var(--purple); }
+  .hero-stat.red { color: var(--red); }
+
+  /* Cards */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.5rem; margin: 1.5rem 0; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; }
+  .card h4 { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.75rem; }
+  .card p { font-size: 0.9rem; margin-bottom: 0.5rem; }
+  .card .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; margin-right: 4px; }
+  .tag.layer1 { background: rgba(99,102,241,0.2); color: var(--accent); }
+  .tag.layer2 { background: rgba(34,197,94,0.2); color: var(--green); }
+  .tag.layer3 { background: rgba(245,158,11,0.2); color: var(--amber); }
+
+  /* Charts */
+  .chart-container { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; margin: 1.5rem 0; }
+  .bar-group { margin-bottom: 1.25rem; }
+  .bar-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; display: flex; justify-content: space-between; }
+  .bar-track { background: rgba(255,255,255,0.05); border-radius: 6px; height: 28px; position: relative; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 6px; display: flex; align-items: center; padding-left: 10px; font-size: 0.8rem; font-weight: 600; color: white; transition: width 1.5s ease-out; }
+  .bar-fill.bare { background: linear-gradient(90deg, #4b5563, #6b7280); }
+  .bar-fill.structured { background: linear-gradient(90deg, var(--accent), var(--purple)); }
+  .bar-fill.codex-bare { background: linear-gradient(90deg, #92400e, #b45309); }
+  .bar-fill.codex-struct { background: linear-gradient(90deg, var(--teal), var(--green)); }
+
+  /* Timeline */
+  .timeline { position: relative; padding-left: 2rem; margin: 1.5rem 0; }
+  .timeline::before { content: ''; position: absolute; left: 0.5rem; top: 0; bottom: 0; width: 2px; background: var(--border); }
+  .timeline-item { position: relative; margin-bottom: 1.5rem; }
+  .timeline-item::before { content: ''; position: absolute; left: -1.65rem; top: 0.5rem; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); }
+  .timeline-item.complete::before { background: var(--green); }
+  .timeline-item .run-label { font-size: 0.8rem; color: var(--accent); font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+  .timeline-item .run-title { font-size: 1rem; font-weight: 600; color: var(--text); }
+  .timeline-item .run-detail { font-size: 0.85rem; color: var(--muted); }
+
+  /* Table */
+  table { width: 100%; border-collapse: collapse; margin: 1rem 0; font-size: 0.9rem; }
+  th, td { padding: 0.6rem 1rem; text-align: left; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { color: var(--text); }
+  td.yes { color: var(--green); font-weight: 600; }
+  td.partial { color: var(--amber); font-weight: 600; }
+  td.zero { color: var(--green); font-weight: 700; }
+
+  /* Story cards */
+  .story { background: linear-gradient(135deg, rgba(99,102,241,0.1), rgba(168,85,247,0.1)); border: 1px solid rgba(99,102,241,0.3); border-radius: 12px; padding: 1.5rem; margin: 1.5rem 0; }
+  .story .quote { font-size: 1.1rem; color: var(--text); font-style: italic; margin-bottom: 0.75rem; border-left: 3px solid var(--accent); padding-left: 1rem; }
+  .story .source { font-size: 0.85rem; color: var(--muted); }
+
+  /* Sections */
+  section { margin-bottom: 4rem; }
+  .divider { border: none; border-top: 1px solid var(--border); margin: 3rem 0; }
+
+  /* Architecture diagram */
+  .arch-diagram { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 1rem; margin: 1.5rem 0; }
+  .arch-layer { border-radius: 12px; padding: 1.25rem; text-align: center; }
+  .arch-layer h4 { margin-bottom: 0.5rem; }
+  .arch-layer ul { list-style: none; text-align: left; font-size: 0.85rem; }
+  .arch-layer li { padding: 2px 0; }
+  .arch-layer.l1 { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.3); }
+  .arch-layer.l2 { background: rgba(34,197,94,0.15); border: 1px solid rgba(34,197,94,0.3); }
+  .arch-layer.l3 { background: rgba(245,158,11,0.15); border: 1px solid rgba(245,158,11,0.3); }
+
+  /* Code block */
+  code { font-family: 'JetBrains Mono', 'Fira Code', monospace; background: rgba(255,255,255,0.05); padding: 2px 6px; border-radius: 4px; font-size: 0.85rem; }
+  pre { background: rgba(255,255,255,0.05); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; overflow-x: auto; font-size: 0.85rem; margin: 1rem 0; }
+  pre code { background: none; padding: 0; }
+
+  @media (max-width: 768px) {
+    .hero-stat { font-size: 2.5rem; }
+    .arch-diagram { grid-template-columns: 1fr; }
+    .card-grid { grid-template-columns: 1fr; }
+    h1 { font-size: 1.8rem; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<!-- ===== HERO ===== -->
+<section>
+  <h1>Agent Context Packs</h1>
+  <p class="subtitle">Structured codebase context that makes AI agents dramatically better at navigating, analyzing, and reasoning about large repositories.</p>
+
+  <div>
+    <span class="hero-stat green">88%<span class="label">Correct answers (structured)</span></span>
+    <span class="hero-stat blue">-70%<span class="label">Files opened (Claude)</span></span>
+    <span class="hero-stat purple">-65%<span class="label">Token cost (Claude)</span></span>
+    <span class="hero-stat red">0<span class="label">Production-risk answers</span></span>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ===== WHAT ===== -->
+<section>
+  <h2>What is an Agent Context Pack?</h2>
+  <p>A <code>.agent-context/</code> directory committed to your repo that gives AI agents a structured understanding of the codebase — architecture, key files, change checklists, search boundaries, and what NOT to do.</p>
+
+  <div class="arch-diagram">
+    <div class="arch-layer l1">
+      <h4 style="color: var(--accent);">Layer 1: Content</h4>
+      <p style="font-size:0.8rem; color: var(--muted); margin-bottom:0.5rem;">Humans + all agents</p>
+      <ul>
+        <li>00_START_HERE.md</li>
+        <li>10_SYSTEM_OVERVIEW.md</li>
+        <li>20_CODE_MAP.md</li>
+        <li>30_BEHAVIORAL_INVARIANTS.md</li>
+        <li>40_OPERATIONS_AND_RELEASE.md</li>
+      </ul>
+    </div>
+    <div class="arch-layer l2">
+      <h4 style="color: var(--green);">Layer 2: Authority</h4>
+      <p style="font-size:0.8rem; color: var(--muted); margin-bottom:0.5rem;">Trust-and-follow agents (Claude)</p>
+      <ul>
+        <li>routes.json</li>
+        <li>completeness_contract.json</li>
+        <li>reporting_rules.json</li>
+      </ul>
+    </div>
+    <div class="arch-layer l3">
+      <h4 style="color: var(--amber);">Layer 3: Navigation</h4>
+      <p style="font-size:0.8rem; color: var(--muted); margin-bottom:0.5rem;">Search-and-verify agents (Codex)</p>
+      <ul>
+        <li>search_scope.json</li>
+        <li>&nbsp;</li>
+        <li>&nbsp;</li>
+      </ul>
+    </div>
+  </div>
+
+  <p>Plus minimal routing blocks in <code>CLAUDE.md</code> / <code>AGENTS.md</code> (~100-200 tokens each) that point agents to the pack.</p>
+</section>
+
+<hr class="divider">
+
+<!-- ===== WHY ===== -->
+<section>
+  <h2>Why Context Packs?</h2>
+
+  <div class="card-grid">
+    <div class="card">
+      <h4 style="color: var(--red);">The Problem</h4>
+      <p>Large codebases (500-2,000+ files) cause agents to explore inefficiently, miss critical files, propose deprecated patterns, and produce answers that would break production.</p>
+      <p style="color: var(--text); font-weight: 600;">50% of bare answers were incorrect or incomplete.</p>
+    </div>
+    <div class="card">
+      <h4 style="color: var(--green);">The Solution</h4>
+      <p>A structured context pack tells agents what matters, what's risky, where to look, and when they have enough evidence — before they open a single repo file.</p>
+      <p style="color: var(--text); font-weight: 600;">88% of structured answers were fully correct.</p>
+    </div>
+    <div class="card">
+      <h4 style="color: var(--accent);">The Insight</h4>
+      <p>AI agents fall into two architectures: <strong>trust-and-follow</strong> (Claude) and <strong>search-and-verify</strong> (Codex). The same pack serves both through different layers.</p>
+      <p style="color: var(--text); font-weight: 600;">One template, zero modifications across 3 repo types.</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ===== HOW ===== -->
+<section>
+  <h2>How It Works</h2>
+
+  <div class="card-grid">
+    <div class="card">
+      <span class="tag layer1">Layer 1</span>
+      <h4>Content Layer (Markdown)</h4>
+      <p>5 markdown files covering architecture, key paths, change checklists, silent failure modes, and operations. Read by humans and all agent types.</p>
+      <p>The behavioral invariants checklist is the most impactful section — it lists exactly which files must change together for each change type, preventing silent failures.</p>
+    </div>
+    <div class="card">
+      <span class="tag layer2">Layer 2</span>
+      <h4>Authority Layer (JSON)</h4>
+      <p><strong>routes.json</strong> — maps task types (lookup, impact analysis, planning, diagnosis) to which pack files to read first.</p>
+      <p><strong>completeness_contract.json</strong> — lists files that MUST appear in the answer for each change pattern.</p>
+      <p><strong>reporting_rules.json</strong> — defines how to group file families and when to stop exploring.</p>
+      <p>Claude trusts these as authoritative. Result: answers from pure context, zero files opened.</p>
+    </div>
+    <div class="card">
+      <span class="tag layer3">Layer 3</span>
+      <h4>Navigation Layer (JSON)</h4>
+      <p><strong>search_scope.json</strong> — bounds WHERE agents search per task type.</p>
+      <p><code>search_directories</code>: look here.<br>
+         <code>exclude_from_search</code>: not here.<br>
+         <code>verification_shortcuts</code>: check this specific line range.</p>
+      <p>Codex uses these to focus exploration instead of grepping the entire repo.</p>
+    </div>
+  </div>
+
+  <h3>Agent Routing</h3>
+  <div class="card-grid">
+    <div class="card" style="border-color: rgba(99,102,241,0.4);">
+      <h4>CLAUDE.md (~80 tokens)</h4>
+      <pre><code>1. Read .agent-context/current/00_START_HERE.md
+2. Follow the read order defined in that file
+3. Only open project files when the pack
+   identifies a specific target</code></pre>
+    </div>
+    <div class="card" style="border-color: rgba(245,158,11,0.4);">
+      <h4>AGENTS.md (~150 tokens)</h4>
+      <pre><code>1. Read 00_START_HERE.md
+2. Read routes.json → identify task type
+3. Read contracts + search_scope.json
+4. Search ONLY within scoped directories
+5. Do not open repo files before step 4</code></pre>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ===== CORRECTNESS CHART ===== -->
+<section>
+  <h2>Results: Answer Quality</h2>
+  <p>Percentage of fully correct answers across 6 experiment runs and 3 repo types.</p>
+
+  <div class="chart-container">
+    <h3>Claude — Correctness Rate</h3>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models bare</span><span>50%</span></div>
+      <div class="bar-track"><div class="bar-fill bare" style="width: 50%;">3/6</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models structured</span><span>83%</span></div>
+      <div class="bar-track"><div class="bar-fill structured" style="width: 83%;">5/6</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>agent-chorus structured</span><span>83%</span></div>
+      <div class="bar-track"><div class="bar-fill structured" style="width: 83%;">5/6</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend bare</span><span>50%</span></div>
+      <div class="bar-track"><div class="bar-fill bare" style="width: 50%;">2/4</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend structured</span><span>100%</span></div>
+      <div class="bar-track"><div class="bar-fill structured" style="width: 100%;">4/4</div></div>
+    </div>
+  </div>
+
+  <div class="chart-container">
+    <h3>Codex — Correctness Rate</h3>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models bare</span><span>50%</span></div>
+      <div class="bar-track"><div class="bar-fill codex-bare" style="width: 50%;">3/6</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models structured</span><span>83%</span></div>
+      <div class="bar-track"><div class="bar-fill codex-struct" style="width: 83%;">5/6</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>agent-chorus structured</span><span>100%</span></div>
+      <div class="bar-track"><div class="bar-fill codex-struct" style="width: 100%;">6/6</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend bare</span><span>50%</span></div>
+      <div class="bar-track"><div class="bar-fill codex-bare" style="width: 50%;">2/4</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend structured</span><span>75%</span></div>
+      <div class="bar-track"><div class="bar-fill codex-struct" style="width: 75%;">3/4</div></div>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ===== EFFICIENCY CHART ===== -->
+<section>
+  <h2>Results: Efficiency (Claude)</h2>
+
+  <div class="chart-container">
+    <h3>Average Files Opened Per Task</h3>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models bare</span><span>7.5 files</span></div>
+      <div class="bar-track"><div class="bar-fill bare" style="width: 75%;">7.5</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models structured</span><span>2.2 files</span></div>
+      <div class="bar-track"><div class="bar-fill structured" style="width: 22%;">2.2</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend bare</span><span>10.0 files</span></div>
+      <div class="bar-track"><div class="bar-fill bare" style="width: 100%;">10.0</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend structured</span><span>2.75 files</span></div>
+      <div class="bar-track"><div class="bar-fill structured" style="width: 27.5%;">2.75</div></div>
+    </div>
+  </div>
+
+  <div class="chart-container">
+    <h3>Average Tokens Per Task</h3>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models bare</span><span>49K</span></div>
+      <div class="bar-track"><div class="bar-fill bare" style="width: 49%;">49K</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>stream-models structured</span><span>12.5K</span></div>
+      <div class="bar-track"><div class="bar-fill structured" style="width: 12.5%;">12.5K</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend bare</span><span>53K</span></div>
+      <div class="bar-track"><div class="bar-fill bare" style="width: 53%;">53K</div></div>
+    </div>
+    <div class="bar-group">
+      <div class="bar-label"><span>trust-stream-frontend structured</span><span>22.5K</span></div>
+      <div class="bar-track"><div class="bar-fill structured" style="width: 22.5%;">22.5K</div></div>
+    </div>
+  </div>
+
+  <div class="chart-container">
+    <h3>Dead Ends (Irrelevant Files Opened)</h3>
+    <table>
+      <tr><th>Repo</th><th>Claude Bare</th><th>Claude Structured</th><th>Codex Bare</th><th>Codex Structured</th></tr>
+      <tr><td>stream-models</td><td>2</td><td class="zero">0</td><td>7</td><td>2</td></tr>
+      <tr><td>agent-chorus</td><td>0</td><td class="zero">0</td><td>1</td><td>1</td></tr>
+      <tr><td>trust-stream-frontend</td><td>3</td><td class="zero">0</td><td>6</td><td>2</td></tr>
+    </table>
+    <p style="margin-top: 0.75rem; font-size: 0.9rem;">Claude structured: <strong style="color: var(--green);">zero dead ends across all 3 repos</strong>. Every file opened was relevant.</p>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ===== RISK FLAGS ===== -->
+<section>
+  <h2>Results: Safety</h2>
+  <p>Risk flags indicate answers that would break production if acted on.</p>
+
+  <div class="chart-container">
+    <table>
+      <tr><th>Repo</th><th>Bare Risk Flags</th><th>Structured Risk Flags</th></tr>
+      <tr><td>stream-models</td><td style="color: var(--red); font-weight: 600;">3</td><td class="zero">0</td></tr>
+      <tr><td>agent-chorus</td><td>0</td><td class="zero">0</td></tr>
+      <tr><td>trust-stream-frontend</td><td style="color: var(--red); font-weight: 600;">4</td><td class="zero">0</td></tr>
+    </table>
+    <p style="margin-top: 0.75rem;"><strong style="color: var(--green);">Context packs eliminated every production-risk answer.</strong></p>
+    <p>Examples prevented: missing schema update (silent param drop), missing test setup reset (flaky suite), using deprecated Apollo instead of React Query.</p>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ===== STORIES ===== -->
+<section>
+  <h2>Best Stories</h2>
+
+  <div class="story">
+    <div class="quote">"Claude answered a complex impact analysis in 12 seconds with zero files opened — pure context."</div>
+    <div class="source">stream-models, M2 task (new client parameter), Claude structured</div>
+  </div>
+
+  <div class="story">
+    <div class="quote">"Both agents in bare mode missed the same test setup reset. Both found it in structured — because one line in the checklist says 'silent failure if missed'."</div>
+    <div class="source">trust-stream-frontend, M1 task (new Zustand store) — the <code>setup.tsx</code> store reset prevents flaky tests with no error</div>
+  </div>
+
+  <div class="story">
+    <div class="quote">"Claude bare proposed using Apollo Client. Claude structured used React Query — because the negative guidance says 'Apollo is being deprecated'."</div>
+    <div class="source">trust-stream-frontend, H1 task (new page implementation plan)</div>
+  </div>
+
+  <div class="story">
+    <div class="quote">"Codex scored 6/6 — the highest correctness of any agent in any condition across all experiments."</div>
+    <div class="source">agent-chorus, Run 5, Codex structured condition</div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<!-- ===== EVOLUTION TIMELINE ===== -->
+<section>
+  <h2>Research Evolution</h2>
+
+  <div class="timeline">
+    <div class="timeline-item complete">
+      <div class="run-label">Run 1 — March 20</div>
+      <div class="run-title">Foundation</div>
+      <div class="run-detail">First experiment. 6 pitfalls identified. Context pack gaps caused completeness regression on impact analysis tasks.</div>
+    </div>
+    <div class="timeline-item complete">
+      <div class="run-label">Run 2 — March 20</div>
+      <div class="run-title">Learning Run</div>
+      <div class="run-detail">Claude 2→5 yes with context pack. Codex (mini model) unmoved — model capability ceiling identified. 10 design principles written.</div>
+    </div>
+    <div class="timeline-item complete">
+      <div class="run-label">Run 3 — March 25</div>
+      <div class="run-title">Validation (Phase 6)</div>
+      <div class="run-detail">All 5 success criteria passed. Claude 6/6 yes. Codex full model: 5/6 yes. Template improvements shipped as v0.8.3.</div>
+    </div>
+    <div class="timeline-item complete">
+      <div class="run-label">Run 4 — March 25</div>
+      <div class="run-title">Structured JSON Layer</div>
+      <div class="run-detail">Three conditions tested (bare / markdown / structured). Claude structured: 2.2 avg files, 12.5K tokens. Discovery: two agent architectures (trust vs verify).</div>
+    </div>
+    <div class="timeline-item complete">
+      <div class="run-label">Run 5 — March 26</div>
+      <div class="run-title">Second Repo Type (CLI/Library)</div>
+      <div class="run-detail">agent-chorus stress test. Codex 6/6 yes (best ever). Templates generalized with zero modifications. v0.9.0 published.</div>
+    </div>
+    <div class="timeline-item complete">
+      <div class="run-label">Run 6 — March 26</div>
+      <div class="run-title">Third Repo Type (React/TS Frontend)</div>
+      <div class="run-detail">trust-stream-frontend (1,982 files). Claude 4/4 yes, zero dead ends. Context-pack skill tested end-to-end. All pass criteria met.</div>
+    </div>
+  </div>
+
+  <p><strong>78+ graded results</strong> across 6 runs. <strong>15 design principles</strong> derived from data. <strong>3 repo types</strong> validated. <strong>1 general-purpose template.</strong></p>
+</section>
+
+<hr class="divider">
+
+<!-- ===== ADOPT ===== -->
+<section>
+  <h2>How to Adopt</h2>
+
+  <div class="card-grid">
+    <div class="card">
+      <h4>1. Install</h4>
+      <pre><code>npm install -g agent-chorus</code></pre>
+      <p>v0.9.0+ includes the three-layer template.</p>
+    </div>
+    <div class="card">
+      <h4>2. Create</h4>
+      <pre><code>cd your-repo
+chorus context-pack init --force
+# Ask your agent to fill the templates
+chorus context-pack seal</code></pre>
+      <p>Or use the skill: <em>"create a context pack for this repo"</em></p>
+    </div>
+    <div class="card">
+      <h4>3. Commit</h4>
+      <pre><code>git add .agent-context/ CLAUDE.md AGENTS.md
+git commit -m "feat: add agent context pack"</code></pre>
+      <p>The pack is part of the repo. Everyone benefits.</p>
+    </div>
+    <div class="card">
+      <h4>4. Maintain</h4>
+      <p><strong>Agent PRs:</strong> auto-update .agent-context (separate commit)</p>
+      <p><strong>Human PRs:</strong> no auto-update</p>
+      <p><strong>Catchup:</strong> "update the context pack"</p>
+      <p><strong>Hook:</strong> pre-push freshness warning (auto-installed)</p>
+    </div>
+  </div>
+</section>
+
+<hr class="divider">
+
+<section style="text-align: center; padding: 2rem 0;">
+  <p style="color: var(--muted); font-size: 0.9rem;">
+    Built with <a href="https://github.com/AJP-Edelman/agent-chorus" style="color: var(--accent); text-decoration: none;">agent-chorus</a> v0.9.0 &middot;
+    Research: 6 runs &middot; 78+ graded results &middot; 15 design principles &middot; 3 repo types
+  </p>
+</section>
+
+</div>
+
+<script>
+// Animate bars on scroll
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.querySelectorAll('.bar-fill').forEach(bar => {
+        const width = bar.style.width;
+        bar.style.width = '0%';
+        requestAnimationFrame(() => { bar.style.width = width; });
+      });
+    }
+  });
+}, { threshold: 0.2 });
+
+document.querySelectorAll('.chart-container').forEach(el => observer.observe(el));
+</script>
+</body>
+</html>
