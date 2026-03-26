@@ -65,7 +65,8 @@ check "init-creates-agent-configs" '
 check "init-creates-structured-files" '
   [[ -f "$T7/.agent-context/current/routes.json" ]] &&
   [[ -f "$T7/.agent-context/current/completeness_contract.json" ]] &&
-  [[ -f "$T7/.agent-context/current/reporting_rules.json" ]]
+  [[ -f "$T7/.agent-context/current/reporting_rules.json" ]] &&
+  [[ -f "$T7/.agent-context/current/search_scope.json" ]]
 '
 
 # --- Test 8: init-idempotent ---

@@ -157,6 +157,7 @@ pub fn init(options: InitOptions) -> Result<()> {
             build_completeness_contract_json(),
         ),
         ("reporting_rules.json", build_reporting_rules_json()),
+        ("search_scope.json", build_search_scope_json()),
     ];
 
     for (name, content) in templates {
@@ -1793,6 +1794,49 @@ fn validate_structured_layer(repo_root: &Path, current_dir: &Path) -> Result<()>
         }
     }
 
+    // Validate search_scope.json if present (not required — backward compat)
+    let search_scope_path = current_dir.join("search_scope.json");
+    if search_scope_path.exists() {
+        let scope = read_json(&search_scope_path)?
+            .ok_or_else(|| anyhow!("[context-pack] seal failed: search_scope.json is empty"))?;
+        if let Some(scope_families) = scope.get("task_families").and_then(|v| v.as_object()) {
+            for task in TASK_FAMILIES {
+                if let Some(entry) = scope_families.get(*task).and_then(|v| v.as_object()) {
+                    // Validate search_directories exist on disk
+                    if let Some(dirs) = entry.get("search_directories").and_then(|v| v.as_array())
+                    {
+                        for dir in dirs {
+                            if let Some(dir_str) = dir.as_str() {
+                                let dir_path = repo_root.join(dir_str);
+                                if !dir_path.exists() {
+                                    return Err(anyhow!(
+                                        "[context-pack] seal failed: search_scope.json references missing directory {}",
+                                        dir_str
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    // Validate verification_shortcuts reference real files
+                    if let Some(shortcuts) =
+                        entry.get("verification_shortcuts").and_then(|v| v.as_object())
+                    {
+                        for (file_path, _) in shortcuts {
+                            let file_on_disk =
+                                repo_root.join(file_path.split(':').next().unwrap_or(file_path));
+                            if !file_on_disk.exists() {
+                                return Err(anyhow!(
+                                    "[context-pack] seal failed: search_scope.json verification_shortcuts references missing file {}",
+                                    file_path
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     if let Some(entries) = reporting
         .get("global_rules")
         .and_then(|value| value.get("authoritative_vs_derived_paths"))
@@ -1846,8 +1890,11 @@ fn build_context_pack_routing_block(agent_kind: &str) -> String {
          1. Read `.agent-context/current/00_START_HERE.md`.\n\
          2. Read `.agent-context/current/routes.json`.\n\
          3. Identify the active task type in `routes.json`.\n\
-         4. Read the matching entries in `completeness_contract.json` and `reporting_rules.json`.\n\
-         5. Do not open repo files before those steps unless a referenced structured file is missing.\n\
+         4. Read the matching entries in `completeness_contract.json`, `reporting_rules.json`, and `search_scope.json`.\n\
+         5. Search ONLY within the directories listed in `search_scope.json` for your task type.\n\
+         6. Use `verification_shortcuts` to check specific line ranges instead of reading full files.\n\
+         7. Do not enumerate files in directories marked `exclude_from_search`.\n\
+         8. Do not open repo files before those steps unless a referenced structured file is missing.\n\
          \n\
          If `.agent-context/current/routes.json` is missing, fall back to the markdown pack only."
             .to_string()
@@ -2026,6 +2073,38 @@ fn build_reporting_rules_json() -> String {
     })).unwrap_or_else(|_| "{}".to_string()) + "\n"
 }
 
+fn build_search_scope_json() -> String {
+    serde_json::to_string_pretty(&json!({
+        "schema_version": 1,
+        "description": "Search scope boundaries for search-and-verify agents (e.g. Codex). Bounds WHERE to search, not WHEN to stop.",
+        "task_families": {
+            "lookup": {
+                "search_directories": [],
+                "exclude_from_search": [],
+                "verification_shortcuts": {}
+            },
+            "impact_analysis": {
+                "search_directories": [],
+                "exclude_from_search": [],
+                "verification_shortcuts": {},
+                "derived_file_policy": "Do not list generated/compiled/bundled output files as change targets. They are produced by a build/generate step."
+            },
+            "planning": {
+                "search_directories": [],
+                "exclude_from_search": [],
+                "verification_shortcuts": {}
+            },
+            "diagnosis": {
+                "search_directories": [],
+                "exclude_from_search": [],
+                "verification_shortcuts": {}
+            }
+        }
+    }))
+    .unwrap_or_else(|_| "{}".to_string())
+        + "\n"
+}
+
 /// Upsert a managed block into a file (prepend if new, replace if exists).
 /// Block is delimited by HTML comment markers.
 /// Idempotent — running twice produces the same result.
@@ -2111,6 +2190,7 @@ fn build_template_start_here(
 ## Structured Routing
 - Read `routes.json` after this file to identify the task family before opening repo files.
 - Read the matching entries in `completeness_contract.json` and `reporting_rules.json`.
+- Use `search_scope.json` for search directory boundaries and verification shortcuts.
 - Treat the structured files as authoritative for stop conditions, grouped reporting, and contractual completeness.
 
 ## Stop Rules
@@ -2165,8 +2245,9 @@ fn build_template_code_map() -> String {
 <!-- AGENT: Identify 8-15 key paths. Use [Approach 1], [Approach 2], or [Both] in the Approach column
 if the repo has coexisting architectural patterns — omit the column if there is only one approach.
 Risk must be filled: use "Silent failure if missed", "KeyError at runtime", "Build drift", etc.
-| Path | Approach | What | Why It Matters | Risk |
-| --- | --- | --- | --- | --- | -->
+Authority must be filled: "authoritative" (edit this file), "derived" (generated/compiled — do not edit directly), or "reference" (read-only context).
+| Path | Approach | What | Why It Matters | Risk | Authority |
+| --- | --- | --- | --- | --- | --- | -->
 
 ## Quick Lookup Shortcuts
 <!-- AGENT: Add 4-6 common lookup patterns. Map intent to exact file and what to look for.
@@ -2209,9 +2290,22 @@ If a missed file causes a silent production failure, say so explicitly in the ro
 | Change type | Files that must change together |
 | --- | --- | -->
 
+## File Families
+<!-- AGENT: List homogeneous file families where all members change the same way.
+For each family, state: the glob pattern, how many members, and whether to report as a family
+or enumerate individually. Agents should inspect one representative unless divergence is suspected.
+Example: "models/assets_gen/_specs/*.prompt.yml (20 files) — report as family, do not enumerate individually."
+Example: "models/assets_gen/_generated/*.yml (17 files) — derived, never list as change targets." -->
+
 ## Often Reviewed But Not Always Required
 <!-- AGENT: List files that are commonly inspected during debugging or planning but are not contractually
 required for every change. Separate these from the must-change checklist so agents do not over-read. -->
+
+## Negative Guidance
+<!-- AGENT: List patterns that agents commonly over-explore. Be explicit about what NOT to do.
+Example: "Do not enumerate _generated/ files individually for impact analysis — they are regenerated by a build step."
+Example: "Do not inspect both sync and async wrappers unless the parameter is known to diverge between them."
+Example: "Do not open test files to determine blast radius — tests are updated after source, not before." -->
 "#
     .to_string()
 }

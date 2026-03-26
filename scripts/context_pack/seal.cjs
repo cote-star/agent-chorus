@@ -292,6 +292,33 @@ function validateStructuredLayer(repoRoot, currentDir) {
       throw new Error('[context-pack] seal failed: generated files cannot be marked as authoritative edit targets');
     }
   }
+
+  // Validate search_scope.json if present (not required — backward compat)
+  const searchScopePath = path.join(currentDir, 'search_scope.json');
+  if (fs.existsSync(searchScopePath)) {
+    const scope = readRequiredJson(searchScopePath, 'search_scope.json');
+    if (scope.task_families && typeof scope.task_families === 'object') {
+      for (const task of TASK_FAMILIES) {
+        const entry = scope.task_families[task];
+        if (!entry) continue;
+        for (const dir of entry.search_directories || []) {
+          const dirPath = path.join(repoRoot, dir);
+          if (!fs.existsSync(dirPath)) {
+            throw new Error(`[context-pack] seal failed: search_scope.json references missing directory ${dir}`);
+          }
+        }
+        if (entry.verification_shortcuts && typeof entry.verification_shortcuts === 'object') {
+          for (const filePath of Object.keys(entry.verification_shortcuts)) {
+            const baseFile = filePath.split(':')[0];
+            const fileOnDisk = path.join(repoRoot, baseFile);
+            if (!fs.existsSync(fileOnDisk)) {
+              throw new Error(`[context-pack] seal failed: search_scope.json verification_shortcuts references missing file ${filePath}`);
+            }
+          }
+        }
+      }
+    }
+  }
 }
 
 function collectFilesMeta(currentDir, relativePaths) {
