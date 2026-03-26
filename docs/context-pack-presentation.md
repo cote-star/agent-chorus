@@ -1,0 +1,175 @@
+# Agent Context Packs — Team Presentation
+
+**Duration:** 15 minutes
+**Audience:** Engineering team
+**Goal:** Explain what context packs are, show the evidence, get adoption
+
+---
+
+## Slide 1: The Problem (2 min)
+
+**"AI agents get lost in large repos"**
+
+When you ask Claude or Codex to work on a 500+ file repo:
+- They open 10-18 files per task, many irrelevant
+- They miss critical files in impact analysis → silent production bugs
+- They propose deprecated patterns (Apollo instead of React Query)
+- They burn 50-100K tokens exploring
+
+**This costs time, money, and trust.**
+
+---
+
+## Slide 2: The Solution (2 min)
+
+**A `.agent-context` directory in your repo**
+
+```
+.agent-context/current/
+  00_START_HERE.md           ← "Read this first"
+  10_SYSTEM_OVERVIEW.md      ← Architecture + silent failure modes
+  20_CODE_MAP.md             ← Navigation index with risk ratings
+  30_BEHAVIORAL_INVARIANTS.md ← Change checklists + what NOT to do
+  routes.json                ← Task routing for agents
+  completeness_contract.json ← "These files MUST be in your answer"
+  search_scope.json          ← "Search HERE, not THERE"
+```
+
+Plus 2-3 sentences in `CLAUDE.md` / `AGENTS.md` pointing agents to the pack.
+
+**One-time setup. Auto-maintained on agent PRs.**
+
+---
+
+## Slide 3: The Evidence — Quality (3 min)
+
+**Correct answers: bare vs structured**
+
+```
+stream-models (ML pipeline, 501 files)
+  Claude:  50% → 83%    Codex:  50% → 83%
+
+agent-chorus (CLI/library, 155 files)
+  Claude:  83% → 83%    Codex:   — → 100%
+
+trust-stream-frontend (React/TS, 1,982 files)
+  Claude:  50% → 100%   Codex:  50% → 75%
+```
+
+**Context packs cut incorrect answers in half.**
+
+---
+
+## Slide 4: The Evidence — Efficiency (2 min)
+
+**Claude with context pack (averages across all repos):**
+
+| Metric | Bare | Structured | Change |
+|--------|------|-----------|--------|
+| Files opened | 6-10 | 1-3 | **-70%** |
+| Tokens used | 40-53K | 4-22K | **-60%** |
+| Dead ends | 2-3 | 0 | **-100%** |
+| Duration | 90-180s | 25-45s | **-65%** |
+
+**The "zero files" moment:** Claude answered a complex impact analysis in 12 seconds with zero files opened. Pure context.
+
+---
+
+## Slide 5: The Evidence — Safety (1 min)
+
+**Risk flags: answers that would break production if acted on**
+
+| Condition | Risk flags |
+|-----------|-----------|
+| Bare | 7 total across all repos |
+| Structured | **0** |
+
+Examples prevented:
+- Missing `schemas/inference.py` → parameter silently dropped
+- Missing `setup.tsx` store reset → flaky test suite
+- Using Apollo (deprecated) instead of React Query
+
+**Context packs eliminated every production-risk answer.**
+
+---
+
+## Slide 6: How It Works — Two Agent Types (2 min)
+
+**Claude (trust-and-follow):**
+Reads the pack → trusts the completeness contracts → opens minimal files → done.
+
+**Codex (search-and-verify):**
+Reads the pack → still greps the repo → but now knows WHAT to look for and WHERE to stop.
+
+**Same pack, different layers serve each agent:**
+- Markdown → both agents + humans
+- JSON contracts → Claude trusts them as authoritative
+- Search scopes → Codex uses them to focus exploration
+
+---
+
+## Slide 7: The Headline Story (1 min)
+
+**trust-stream-frontend, M1 task: "Add a new Zustand store"**
+
+Both Claude and Codex in **bare** mode missed `src/__tests__/setup.tsx` — the store reset that prevents flaky tests. No error tells you it's missing. Tests pass individually, fail in suite.
+
+Both agents in **structured** mode found it — because the behavioral invariants checklist says:
+
+> "Zustand store schema change → `src/__tests__/setup.tsx` (store reset). Silent failure if missed — tests pass individually but fail in suite."
+
+**That one line in the context pack prevents a week of debugging flaky tests.**
+
+---
+
+## Slide 8: How to Get It (2 min)
+
+```bash
+# Install (one time)
+npm install -g agent-chorus
+
+# Create the pack (15 min for a ~2K file repo)
+cd your-repo
+chorus context-pack init --force
+# Ask your agent to fill the templates
+chorus context-pack seal
+git add .agent-context/ CLAUDE.md AGENTS.md
+git commit -m "feat: add agent context pack"
+```
+
+**Or use the skill:**
+> "Create a context pack for this repo"
+
+The agent reads the repo, fills all 9 files, self-tests, and commits.
+
+**Maintenance is automatic:**
+- Agent PRs include `.agent-context` updates as a separate commit
+- Pre-push hook warns about staleness
+- Manual catchup: "update the context pack"
+
+---
+
+## Slide 9: What's Next (1 min)
+
+- [ ] **Adopt on 2-3 team repos** (start with the ones agents use most)
+- [ ] **Context-pack skill in Claude Code** (trigger: "create context pack")
+- [ ] **Cursor integration** (`.cursorrules` routing to the pack)
+- [ ] **Auto-update on merge** (agent PRs include pack updates)
+- [ ] **Staleness CI check** (`chorus context-pack seal --verify` in CI)
+
+**The context pack is infrastructure for AI-assisted development.
+The more repos have it, the better every agent works.**
+
+---
+
+## Appendix: Research Program
+
+- **6 experiment runs** across 3 repo types
+- **78+ graded results** against ground truth
+- **15 design principles** derived from data
+- **3 layers** validated: content, authority, navigation
+- **1 template** — works for ML pipelines, CLI tools, React frontends
+
+Full research: `agent-chorus/research/`
+CLI: `npm install -g agent-chorus` (v0.9.0)
+Skill: `agent-chorus/skills/context-pack/SKILL.md`
