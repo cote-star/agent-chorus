@@ -1,0 +1,63 @@
+{
+  "schema_version": 1,
+  "task_routes": {
+    "diagnosis": {
+      "completeness_ref": "diagnosis",
+      "description": "Rank likely root causes and cite the runtime path.",
+      "fallback_files": [
+        "20_CODE_MAP.md"
+      ],
+      "pack_read_order": [
+        "00_START_HERE.md",
+        "10_SYSTEM_OVERVIEW.md",
+        "30_BEHAVIORAL_INVARIANTS.md",
+        "completeness_contract.json",
+        "reporting_rules.json"
+      ],
+      "reporting_ref": "diagnosis"
+    },
+    "impact_analysis": {
+      "completeness_ref": "impact_analysis",
+      "description": "List every file or file family that must change.",
+      "fallback_files": [
+        "10_SYSTEM_OVERVIEW.md"
+      ],
+      "pack_read_order": [
+        "00_START_HERE.md",
+        "30_BEHAVIORAL_INVARIANTS.md",
+        "completeness_contract.json",
+        "reporting_rules.json",
+        "20_CODE_MAP.md"
+      ],
+      "reporting_ref": "impact_analysis"
+    },
+    "lookup": {
+      "completeness_ref": "lookup",
+      "description": "Find a value, threshold, URL, or authoritative file.",
+      "fallback_files": [
+        "30_BEHAVIORAL_INVARIANTS.md"
+      ],
+      "pack_read_order": [
+        "00_START_HERE.md",
+        "20_CODE_MAP.md",
+        "reporting_rules.json"
+      ],
+      "reporting_ref": "lookup"
+    },
+    "planning": {
+      "completeness_ref": "planning",
+      "description": "Write an implementation plan with files, commands, and validation.",
+      "fallback_files": [
+        "40_OPERATIONS_AND_RELEASE.md"
+      ],
+      "pack_read_order": [
+        "00_START_HERE.md",
+        "20_CODE_MAP.md",
+        "30_BEHAVIORAL_INVARIANTS.md",
+        "completeness_contract.json",
+        "reporting_rules.json"
+      ],
+      "reporting_ref": "planning"
+    }
+  }
+}

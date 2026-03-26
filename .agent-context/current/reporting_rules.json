@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "global_rules": {
+    "grouped_reporting_default": true,
+    "authoritative_vs_derived_paths": [
+      {"pattern": "fixtures/golden/*.json", "role": "derived"},
+      {"pattern": "scripts/adapters/*.cjs", "role": "authoritative"},
+      {"pattern": "scripts/context_pack/*.cjs", "role": "authoritative"},
+      {"pattern": "schemas/*.json", "role": "authoritative"}
+    ]
+  },
+  "task_families": {
+    "lookup": {
+      "optional_verify_budget": 1,
+      "stop_after": "Stop after the authoritative source and one optional supporting check.",
+      "stop_unless": [
+        "a structured artifact references a missing file",
+        "markdown and structured artifacts disagree",
+        "code contradicts the structured contract",
+        "the task explicitly asks for concrete instances rather than grouped families"
+      ],
+      "groupable_families": [],
+      "never_enumerate_individually": []
+    },
+    "impact_analysis": {
+      "optional_verify_budget": 2,
+      "stop_after": "Stop after the blast radius covers both Node and Rust implementations, schemas, and golden fixtures.",
+      "stop_unless": [
+        "a structured artifact references a missing file",
+        "markdown and structured artifacts disagree",
+        "code contradicts the structured contract",
+        "the task explicitly asks for concrete instances rather than grouped families"
+      ],
+      "groupable_families": [
+        "scripts/adapters/*.cjs",
+        "scripts/context_pack/*.cjs",
+        "fixtures/golden/*.json",
+        "schemas/*.json"
+      ],
+      "never_enumerate_individually": [
+        "fixtures/golden/*.json"
+      ]
+    },
+    "planning": {
+      "optional_verify_budget": 2,
+      "stop_after": "Stop after the plan covers both implementations and validation commands.",
+      "stop_unless": [
+        "a structured artifact references a missing file",
+        "markdown and structured artifacts disagree",
+        "code contradicts the structured contract",
+        "the task explicitly asks for concrete instances rather than grouped families"
+      ],
+      "groupable_families": [
+        "fixtures/golden/*.json"
+      ],
+      "never_enumerate_individually": [
+        "fixtures/golden/*.json"
+      ]
+    },
+    "diagnosis": {
+      "optional_verify_budget": 3,
+      "stop_after": "Stop after identifying which implementation has the bug and the specific code location.",
+      "stop_unless": [
+        "a structured artifact references a missing file",
+        "markdown and structured artifacts disagree",
+        "code contradicts the structured contract",
+        "the task explicitly asks for concrete instances rather than grouped families"
+      ],
+      "groupable_families": [],
+      "never_enumerate_individually": []
+    }
+  }
+}

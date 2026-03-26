@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "task_families": {
+    "lookup": {
+      "minimum_sufficient_evidence": [
+        "exact answer",
+        "authoritative source path",
+        "one supporting chain only if the task asks for authority"
+      ],
+      "required_chain_members": [],
+      "contractually_required_files": [],
+      "required_file_families": [],
+      "named_patterns": {
+        "command_definition": {
+          "authoritative_files": [
+            "cli/src/main.rs",
+            "scripts/read_session.cjs"
+          ]
+        },
+        "output_schema": {
+          "authoritative_files": [
+            "schemas/*.json"
+          ]
+        },
+        "redaction_patterns": {
+          "authoritative_files": [
+            "cli/src/agents.rs",
+            "scripts/adapters/utils.cjs"
+          ]
+        }
+      }
+    },
+    "impact_analysis": {
+      "minimum_sufficient_evidence": [
+        "complete blast radius covering both Node and Rust implementations",
+        "schemas and golden fixtures if output changes",
+        "docs and protocol if CLI contract changes"
+      ],
+      "required_chain_members": [],
+      "contractually_required_files": [],
+      "required_file_families": [],
+      "named_patterns": {
+        "new_cli_command": {
+          "contractually_required_files": [
+            "cli/src/main.rs",
+            "scripts/read_session.cjs",
+            "PROTOCOL.md",
+            "docs/CLI_REFERENCE.md"
+          ],
+          "required_file_families": [
+            "schemas/*.json",
+            "fixtures/golden/*.json",
+            "scripts/conformance.sh"
+          ]
+        },
+        "new_agent_adapter": {
+          "contractually_required_files": [
+            "cli/src/agents.rs",
+            "PROTOCOL.md"
+          ],
+          "required_file_families": [
+            "scripts/adapters/*.cjs",
+            "scripts/conformance.sh"
+          ]
+        },
+        "new_context_pack_artifact": {
+          "contractually_required_files": [
+            "cli/src/context_pack.rs",
+            "scripts/context_pack/init.cjs",
+            "scripts/context_pack/seal.cjs",
+            "scripts/test_context_pack.sh"
+          ]
+        },
+        "redaction_pattern_change": {
+          "contractually_required_files": [
+            "cli/src/agents.rs",
+            "scripts/adapters/utils.cjs"
+          ]
+        }
+      }
+    },
+    "planning": {
+      "minimum_sufficient_evidence": [
+        "files to create or modify (both implementations)",
+        "commands in order",
+        "validation criteria including conformance and parity"
+      ],
+      "required_chain_members": [],
+      "contractually_required_files": [],
+      "required_file_families": []
+    },
+    "diagnosis": {
+      "minimum_sufficient_evidence": [
+        "which implementation has the bug (Node, Rust, or both)",
+        "runtime path showing where the failure occurs",
+        "confirmation method (which test to run)"
+      ],
+      "required_chain_members": [],
+      "contractually_required_files": [],
+      "required_file_families": [],
+      "named_patterns": {
+        "parity_failure": {
+          "contractually_required_files": [
+            "cli/src/agents.rs",
+            "scripts/read_session.cjs",
+            "scripts/conformance.sh"
+          ]
+        },
+        "redaction_miss": {
+          "contractually_required_files": [
+            "cli/src/agents.rs",
+            "scripts/adapters/utils.cjs"
+          ]
+        }
+      }
+    }
+  }
+}

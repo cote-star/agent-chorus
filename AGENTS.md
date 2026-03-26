@@ -1,3 +1,20 @@
+<!-- agent-chorus:context-pack:codex:start -->
+## Context Pack
+
+When asked to understand this repository:
+
+1. Read `.agent-context/current/00_START_HERE.md`.
+2. Read `.agent-context/current/routes.json`.
+3. Identify the active task type in `routes.json`.
+4. Read the matching entries in `completeness_contract.json`, `reporting_rules.json`, and `search_scope.json`.
+5. Search ONLY within the directories listed in `search_scope.json` for your task type.
+6. Use `verification_shortcuts` to check specific line ranges instead of reading full files.
+7. Do not enumerate files in directories marked `exclude_from_search`.
+8. Do not open repo files before those steps unless a referenced structured file is missing.
+
+If `.agent-context/current/routes.json` is missing, fall back to the markdown pack only.
+<!-- agent-chorus:context-pack:codex:end -->
+
 # Agent Instructions For This Repo
 
 > **Naming convention**: Use `chorus context-pack ...` commands. Legacy npm

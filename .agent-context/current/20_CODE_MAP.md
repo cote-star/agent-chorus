@@ -1,23 +1,48 @@
 # Code Map
 
 ## High-Impact Paths
-| Path | What | Why It Matters | Change Risk |
-| --- | --- | --- | --- |
-| `scripts/read_session.cjs` | Node CLI entry point | All commands route through here | High — must stay in parity with Rust |
-| `cli/src/main.rs` | Rust CLI entry point | Clap command definitions, dispatch | High — must stay in parity with Node |
-| `cli/src/agents.rs` | Rust session adapters + redaction | Core read/list/search logic | High — output contract changes here |
-| `scripts/adapters/*.cjs` | Node session adapters | Per-agent JSONL parsing (codex, claude, gemini, cursor) | Medium — adapter-specific |
-| `scripts/adapters/utils.cjs` | Shared Node utilities | Redaction, path normalization, JSON parsing | High — shared across all adapters |
-| `cli/src/context_pack.rs` | Rust context-pack commands | Init, seal, verify, build, hooks | Medium — complex but self-contained |
-| `scripts/context_pack/*.cjs` | Node context-pack commands | Mirror of Rust context-pack | Medium — must stay in parity |
-| `schemas/*.json` | JSON Schema definitions | Output contract for all commands | High — breaking changes affect consumers |
-| `fixtures/golden/*.json` | Golden output files | Conformance test baselines | Medium — must update when output changes |
-| `PROTOCOL.md` | CLI contract specification | Canonical source of truth for behavior | High — governs both implementations |
-| `cli/src/diff.rs` | Session diff logic | LCS-based line comparison | Low — self-contained module |
-| `cli/src/messaging.rs` | Agent-to-agent messaging | JSONL message queue | Low — self-contained module |
-| `cli/src/relevance.rs` | Relevance introspection | Pattern matching and suggestions | Low — self-contained module |
-| `scripts/conformance.sh` | Conformance test runner | Validates Node/Rust parity | Medium — gates all merges |
-| `scripts/validate_schemas.sh` | Schema validation runner | Validates output against JSON schemas | Medium — gates all merges |
+
+> **This table is a navigation index, not a complete blast-radius list.** For impact analysis tasks,
+> read `30_BEHAVIORAL_INVARIANTS.md` Update Checklist first — it has the full file set per change type.
+
+| Path | What | Why It Matters | Risk | Authority |
+| --- | --- | --- | --- | --- |
+| `scripts/read_session.cjs` | Node CLI entry point | All commands route through here | Parity break if Rust not updated | authoritative |
+| `cli/src/main.rs` | Rust CLI entry point | Clap command definitions, dispatch | Parity break if Node not updated | authoritative |
+| `cli/src/agents.rs` | Rust session adapters + redaction | Core read/list/search logic | Silent redaction miss if pattern missing | authoritative |
+| `scripts/adapters/*.cjs` | Node session adapters | Per-agent JSONL parsing | Adapter-specific | authoritative |
+| `scripts/adapters/utils.cjs` | Shared Node utilities | Redaction, path normalization, JSON parsing | Silent redaction miss | authoritative |
+| `cli/src/context_pack.rs` | Rust context-pack commands | Init, seal, verify, build, hooks | Complex but self-contained | authoritative |
+| `scripts/context_pack/*.cjs` | Node context-pack commands | Mirror of Rust context-pack | Parity break if Rust not updated | authoritative |
+| `schemas/*.json` | JSON Schema definitions | Output contract for all commands | Breaking change for consumers | authoritative |
+| `fixtures/golden/*.json` | Golden output files | Conformance test baselines | Must update when output changes | derived |
+| `PROTOCOL.md` | CLI contract specification | Canonical source of truth for behavior | Governs both implementations | authoritative |
+| `cli/src/diff.rs` | Session diff logic | LCS-based line comparison | Self-contained | authoritative |
+| `cli/src/messaging.rs` | Agent-to-agent messaging | JSONL message queue | Self-contained | authoritative |
+| `cli/src/relevance.rs` | Relevance introspection | Pattern matching and suggestions | Self-contained | authoritative |
+| `scripts/conformance.sh` | Conformance test runner | Validates Node/Rust parity | Gates all merges | reference |
+| `scripts/test_context_pack.sh` | Context-pack test runner | Validates init/seal/parity | Gates all merges | reference |
+
+## Quick Lookup Shortcuts
+| I need to find... | Open this file | Look for |
+| --- | --- | --- |
+| CLI command definition | `cli/src/main.rs` | `#[derive(Subcommand)]` enum |
+| Node command handler | `scripts/read_session.cjs` | `case '<command>':` in the switch |
+| Output schema for a command | `schemas/<command>.json` | JSON Schema root |
+| Redaction patterns | `cli/src/agents.rs` | `fn redact_sensitive_text` |
+| Context-pack template content | `cli/src/context_pack.rs` | `fn build_template_*` functions |
+| Conformance test for a command | `scripts/conformance.sh` | `expect_success "<label>"` calls |
+
+## Cross-Cutting Tracing Flows
+- **New CLI command**: `main.rs` Clap enum → `main.rs` dispatch → `agents.rs` or new module → `read_session.cjs` handler → `schemas/<cmd>.json` → `fixtures/golden/<cmd>.json` → `conformance.sh` → `PROTOCOL.md` → `docs/CLI_REFERENCE.md`
+- **New agent adapter**: `agents.rs` Agent enum + match arm → `scripts/adapters/<agent>.cjs` → `fixtures/session-store/<agent>/` → `fixtures/golden/read-<agent>.json` → `conformance.sh` → `PROTOCOL.md`
+- **New context-pack artifact**: `context_pack.rs` build function + init list → `scripts/context_pack/init.cjs` template function + outputs array → `scripts/context_pack/seal.cjs` validation → `scripts/test_context_pack.sh` test
+
+## Minimum Sufficient Evidence
+- **Lookup**: authoritative source file + exact value.
+- **Impact analysis**: update checklist from BEHAVIORAL_INVARIANTS + confirmation both implementations covered.
+- **Planning**: files to create/modify + commands + validation criteria + parity check.
+- **Diagnosis**: runtime path in SYSTEM_OVERVIEW + code location + confirmation method.
 
 ## Extension Recipe
 To add a new agent adapter:

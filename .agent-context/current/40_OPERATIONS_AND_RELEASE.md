@@ -2,13 +2,12 @@
 
 ## Standard Validation
 ```bash
-npm run check          # Full suite: conformance + readme + package + schemas
+npm run check          # Full suite: conformance + readme + package + schemas + context-pack tests
 npm run conformance    # Node/Rust parity only
 npm run validate:schemas  # JSON schema validation only
-cargo check --manifest-path cli/Cargo.toml
+cargo test --manifest-path cli/Cargo.toml  # Rust unit tests (29 tests)
 cargo clippy --manifest-path cli/Cargo.toml
-bash scripts/test_smoke.sh                    # CLI smoke tests
-bash scripts/test_adversarial_redaction.sh    # Adversarial redaction tests
+bash scripts/test_context_pack.sh  # Context-pack integration tests (9 tests)
 ```
 
 ## CI Checks
@@ -23,18 +22,16 @@ bash scripts/test_adversarial_redaction.sh    # Adversarial redaction tests
 
 ## Release Flow
 1. Ensure all checks pass: `npm run check && cargo clippy`
-2. Verify versions match: `bash scripts/release/verify_versions.sh`
-3. Use trusted publish wrappers: `release-play inspect | jq` then `release-play verify | jq`
-4. Publish (confirm-only, human-only): `release-play publish --target all --confirm-publish`
+2. Bump version in `package.json` and `cli/Cargo.toml` (must match).
+3. Commit Cargo.lock if changed.
+4. Use trusted publish wrappers: `npm-play publish` then `cargo-play publish`
 5. Tag release: `git tag v<version> && git push origin v<version>`
-6. CI release workflow handles binary packaging and registry publish
 
 ## Context Pack Maintenance
-1. Initialize scaffolding: `chorus context-pack init`
-2. Have your agent fill in the template sections.
+1. Initialize scaffolding: `chorus context-pack init` (pre-push hook installed automatically)
+2. Have your agent fill in the template sections (markdown + structured JSON).
 3. Seal the pack: `chorus context-pack seal`
-4. Install pre-push hook: `chorus context-pack install-hooks`
-5. When freshness warnings appear, update content then run `chorus context-pack seal`
+4. When freshness warnings appear on push, update content then run `chorus context-pack seal`
 
 ## Rollback/Recovery
 - Restore latest snapshot: `chorus context-pack rollback`
