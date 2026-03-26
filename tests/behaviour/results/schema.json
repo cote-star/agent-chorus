@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AgentBehaviourResult",
+  "type": "object",
+  "required": [
+    "task_id", "agent", "condition", "files_opened_count", "dead_ends",
+    "first_correct_file_hop", "tool_calls", "tokens_total_estimate",
+    "duration_seconds", "correct", "correctness_notes", "quality_self_score",
+    "risk_flag", "risk_flag_explanation",
+    "files_opened_after_first_correct_hop", "post_hit_dead_ends"
+  ],
+  "properties": {
+    "task_id": { "type": "string", "enum": ["L1", "L2", "M1", "M2", "H1", "H2"] },
+    "agent": { "type": "string", "enum": ["claude", "codex"] },
+    "condition": { "type": "string", "enum": ["bare", "structured"] },
+    "files_opened_count": { "type": "integer", "minimum": 0 },
+    "dead_ends": { "type": "integer", "minimum": 0 },
+    "first_correct_file_hop": { "type": "integer", "minimum": 1 },
+    "files_opened_after_first_correct_hop": { "type": "integer", "minimum": 0 },
+    "post_hit_dead_ends": { "type": "integer", "minimum": 0 },
+    "tool_calls": { "type": "object" },
+    "tokens_total_estimate": { "type": "integer", "minimum": 0 },
+    "duration_seconds": { "type": "number", "minimum": 0 },
+    "correct": { "type": "string", "enum": ["yes", "partial", "no"] },
+    "correctness_notes": { "type": "string" },
+    "quality_self_score": { "type": "integer", "minimum": 1, "maximum": 10 },
+    "risk_flag": { "type": "boolean" },
+    "risk_flag_explanation": { "type": "string" }
+  },
+  "additionalProperties": false
+}
