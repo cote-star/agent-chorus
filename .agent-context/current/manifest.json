@@ -9,7 +9,7 @@
     {
       "bytes": 3276,
       "path": "00_START_HERE.md",
-      "sha256": "a7b8e5cb63d98b17badee522fe1b97cb9690b80caf60fef1355b0f9a900258d8",
+      "sha256": "f08de23a245fbaff81e5f2b881679ced6bda33059c8b887b6f233af7781e87d4",
       "words": 450
     },
     {
@@ -56,9 +56,9 @@
     }
   ],
   "files_count": 8,
-  "generated_at": "2026-03-27T11:50:19Z",
-  "head_sha": "9e94c46bf09ea2c6ec0d46bc0b24848ac22513c8",
-  "pack_checksum": "ce52dfd85b719aaecc0da41c95c26fd613d15845a81bd415efa10acd2ea196c0",
+  "generated_at": "2026-03-27T12:42:49Z",
+  "head_sha": "729dfeb19789bbb3bc8dc8100bb97bf0db7527d2",
+  "pack_checksum": "7ca0d5ff370459bd7a04426c518e898828e5b3233feac50346f33bf985d5c0c6",
   "package_version": "unknown",
   "repo_name": "agent-chorus",
   "repo_root": ".",

@@ -3,8 +3,8 @@
 ## Snapshot
 - Repo: `agent-chorus`
 - Branch at generation: `main`
-- HEAD commit: `9e94c46bf09ea2c6ec0d46bc0b24848ac22513c8`
-- Generated at: `2026-03-27T11:50:19Z`
+- HEAD commit: `729dfeb19789bbb3bc8dc8100bb97bf0db7527d2`
+- Generated at: `2026-03-27T12:42:49Z`
 
 ## Read Order — MANDATORY before starting work
 1. Read this file completely.
@@ -34,7 +34,7 @@ Read on demand:
 - **Dual implementation**: Node.js (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`) with conformance-tested parity.
 - **Quality gate**: `npm run check` runs conformance, README examples, package contents, schema validation, and context-pack tests.
 - **Core risk**: Any change to CLI output format or command flags must land in both implementations, schemas, and golden fixtures simultaneously.
-- **Version**: 0.9.0 (npm `agent-chorus` + crate `agent-chorus`).
+- **Version**: 0.9.1 (npm `agent-chorus` + crate `agent-chorus`).
 
 ## Scope Rule
 - Start with `PROTOCOL.md` for the CLI contract and trust model.
