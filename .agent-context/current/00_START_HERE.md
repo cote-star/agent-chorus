@@ -6,12 +6,16 @@
 - HEAD commit: `879c7265e5b318faee3ce775a14aba4d81b14d9a`
 - Generated at: `2026-03-26T15:22:33Z`
 
-## Read Order (Token-Efficient)
-1. Read this file.
-2. Read `10_SYSTEM_OVERVIEW.md` for architecture and execution paths.
-3. Read `30_BEHAVIORAL_INVARIANTS.md` before changing behavior.
-4. Use `20_CODE_MAP.md` to deep dive only relevant files.
-5. Use `40_OPERATIONS_AND_RELEASE.md` for tests, release, and maintenance.
+## Read Order — MANDATORY before starting work
+1. Read this file completely.
+2. Read `30_BEHAVIORAL_INVARIANTS.md` — change checklists, file families, negative guidance.
+3. Read `20_CODE_MAP.md` — navigation index, tracing flows, extension recipe.
+
+Do NOT open repo source files until you have read steps 1-3. These three files give you enough context to avoid common mistakes (wrong patterns, missing files, deprecated approaches).
+
+Read on demand:
+- `10_SYSTEM_OVERVIEW.md` — for architecture or diagnosis tasks.
+- `40_OPERATIONS_AND_RELEASE.md` — for test, CI, or deploy tasks.
 
 ## Task-Type Routing
 **Impact analysis** (list every file that must change): read `30_BEHAVIORAL_INVARIANTS.md` Update Checklist *before* `20_CODE_MAP.md` — the checklist has the full blast radius per change type. CODE_MAP alone is not exhaustive.

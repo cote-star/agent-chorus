@@ -1,12 +1,15 @@
 <!-- agent-chorus:context-pack:claude:start -->
 ## Context Pack
 
-When asked to understand this repository:
+**BEFORE starting any task**, read the context pack in this order:
 
-1. Read `.agent-context/current/00_START_HERE.md` first.
-2. Follow the read order defined in that file.
-3. Use the structured files if present for task routing, grouped reporting, and stop conditions.
-4. Only open project files when the context pack identifies a specific target.
+1. `.agent-context/current/00_START_HERE.md` — entrypoint, routing, stop rules
+2. `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md` — change checklists, file families, what NOT to do
+3. `.agent-context/current/20_CODE_MAP.md` — navigation index, tracing flows
+
+Read these three files BEFORE opening any repo source files. Then open only the files the pack identifies as relevant.
+
+For architecture questions, also read `10_SYSTEM_OVERVIEW.md`. For test/deploy questions, also read `40_OPERATIONS_AND_RELEASE.md`.
 <!-- agent-chorus:context-pack:claude:end -->
 
 # Claude Code Instructions

@@ -205,7 +205,10 @@ A context pack is ready when:
 - Every markdown file has content (no unfilled template markers)
 - Every JSON artifact has at least some repo-specific entries (no all-empty arrays)
 - The self-test confirms the pack would help an agent on at least 2 of 3 test questions
-- CLAUDE.md and AGENTS.md routing blocks are under 200 tokens each
+- CLAUDE.md routing block is imperative: **"BEFORE starting any task, read these 3 files"** with explicit file list — not "follow the read order" (P16: agents interpret suggestive wording as optional)
+- 00_START_HERE.md read order says **"MANDATORY before starting work"** and **"Do NOT open repo source files until steps 1-3"**
+- AGENTS.md routing includes search_scope.json reference with "Search ONLY within scoped directories"
+- Routing blocks are under 200 tokens each
 
 ## What NOT to do
 
