@@ -1,8 +1,8 @@
 # Context Pack — Next Version Improvement Agenda
 **Created:** 2026-03-23
-**Status:** Living document — add to this as new findings emerge
-**Scope:** Improvements to agent-chorus `context-pack` subsystem for v2 design
-**Not in scope here:** Phase 4 template tweaks (those are tracked in action-plan.md)
+**Last reviewed:** 2026-03-27
+**Status:** Living document — items marked ✅ are resolved, remaining items are future work
+**Scope:** Improvements to agent-chorus `context-pack` subsystem
 
 ---
 
@@ -118,25 +118,14 @@ know this. The pack will go stale on the first commit that touches covered files
 
 ---
 
-### 2.2 — No repo-type detection at init time
+### 2.2 — No repo-type detection at init time ✅ RESOLVED (not needed)
 
-**Current state:** `init` produces the same 5 template files regardless of repo type.
+**Resolution (2026-03-27):** Runs 5 and 6 validated that the same template works across
+ML pipeline (501 files), CLI/library (155 files), and React/TS frontend (1,982 files)
+with zero modifications. Template variants are not needed — the template sections are
+universal, the content adapts per repo. The skill fills repo-specific content.
 
-**Gap:** The 5-file design was built for production service repos (ML pipelines, API servers,
-data pipelines). It does not naturally fit:
-- **Libraries/SDKs** — invariants are about API surface and semver, not runtime failure modes
-- **Frontend apps** — failure modes are rendering/state/routing, not silent null rows
-- **Monorepos** — 5 files per service is unmanageable; needs a hierarchical structure
-- **Simple repos (<50 files)** — overhead of a 5-file pack may exceed the value
-
-**What it should do:** At `init` time, detect repo type from signals (package.json type, go.mod,
-presence of Dockerfile, CI workflows, file count) and select from a set of template variants.
-If detection is ambiguous, ask the user to choose. Document which template variants exist and
-what each is suited for.
-
-**Research dependency:** Only one repo type (production service) has been experimentally
-validated. A second case study on a different repo type is needed before generalizing.
-See Category 5.
+Monorepo support remains unvalidated.
 
 ---
 
@@ -182,20 +171,13 @@ a change to those paths, that matters — the agent should flag it, not assume C
 
 ---
 
-### 3.3 — Dead ends, anti-patterns, and deprecated paths have no dedicated surface
+### 3.3 — Dead ends, anti-patterns, and deprecated paths have no dedicated surface ✅ RESOLVED in v0.9.0
 
-**Current state:** `00_START_HERE.md` has one line: *"Skip `base_scripts/` — legacy historical
-notebooks, not part of active workflows."* That's the only anti-pattern documented.
-
-**Gap:** Run 2 showed agents still opened `base_scripts/` during exploration. A single line in
-`00_START_HERE` is not enough signal. There's also no surface for: deprecated APIs, known
-footguns (e.g., "never call `_build_tags()` directly — use `register_prompt`"), or paths that
-look relevant but aren't.
-
-**What to add:** A "What to Avoid" or "Known Dead Ends" section in `00_START_HERE.md`:
-- Deprecated / legacy paths (with reason and what to use instead)
-- Known footguns — patterns that look right but are wrong
-- Files that are generated / never edit by hand (currently in Scope Rule, but inconsistently)
+**Resolution (2026-03-26):** Added "Negative Guidance" section to `30_BEHAVIORAL_INVARIANTS.md`
+template. Lists explicit "do not" rules (do not enumerate generated files, do not use deprecated
+patterns, do not open test files for blast radius). Validated in Runs 5 and 6 — Claude bare
+proposed deprecated Apollo, Claude structured used React Query because negative guidance said
+"Apollo is being deprecated."
 
 ---
 
@@ -262,36 +244,18 @@ Covered in 1.2. Both Node and Rust `seal` now warn if hook is not installed.
 
 ## Category 5 — Generalizability Research (🟢 Enhancement)
 
-### 5.1 — Current design validated on only one repo type
+### 5.1 — Current design validated on only one repo type ✅ RESOLVED
 
-**Current state:** All 10 design principles (P1–P10) and both experiment runs come from
-`stream-models` — a 501-file production ML pipeline on Databricks. The design has not been
-tested on any other repo type.
+**Resolution (2026-03-26/27):** Validated on 3 repo types with zero template modifications:
+- ML pipeline (stream-models, 501 files) — Runs 1-4
+- CLI/library (agent-chorus, 155 files) — Run 5
+- React/TS frontend (trust-stream-frontend, 1,982 files) — Run 6 + field test
 
-**Risk:** Publishing or presenting this as a general context pack framework overstates the
-evidence. The design may break in ways that aren't visible until someone tries it on a library
-or a frontend app.
+All template sections mapped naturally to all three repo types. "Silent Failure Modes" was
+relevant even for frontend (Auth0 tokens, Zustand persistence, MSW handler sync). "File
+Families" adapted to components, hooks, page objects. No variants needed.
 
-**Next case study: frontend/app repo (planned after stream-models Phase 6)**
-
-A frontend or web app repo is the sharpest structural contrast to stream-models:
-- Failure modes are rendering, state, routing — not silent null rows
-- "Behavioral invariants" look different: component contracts, state shape, API surface
-- No equivalent of "selector dimension" blast radius — change patterns are different
-- Silent failures are user-visible (wrong render) not log-invisible (null inference output)
-- CODE_MAP needs to capture component hierarchy and page routing, not pipeline steps
-
-Running the same experiment on a frontend repo will either validate that the 5-file structure
-generalises, or reveal which structural assumptions are specific to pipeline/service repos.
-
-**What is needed:**
-- Pick a frontend/app repo with moderate complexity (candidate: a React app or Next.js project)
-- Run the same experiment design (bare vs context-pack, L/M/H task tiers)
-- Design frontend-specific tasks: find a component, trace a state update, diagnose a render bug
-- Document what worked, what needed to change in the template structure
-
-**Research output:** A second entry in the case studies table in `context-pack-design-principles.md`,
-frontend-specific template variant notes, and any new principles that emerge.
+**Remaining gap:** Monorepo support not tested.
 
 ---
 

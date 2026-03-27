@@ -2,15 +2,15 @@
   "base_sha": null,
   "branch": "main",
   "build_reason": "manual-seal",
-  "bytes_total": 25870,
+  "bytes_total": 26143,
   "cargo_version": "unknown",
   "changed_files": [],
   "files": [
     {
-      "bytes": 3003,
+      "bytes": 3276,
       "path": "00_START_HERE.md",
-      "sha256": "74350309efc5fe3bfd58b86151cd029cd00c0720a9663c7fabb2b2066e3c1cae",
-      "words": 407
+      "sha256": "a7b8e5cb63d98b17badee522fe1b97cb9690b80caf60fef1355b0f9a900258d8",
+      "words": 450
     },
     {
       "bytes": 3438,
@@ -56,13 +56,13 @@
     }
   ],
   "files_count": 8,
-  "generated_at": "2026-03-26T15:22:33Z",
-  "head_sha": "879c7265e5b318faee3ce775a14aba4d81b14d9a",
-  "pack_checksum": "501c85bf5a7b78dbd3a37370261816d21be73c4cd67b745e530ecde917baea06",
+  "generated_at": "2026-03-27T11:50:19Z",
+  "head_sha": "9e94c46bf09ea2c6ec0d46bc0b24848ac22513c8",
+  "pack_checksum": "ce52dfd85b719aaecc0da41c95c26fd613d15845a81bd415efa10acd2ea196c0",
   "package_version": "unknown",
   "repo_name": "agent-chorus",
   "repo_root": ".",
   "schema_version": 1,
   "stable_checksum": "945d324c3052cff2cd7b6f2cb7ee3db346f3d4e1587a07dac7f9208ac511313a",
-  "words_total": 3016
+  "words_total": 3059
 }

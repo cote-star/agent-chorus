@@ -3,8 +3,8 @@
 ## Snapshot
 - Repo: `agent-chorus`
 - Branch at generation: `main`
-- HEAD commit: `879c7265e5b318faee3ce775a14aba4d81b14d9a`
-- Generated at: `2026-03-26T15:22:33Z`
+- HEAD commit: `9e94c46bf09ea2c6ec0d46bc0b24848ac22513c8`
+- Generated at: `2026-03-27T11:50:19Z`
 
 ## Read Order — MANDATORY before starting work
 1. Read this file completely.

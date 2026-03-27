@@ -1,6 +1,6 @@
 # Context Pack Design Principles
 **Status:** Living document — updated after each experiment case study
-**Last updated:** 2026-03-25 (stream-models, Runs 1–4; P11–P15 added from structured layer experiments)
+**Last updated:** 2026-03-27 (P16 added from real-world feedback; Runs 1–6 across 3 repo types)
 
 ---
 
@@ -167,6 +167,14 @@ Each principle is labelled with its source and its **scope** — not all princip
 
 ---
 
+### P16 — Routing must be imperative, not suggestive
+**Scope:** `[all repos]`
+**Source:** trust-stream-frontend real-world feedback (2026-03-27)
+**What happened:** Colleague tested the context pack. Agent read START_HERE but skipped BEHAVIORAL_INVARIANTS and CODE_MAP — treated "follow the read order" as optional. Only when prompted "did you use the agent/context?" did it go back and read all files. Output was significantly better after reading the full pack.
+**Principle:** CLAUDE.md routing must say **"BEFORE starting any task, read these 3 files"** with an explicit file list — not "follow the read order." START_HERE must say **"MANDATORY before starting work"** and **"Do NOT open repo source files until steps 1-3."** Agents interpret suggestive wording as optional. The difference between an agent using the pack vs skipping it is the wording of the routing block.
+
+---
+
 ## Case studies
 
 | Date | Repo | Agents | Run | Key finding |
@@ -175,3 +183,6 @@ Each principle is labelled with its source and its **scope** — not all princip
 | 2026-03-20 | stream-models | Claude Sonnet 4.6, Codex mini | Run 2 (complete) | Post-fix: Claude 2→5 yes, 0 dead ends, 61% duration reduction. Codex mini unmoved — model capability ceiling. 4/5 success criteria passed. |
 | 2026-03-25 | stream-models | Claude Opus 4.6, Codex gpt-5.4-high | Run 3 (validation) | Claude 6/6 yes, Codex 5/6 yes. All 5 SC passed. 57% file navigation reduction. Full model unlocked Codex improvement. |
 | 2026-03-25 | stream-models | Claude Opus 4.6, Codex gpt-5.4-high | Run 4 (structured) | Three conditions. Structured: Claude 2.2 avg files (down from 7.5 bare), 12.5K tokens, 24s avg. Codex 5/6 yes but 10.8 files (up from 7.3 bare). Stop rules don't work for Codex; search scope boundaries are the next hypothesis. |
+| 2026-03-26 | agent-chorus | Claude Opus 4.6, Codex gpt-5.4-high | Run 5 (CLI/library) | Codex 6/6 yes (best ever). Claude 5/6 yes, 0.83 avg files. Templates generalized with zero modifications. v0.9.0 published. |
+| 2026-03-26 | trust-stream-frontend | Claude Opus 4.6, Codex gpt-5.4-high | Run 6 (React/TS frontend) | Claude 4/4 yes, 2.75 avg files, 0 dead ends. Codex 3/4 yes. Third repo type validated. Skill tested end-to-end. |
+| 2026-03-27 | trust-stream-frontend | Real-world test | Field test | P16 discovered: agent read START_HERE but skipped other files. Imperative routing fix applied and pushed. |

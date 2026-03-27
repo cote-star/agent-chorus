@@ -365,8 +365,8 @@ Copies bare results from `stream-models` into the worktree, validates all 24 JSO
 | 8 | Generalize (agent-chorus stress test) | ✅ Complete — Run 5, templates work on CLI/library |
 | 8b | Context-Pack Creation Skill | ✅ Complete — SKILL.md written, tested on trust-stream-frontend |
 | 8c | Frontend Validation (Run 6) | ✅ Complete — 3rd repo type, all SC passed |
-| 9 | Showcase and Present | **▶ NEXT** |
-| 10 | Document and Guide | ⬜ After Phase 9 |
+| 9 | Showcase and Present | ✅ Complete — viz, results doc, presentation |
+| 10 | Document and Guide | **▶ NEXT** |
 
 ---
 
