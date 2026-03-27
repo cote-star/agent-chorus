@@ -104,12 +104,16 @@ function templateStartHere(repoName, branch, headSha, generatedAt) {
 - HEAD commit: \`${headSha}\`
 - Generated at: \`${generatedAt}\`
 
-## Read Order (Token-Efficient)
-1. Read this file.
-2. Read \`10_SYSTEM_OVERVIEW.md\` for architecture and execution paths.
-3. Read \`30_BEHAVIORAL_INVARIANTS.md\` before changing behavior.
-4. Use \`20_CODE_MAP.md\` to deep dive only relevant files.
-5. Use \`40_OPERATIONS_AND_RELEASE.md\` for tests, release, and maintenance.
+## Read Order — MANDATORY before starting work
+1. Read this file completely.
+2. Read \`30_BEHAVIORAL_INVARIANTS.md\` — change checklists, file families, negative guidance.
+3. Read \`20_CODE_MAP.md\` — navigation index, tracing flows, extension recipe.
+
+Do NOT open repo source files until you have read steps 1-3. These three files give you enough context to avoid common mistakes (wrong patterns, missing files, deprecated approaches).
+
+Read on demand:
+- \`10_SYSTEM_OVERVIEW.md\` — for architecture or diagnosis tasks.
+- \`40_OPERATIONS_AND_RELEASE.md\` — for test, CI, or deploy tasks.
 
 ## Task-Type Routing
 **Impact analysis** (list every file that must change): read \`30_BEHAVIORAL_INVARIANTS.md\` Update Checklist *before* \`20_CODE_MAP.md\` — the checklist has the full blast radius per change type. CODE_MAP alone is not exhaustive.
@@ -470,12 +474,15 @@ If \`.agent-context/current/routes.json\` is missing, fall back to the markdown 
 
   return `## Context Pack
 
-When asked to understand this repository:
+**BEFORE starting any task**, read the context pack in this order:
 
-1. Read \`.agent-context/current/00_START_HERE.md\` first.
-2. Follow the read order defined in that file.
-3. Use the structured files if present for task routing, grouped reporting, and stop conditions.
-4. Only open project files when the context pack identifies a specific target.`;
+1. \`.agent-context/current/00_START_HERE.md\` — entrypoint, routing, stop rules
+2. \`.agent-context/current/30_BEHAVIORAL_INVARIANTS.md\` — change checklists, file families, what NOT to do
+3. \`.agent-context/current/20_CODE_MAP.md\` — navigation index, tracing flows
+
+Read these three files BEFORE opening any repo source files. Then open only the files the pack identifies as relevant.
+
+For architecture questions, also read \`10_SYSTEM_OVERVIEW.md\`. For test/deploy questions, also read \`40_OPERATIONS_AND_RELEASE.md\`.`;
 }
 
 function main() {
