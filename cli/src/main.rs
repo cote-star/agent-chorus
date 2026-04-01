@@ -162,8 +162,15 @@ enum Commands {
         json: bool,
     },
 
-    /// Build/sync/install context-pack automation
-    #[command(name = "context-pack")]
+    /// Build/sync/install agent-context automation
+    #[command(name = "agent-context")]
+    AgentContext {
+        #[command(subcommand)]
+        command: ContextPackCommand,
+    },
+
+    /// Deprecated alias for agent-context
+    #[command(name = "context-pack", hide = true)]
     ContextPack {
         #[command(subcommand)]
         command: ContextPackCommand,
@@ -480,7 +487,7 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::Send { json, .. } => *json,
         Commands::Messages { json, .. } => *json,
         Commands::Teardown { json, .. } => *json,
-        Commands::ContextPack { .. } => false,
+        Commands::AgentContext { .. } | Commands::ContextPack { .. } => false,
         #[cfg(feature = "update-check")]
         Commands::UpdateWorker => false,
     }
@@ -821,86 +828,11 @@ fn run(cli: Cli) -> Result<()> {
             }
         }
         Commands::ContextPack { command } => {
-            match command {
-                ContextPackCommand::Build {
-                    reason,
-                    base,
-                    head,
-                    pack_dir,
-                    changed_files,
-                    force_snapshot,
-                } => {
-                    context_pack::build(context_pack::BuildOptions {
-                        reason,
-                        base,
-                        head,
-                        pack_dir,
-                        changed_files,
-                        force_snapshot,
-                    })?;
-                }
-                ContextPackCommand::SyncMain {
-                    local_ref,
-                    local_sha,
-                    remote_ref,
-                    remote_sha,
-                } => {
-                    context_pack::sync_main(
-                        &local_ref,
-                        &local_sha,
-                        &remote_ref,
-                        &remote_sha,
-                    )?;
-                }
-                ContextPackCommand::InstallHooks { cwd, dry_run } => {
-                    let target_cwd = effective_cwd(cwd);
-                    context_pack::install_hooks(&target_cwd, dry_run)?;
-                }
-                ContextPackCommand::Rollback { snapshot, pack_dir } => {
-                    context_pack::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
-                }
-                ContextPackCommand::Verify { pack_dir, cwd } => {
-                    let target_cwd = effective_cwd(cwd);
-                    context_pack::verify(pack_dir.as_deref(), &target_cwd)?;
-                }
-                ContextPackCommand::CheckFreshness { base, cwd } => {
-                    let target_cwd = effective_cwd(cwd);
-                    context_pack::check_freshness(
-                        base.as_deref().unwrap_or("origin/main"),
-                        &target_cwd,
-                    )?;
-                }
-                ContextPackCommand::Init {
-                    pack_dir,
-                    cwd,
-                    force,
-                } => {
-                    context_pack::init(context_pack::InitOptions {
-                        pack_dir,
-                        cwd,
-                        force,
-                    })?;
-                }
-                ContextPackCommand::Seal {
-                    reason,
-                    base,
-                    head,
-                    pack_dir,
-                    cwd,
-                    force,
-                    force_snapshot,
-                } => {
-                    context_pack::seal(context_pack::SealOptions {
-                        reason,
-                        base,
-                        head,
-                        pack_dir,
-                        cwd,
-                        force,
-                        force_snapshot,
-                    })?;
-                }
-            }
+            eprintln!("Warning: 'context-pack' is deprecated, use 'agent-context' instead.");
+            handle_context_pack(command)?;
+        }
+        Commands::AgentContext { command } => {
+            handle_context_pack(command)?;
         }
         #[cfg(feature = "update-check")]
         Commands::UpdateWorker => {
@@ -911,6 +843,90 @@ fn run(cli: Cli) -> Result<()> {
     #[cfg(feature = "update-check")]
     update_check::maybe_notify(&cli.command);
 
+    Ok(())
+}
+
+fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
+    match command {
+        ContextPackCommand::Build {
+            reason,
+            base,
+            head,
+            pack_dir,
+            changed_files,
+            force_snapshot,
+        } => {
+            context_pack::build(context_pack::BuildOptions {
+                reason,
+                base,
+                head,
+                pack_dir,
+                changed_files,
+                force_snapshot,
+            })?;
+        }
+        ContextPackCommand::SyncMain {
+            local_ref,
+            local_sha,
+            remote_ref,
+            remote_sha,
+        } => {
+            context_pack::sync_main(
+                &local_ref,
+                &local_sha,
+                &remote_ref,
+                &remote_sha,
+            )?;
+        }
+        ContextPackCommand::InstallHooks { cwd, dry_run } => {
+            let target_cwd = effective_cwd(cwd);
+            context_pack::install_hooks(&target_cwd, dry_run)?;
+        }
+        ContextPackCommand::Rollback { snapshot, pack_dir } => {
+            context_pack::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
+        }
+        ContextPackCommand::Verify { pack_dir, cwd } => {
+            let target_cwd = effective_cwd(cwd);
+            context_pack::verify(pack_dir.as_deref(), &target_cwd)?;
+        }
+        ContextPackCommand::CheckFreshness { base, cwd } => {
+            let target_cwd = effective_cwd(cwd);
+            context_pack::check_freshness(
+                base.as_deref().unwrap_or("origin/main"),
+                &target_cwd,
+            )?;
+        }
+        ContextPackCommand::Init {
+            pack_dir,
+            cwd,
+            force,
+        } => {
+            context_pack::init(context_pack::InitOptions {
+                pack_dir,
+                cwd,
+                force,
+            })?;
+        }
+        ContextPackCommand::Seal {
+            reason,
+            base,
+            head,
+            pack_dir,
+            cwd,
+            force,
+            force_snapshot,
+        } => {
+            context_pack::seal(context_pack::SealOptions {
+                reason,
+                base,
+                head,
+                pack_dir,
+                cwd,
+                force,
+                force_snapshot,
+            })?;
+        }
+    }
     Ok(())
 }
 

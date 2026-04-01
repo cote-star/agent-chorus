@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const { getAdapter } = require('./adapters/registry.cjs');
 
 const rawArgs = process.argv.slice(2);
-const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'teardown', 'doctor', 'trash-talk', 'context-pack', 'relevance', 'diff', 'send', 'messages']);
+const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'teardown', 'doctor', 'trash-talk', 'context-pack', 'agent-context', 'relevance', 'diff', 'send', 'messages']);
 const command = commandNames.has(rawArgs[0]) ? rawArgs[0] : 'read';
 const args = commandNames.has(rawArgs[0]) ? rawArgs.slice(1) : rawArgs;
 
@@ -43,7 +43,8 @@ function printHelp(topic = null) {
     '  setup     Install cross-provider instruction scaffolding in this project',
     '  teardown  Reverse setup: remove managed blocks, scaffolding, and hooks',
     '  doctor    Check session paths and provider instruction wiring',
-    '  context-pack  Build/sync/install context-pack automation',
+    '  agent-context Build/sync/install agent-context automation',
+    '  context-pack  (deprecated alias for agent-context)',
     '  relevance     Inspect relevance patterns for context-pack filtering',
     '  diff          Compare two sessions from the same agent',
     '  send          Send a message from one agent to another',
@@ -62,7 +63,7 @@ function printHelp(topic = null) {
     `  ${binName} setup`,
     `  ${binName} teardown --dry-run`,
     `  ${binName} doctor --json`,
-    `  ${binName} context-pack build`,
+    `  ${binName} agent-context build`,
   ];
 
   if (topic === 'read') {
@@ -109,7 +110,7 @@ function printHelp(topic = null) {
     lines.push('  --cwd <path> (default: current directory)');
     lines.push('  --dry-run');
     lines.push('  --force (replace existing managed blocks)');
-    lines.push('  --context-pack (also build context pack and install hooks)');
+    lines.push('  --context-pack (also build agent-context and install hooks)');
     lines.push('  --json');
     lines.push('');
     lines.push('setup creates or updates:');
@@ -145,16 +146,16 @@ function printHelp(topic = null) {
     lines.push('Checks: version, session directories, setup completeness, provider');
     lines.push('instruction wiring, session availability, context pack state,');
     lines.push('Claude Code plugin installation, and update status.');
-  } else if (topic === 'context-pack') {
+  } else if (topic === 'agent-context' || topic === 'context-pack') {
     lines.push('');
-    lines.push('context-pack usage:');
-    lines.push('  context-pack build [--reason <text>] [--base <sha>] [--head <sha>] [--force-snapshot]');
-    lines.push('  context-pack init [--pack-dir <path>] [--cwd <path>] [--force]');
-    lines.push('  context-pack seal [--reason <text>] [--base <sha>] [--head <sha>] [--pack-dir <path>] [--cwd <path>] [--force] [--force-snapshot]');
-    lines.push('  context-pack sync-main --local-ref <ref> --local-sha <sha> --remote-ref <ref> --remote-sha <sha>');
-    lines.push('  context-pack install-hooks');
-    lines.push('  context-pack rollback [--snapshot <id>]');
-    lines.push('  context-pack check-freshness [--base <git-ref>]');
+    lines.push('agent-context usage:');
+    lines.push('  agent-context build [--reason <text>] [--base <sha>] [--head <sha>] [--force-snapshot]');
+    lines.push('  agent-context init [--pack-dir <path>] [--cwd <path>] [--force]');
+    lines.push('  agent-context seal [--reason <text>] [--base <sha>] [--head <sha>] [--pack-dir <path>] [--cwd <path>] [--force] [--force-snapshot]');
+    lines.push('  agent-context sync-main --local-ref <ref> --local-sha <sha> --remote-ref <ref> --remote-sha <sha>');
+    lines.push('  agent-context install-hooks');
+    lines.push('  agent-context rollback [--snapshot <id>]');
+    lines.push('  agent-context check-freshness [--base <git-ref>]');
   } else if (topic === 'send') {
     lines.push('');
     lines.push('send options:');
@@ -2747,7 +2748,10 @@ try {
     runTeardown(args);
   } else if (command === 'doctor') {
     runDoctor(args);
+  } else if (command === 'agent-context') {
+    runContextPack(args);
   } else if (command === 'context-pack') {
+    console.error("Warning: 'context-pack' is deprecated, use 'agent-context' instead.");
     runContextPack(args);
   } else if (command === 'send') {
     runSend(args);
