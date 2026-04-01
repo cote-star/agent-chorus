@@ -105,7 +105,7 @@ npm install --save-dev puppeteer
 node scripts/record_demo.js --input fixtures/demo/player-status.html --output docs/demo-status.webp --duration-ms 21000
 node scripts/record_demo.js --input fixtures/demo/player-handoff.html --output docs/demo-handoff.webp --duration-ms 20000
 node scripts/record_demo.js --input fixtures/demo/player-setup.html --output docs/demo-setup.webp --duration-ms 20000
-node scripts/record_demo.js --input fixtures/demo/player-context-pack.html --output docs/demo-context-pack.webp --duration-ms 20000
+node scripts/record_demo.js --input fixtures/demo/player-agent-context.html --output docs/demo-agent-context.webp --duration-ms 20000
 node scripts/record_demo.js --input fixtures/demo/player-trash-talk.html --output docs/demo-trash-talk.webp --duration-ms 17000
 npm uninstall puppeteer
 ```

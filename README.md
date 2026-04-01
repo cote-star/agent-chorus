@@ -299,9 +299,9 @@ Ask your agent explicitly:
 
 > "Understand this repo end-to-end using the context pack first, then deep dive only where needed."
 
-![Context Pack Read-Order](docs/cold-start-context-pack-hero.webp)
+![Context Pack Read-Order](docs/cold-start-agent-context-hero.webp)
 
-![Context Pack Demo](docs/demo-context-pack.webp)
+![Context Pack Demo](docs/demo-agent-context.webp)
 
 Full agent-context internals and policy details: [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md)
 
