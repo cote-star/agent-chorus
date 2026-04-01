@@ -2,12 +2,12 @@
 
 ## Standard Validation
 ```bash
-npm run check          # Full suite: conformance + readme + package + schemas + context-pack tests
+npm run check          # Full suite: conformance + readme + package + schemas + agent-context tests
 npm run conformance    # Node/Rust parity only
 npm run validate:schemas  # JSON schema validation only
 cargo test --manifest-path cli/Cargo.toml  # Rust unit tests (29 tests)
 cargo clippy --manifest-path cli/Cargo.toml
-bash scripts/test_context_pack.sh  # Context-pack integration tests (9 tests)
+bash scripts/test_context_pack.sh  # Agent-context integration tests (9 tests)
 ```
 
 ## CI Checks
@@ -28,11 +28,11 @@ bash scripts/test_context_pack.sh  # Context-pack integration tests (9 tests)
 5. Tag release: `git tag v<version> && git push origin v<version>`
 
 ## Context Pack Maintenance
-1. Initialize scaffolding: `chorus context-pack init` (pre-push hook installed automatically)
+1. Initialize scaffolding: `chorus agent-context init` (pre-push hook installed automatically)
 2. Have your agent fill in the template sections (markdown + structured JSON).
-3. Seal the pack: `chorus context-pack seal`
-4. When freshness warnings appear on push, update content then run `chorus context-pack seal`
+3. Seal the pack: `chorus agent-context seal`
+4. When freshness warnings appear on push, update content then run `chorus agent-context seal`
 
 ## Rollback/Recovery
-- Restore latest snapshot: `chorus context-pack rollback`
-- Restore named snapshot: `chorus context-pack rollback --snapshot <snapshot_id>`
+- Restore latest snapshot: `chorus agent-context rollback`
+- Restore named snapshot: `chorus agent-context rollback --snapshot <snapshot_id>`

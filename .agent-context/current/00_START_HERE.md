@@ -32,7 +32,7 @@ Read on demand:
 ## Fast Facts
 - **Product**: Local-first CLI (`chorus`) for cross-agent session reading, comparison, and handoff across Codex, Claude, Gemini, and Cursor.
 - **Dual implementation**: Node.js (`scripts/read_session.cjs`) and Rust (`cli/src/main.rs`) with conformance-tested parity.
-- **Quality gate**: `npm run check` runs conformance, README examples, package contents, schema validation, and context-pack tests.
+- **Quality gate**: `npm run check` runs conformance, README examples, package contents, schema validation, and agent-context tests.
 - **Core risk**: Any change to CLI output format or command flags must land in both implementations, schemas, and golden fixtures simultaneously.
 - **Version**: 0.9.1 (npm `agent-chorus` + crate `agent-chorus`).
 

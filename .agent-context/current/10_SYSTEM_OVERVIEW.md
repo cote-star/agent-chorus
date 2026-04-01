@@ -16,7 +16,7 @@
 ## Silent Failure Modes
 - **Redaction miss**: If a new secret pattern is not in the redaction regex set, it passes through silently. No error, no warning — the secret appears in output. Both implementations must share the same pattern list.
 - **Adapter fallback**: If a session file has unexpected schema, the adapter may return partial content without error. The `warnings` array in JSON output captures these, but text output does not surface them.
-- **Context-pack stale shortcuts**: `verification_shortcuts` in `search_scope.json` reference line numbers. If the source file changes, the line numbers silently become wrong. Seal validates file existence but not line accuracy.
+- **Agent-context stale shortcuts**: `verification_shortcuts` in `search_scope.json` reference line numbers. If the source file changes, the line numbers silently become wrong. Seal validates file existence but not line accuracy.
 - **Golden fixture drift**: If output format changes but golden fixtures are not updated, `conformance.sh` catches it — but only if the test covers that specific command/flag combination.
 
 ## Command/API Surface
@@ -28,17 +28,17 @@
 | `chorus compare` | Compare sessions across agents | `agents.rs`, `read_session.cjs` |
 | `chorus report` | Generate handoff coordinator report | `report.rs`, `read_session.cjs` |
 | `chorus diff` | Line-level diff between sessions | `diff.rs`, `read_session.cjs` |
-| `chorus relevance` | Inspect context-pack relevance patterns | `relevance.rs`, `relevance.cjs` |
+| `chorus relevance` | Inspect agent-context relevance patterns | `relevance.rs`, `relevance.cjs` |
 | `chorus send` / `messages` | Agent-to-agent messaging | `messaging.rs`, `read_session.cjs` |
 | `chorus setup` / `doctor` | Bootstrap and diagnose installation | `main.rs`, `read_session.cjs` |
 | `chorus teardown` | Cleanly reverse setup | `read_session.cjs` |
-| `chorus context-pack *` | Init, seal, verify, build context packs | `context_pack.rs`, `context_pack/*.cjs` |
+| `chorus agent-context *` | Init, seal, verify, build context packs | `agent_context.rs`, `agent_context/*.cjs` |
 | `chorus trash-talk` | Roast agents (easter egg) | `read_session.cjs` |
 
 ## Tracked Path Density
 | Directory | Files | Content |
 | --- | --- | --- |
-| `scripts/` | ~35 | Node implementation, adapters, context-pack, tests |
+| `scripts/` | ~35 | Node implementation, adapters, agent-context, tests |
 | `fixtures/` | ~34 | Demo HTML, golden outputs, adversarial tests, session stores |
 | `cli/` | ~16 | Rust implementation (src, Cargo.toml, Cargo.lock) |
 | `docs/` | ~11 | CLI reference, development guide, SVGs, demo WebP assets |

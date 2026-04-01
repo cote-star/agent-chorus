@@ -6,7 +6,7 @@ This guide tells AI agents how to fill in the context pack templates.
 1. Read each file in `.agent-context/current/` in numeric order.
 2. Fill the markdown templates with repository-derived content.
 3. Fill the structured files (`routes.json`, `completeness_contract.json`, `reporting_rules.json`) with deterministic repo-specific rules.
-4. After filling all sections, run `chorus context-pack seal` to finalize (manifest + snapshot).
+4. After filling all sections, run `chorus agent-context seal` to finalize (manifest + snapshot).
 
 ## Quality Criteria
 - Content must be factual and verifiable from the repository.
@@ -19,4 +19,4 @@ This guide tells AI agents how to fill in the context pack templates.
 ## When to Update
 - After significant architectural or contract changes.
 - After adding new commands/APIs/features.
-- When `chorus context-pack check-freshness` reports stale content.
+- When `chorus agent-context check-freshness` reports stale content.

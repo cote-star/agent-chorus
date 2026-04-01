@@ -65,9 +65,9 @@
         },
         "new_context_pack_artifact": {
           "contractually_required_files": [
-            "cli/src/context_pack.rs",
-            "scripts/context_pack/init.cjs",
-            "scripts/context_pack/seal.cjs",
+            "cli/src/agent_context.rs",
+            "scripts/agent_context/init.cjs",
+            "scripts/agent_context/seal.cjs",
             "scripts/test_context_pack.sh"
           ]
         },

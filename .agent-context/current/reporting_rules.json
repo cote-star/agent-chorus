@@ -5,7 +5,7 @@
     "authoritative_vs_derived_paths": [
       {"pattern": "fixtures/golden/*.json", "role": "derived"},
       {"pattern": "scripts/adapters/*.cjs", "role": "authoritative"},
-      {"pattern": "scripts/context_pack/*.cjs", "role": "authoritative"},
+      {"pattern": "scripts/agent_context/*.cjs", "role": "authoritative"},
       {"pattern": "schemas/*.json", "role": "authoritative"}
     ]
   },
@@ -33,7 +33,7 @@
       ],
       "groupable_families": [
         "scripts/adapters/*.cjs",
-        "scripts/context_pack/*.cjs",
+        "scripts/agent_context/*.cjs",
         "fixtures/golden/*.json",
         "schemas/*.json"
       ],

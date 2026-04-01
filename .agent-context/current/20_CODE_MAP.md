@@ -12,11 +12,11 @@
 | `cli/src/agents.rs` | Rust session adapters + redaction | Core read/list/search logic | Silent redaction miss if pattern missing | authoritative |
 | `scripts/adapters/*.cjs` | Node session adapters | Per-agent JSONL parsing | Adapter-specific | authoritative |
 | `scripts/adapters/utils.cjs` | Shared Node utilities | Redaction, path normalization, JSON parsing | Silent redaction miss | authoritative |
-| `cli/src/context_pack.rs` | Rust context-pack commands | Init, seal, verify, build, hooks | Complex but self-contained | authoritative |
-| `scripts/context_pack/*.cjs` | Node context-pack commands | Mirror of Rust context-pack | Parity break if Rust not updated | authoritative |
+| `cli/src/agent_context.rs` | Rust agent-context commands | Init, seal, verify, build, hooks | Complex but self-contained | authoritative |
+| `scripts/agent_context/*.cjs` | Node agent-context commands | Mirror of Rust agent-context | Parity break if Rust not updated | authoritative |
 | `schemas/*.json` | JSON Schema definitions | Output contract for all commands | Breaking change for consumers | authoritative |
 | `fixtures/golden/*.json` | Golden output files | Conformance test baselines | Must update when output changes | derived |
-| `skills/context-pack/SKILL.md` | Context-pack creation skill | Three-flow skill definition (create/update/catchup) | Governs how agents create and maintain packs | authoritative |
+| `skills/agent-context/SKILL.md` | Agent-context creation skill | Three-flow skill definition (create/update/catchup) | Governs how agents create and maintain packs | authoritative |
 | `tests/behaviour/` | Agent behaviour experiments | Experiment protocol, ground truth, result schema | Validates context pack effectiveness | reference |
 | `PROTOCOL.md` | CLI contract specification | Canonical source of truth for behavior | Governs both implementations | authoritative |
 | `cli/src/diff.rs` | Session diff logic | LCS-based line comparison | Self-contained | authoritative |
@@ -32,13 +32,13 @@
 | Node command handler | `scripts/read_session.cjs` | `case '<command>':` in the switch |
 | Output schema for a command | `schemas/<command>.json` | JSON Schema root |
 | Redaction patterns | `cli/src/agents.rs` | `fn redact_sensitive_text` |
-| Context-pack template content | `cli/src/context_pack.rs` | `fn build_template_*` functions |
+| Context-pack template content | `cli/src/agent_context.rs` | `fn build_template_*` functions |
 | Conformance test for a command | `scripts/conformance.sh` | `expect_success "<label>"` calls |
 
 ## Cross-Cutting Tracing Flows
 - **New CLI command**: `main.rs` Clap enum → `main.rs` dispatch → `agents.rs` or new module → `read_session.cjs` handler → `schemas/<cmd>.json` → `fixtures/golden/<cmd>.json` → `conformance.sh` → `PROTOCOL.md` → `docs/CLI_REFERENCE.md`
 - **New agent adapter**: `agents.rs` Agent enum + match arm → `scripts/adapters/<agent>.cjs` → `fixtures/session-store/<agent>/` → `fixtures/golden/read-<agent>.json` → `conformance.sh` → `PROTOCOL.md`
-- **New context-pack artifact**: `context_pack.rs` build function + init list → `scripts/context_pack/init.cjs` template function + outputs array → `scripts/context_pack/seal.cjs` validation → `scripts/test_context_pack.sh` test
+- **New context-pack artifact**: `agent_context.rs` build function + init list → `scripts/agent_context/init.cjs` template function + outputs array → `scripts/agent_context/seal.cjs` validation → `scripts/test_context_pack.sh` test
 
 ## Minimum Sufficient Evidence
 - **Lookup**: authoritative source file + exact value.
