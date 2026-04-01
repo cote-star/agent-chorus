@@ -1,5 +1,25 @@
 # Release Notes
 
+## v0.10.0 — 2026-03-27
+
+### Changed — CLI subcommand renamed: `context-pack` to `agent-context`
+
+The `chorus context-pack` subcommand has been renamed to `chorus agent-context` to better reflect the feature's identity and align with the `.agent-context/` directory it manages.
+
+- `chorus context-pack <subcommand>` is now `chorus agent-context <subcommand>`
+- `chorus setup --context-pack` is now `chorus setup --agent-context`
+- npm script prefix `context-pack:*` is now `agent-context:*`
+- `CONTEXT_PACK.md` renamed to `AGENT_CONTEXT.md`
+- `skills/context-pack/` renamed to `skills/agent-context/`
+- All documentation updated to use the new command name
+- The `.agent-context/` directory name is unchanged (it was already correct)
+- "Context pack" as a concept noun is unchanged in prose
+
+### Upgrade Notes
+- The old `chorus context-pack` subcommand will continue to work as an alias in a future compatibility release. For now, update scripts and automation to use `chorus agent-context`.
+
+---
+
 ## v0.8.3 — 2026-03-23
 
 ### Changed — context-pack templates

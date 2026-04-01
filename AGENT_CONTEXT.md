@@ -1,6 +1,6 @@
 # Context Pack
 
-This repo includes a context-pack system for token-efficient agent onboarding.
+This repo includes an agent-context system for token-efficient agent onboarding.
 
 ## Goals
 - Keep "understand the repo end-to-end" requests cheap in tokens.
@@ -10,7 +10,7 @@ This repo includes a context-pack system for token-efficient agent onboarding.
 
 ## Layered Model
 - **Layer 0 (Evidence)**: agents can inspect each other's session output with citations.
-- **Layer 1 (Context)**: context-pack provides deterministic repo onboarding.
+- **Layer 1 (Context)**: agent-context provides deterministic repo onboarding.
 - **Layer 2 (Coordination, optional)**: only add orchestration once layers 0-1 are insufficient.
 
 ## Storage Model
@@ -43,24 +43,24 @@ Numeric prefixes keep deterministic read order for agents.
 ## Commands
 ```bash
 # 1. Initialize template scaffolding
-chorus context-pack init
+chorus agent-context init
 
 # 2. Agent fills in content...
 
 # 3. Seal the pack (validate & snapshot)
-chorus context-pack seal
+chorus agent-context seal
 
 # Manual build (backward-compatible wrapper around seal)
-chorus context-pack build
+chorus agent-context build
 
 # Install advisory-only pre-push hook
-chorus context-pack install-hooks
+chorus agent-context install-hooks
 
 # Sync context pack for a main push event (used by pre-push hook)
-chorus context-pack sync-main --local-ref refs/heads/main --local-sha <local> --remote-ref refs/heads/main --remote-sha <remote>
+chorus agent-context sync-main --local-ref refs/heads/main --local-sha <local> --remote-ref refs/heads/main --remote-sha <remote>
 
 # Restore latest snapshot
-chorus context-pack rollback
+chorus agent-context rollback
 ```
 
 ## Update Policy

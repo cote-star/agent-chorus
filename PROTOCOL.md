@@ -29,7 +29,7 @@ chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<p
 chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
 chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
-chorus context-pack <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify>
+chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify>
 chorus teardown [--cwd=<path>] [--dry-run] [--global] [--json]
 ```
 
@@ -38,7 +38,7 @@ chorus teardown [--cwd=<path>] [--dry-run] [--global] [--json]
 The following commands are provided by the Node CLI only. They are not part of the dual-parity contract and are not implemented in the Rust CLI:
 
 ```bash
-chorus setup [--cwd=<path>] [--dry-run] [--force] [--context-pack] [--json]
+chorus setup [--cwd=<path>] [--dry-run] [--force] [--agent-context] [--json]
 chorus doctor [--cwd=<path>] [--json]
 ```
 
@@ -54,11 +54,11 @@ Rules:
 9. `read --metadata-only` returns session metadata without content. JSON output sets `content` to `null`. Text output omits the content block.
 10. `read --audit-redactions` includes a `redactions` array in JSON output showing pattern names and counts. In text mode, a summary is appended after content.
 11. `diff` reads two sessions by ID substring and computes line-level diff with added/removed/equal hunks.
-12. `relevance` introspects context-pack filtering patterns. `--list` shows patterns, `--test` checks a path, `--suggest` recommends patterns.
+12. `relevance` introspects agent-context filtering patterns. `--list` shows patterns, `--test` checks a path, `--suggest` recommends patterns.
 13. `send` appends a message to the target agent's JSONL queue in `.agent-chorus/messages/`.
 14. `messages` reads (and optionally clears with `--clear`) the message queue for an agent.
 15. `teardown` removes managed blocks from provider files, deletes `.agent-chorus/` directory, removes `.agent-chorus/` from `.gitignore`, and removes hook sentinels. `--dry-run` previews without changes. `--global` also removes `~/.cache/agent-chorus/`. The Claude Code plugin is NOT removed by teardown.
-16. `setup` creates `.agent-chorus/` scaffolding, injects managed blocks into CLAUDE.md/AGENTS.md/GEMINI.md, appends `.agent-chorus/` to `.gitignore`, and auto-installs the Claude Code skill plugin if the `claude` CLI is present. Safe to re-run; idempotent unless `--force` is given.
+16. `setup` creates `.agent-chorus/` scaffolding, injects managed blocks into CLAUDE.md/AGENTS.md/GEMINI.md, appends `.agent-chorus/` to `.gitignore`, and auto-installs the Claude Code skill plugin if the `claude` CLI is present. `--agent-context` runs `init` + `install-hooks`. Safe to re-run; idempotent unless `--force` is given.
 17. `doctor` checks: version, session directory availability, setup completeness, provider instruction wiring, session discoverability, context pack state, Claude Code plugin installation, and update status.
 
 ## JSON Output Contract (`chorus read --json`)

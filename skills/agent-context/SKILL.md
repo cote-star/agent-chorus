@@ -49,7 +49,7 @@ ls .agent-context/current/ 2>/dev/null
 ### Step 2 — Scaffold
 
 ```bash
-chorus context-pack init --force
+chorus agent-context init --force
 ```
 
 This creates:
@@ -87,7 +87,7 @@ Fill the structured JSON artifacts with repo-specific content:
 ### Step 5 — Seal
 
 ```bash
-chorus context-pack seal --force
+chorus agent-context seal --force
 ```
 
 Seal validates:
@@ -146,7 +146,7 @@ Edit only the specific lines/entries that are affected. Do NOT rewrite entire fi
 ### Step 4 — Re-seal
 
 ```bash
-chorus context-pack seal --force
+chorus agent-context seal --force
 ```
 
 ### Step 5 — Commit as a separate commit
@@ -191,7 +191,7 @@ Do NOT apply changes without approval. The user authored this code — you may m
 After the user approves each section:
 
 ```bash
-chorus context-pack seal --force
+chorus agent-context seal --force
 git add .agent-context/
 git commit -m "chore: catchup agent context with recent changes"
 ```
@@ -201,7 +201,7 @@ git commit -m "chore: catchup agent context with recent changes"
 ## Quality bar
 
 A context pack is ready when:
-- `chorus context-pack seal` passes without errors
+- `chorus agent-context seal` passes without errors
 - Every markdown file has content (no unfilled template markers)
 - Every JSON artifact has at least some repo-specific entries (no all-empty arrays)
 - The self-test confirms the pack would help an agent on at least 2 of 3 test questions

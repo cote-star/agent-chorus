@@ -215,7 +215,7 @@ chorus messages --agent codex --cwd . --json
 
 ### Relevance Introspection
 
-Inspect and test the context-pack filtering patterns that decide which files matter.
+Inspect and test the agent-context filtering patterns that decide which files matter.
 
 ```bash
 chorus relevance --list --cwd .              # Show current include/exclude patterns
@@ -284,15 +284,15 @@ This works the same for private repositories: the pack is local-first and does n
 
 ```bash
 # Recommended workflow:
-chorus context-pack init    # Creates .agent-context/current/ with templates
+chorus agent-context init    # Creates .agent-context/current/ with templates
 # ...agent fills in <!-- AGENT: ... --> sections...
-chorus context-pack seal    # Validates content and locks the pack
+chorus agent-context seal    # Validates content and locks the pack
 
 # Manual rebuild (backward-compatible wrapper)
-chorus context-pack build
+chorus agent-context build
 
 # Install pre-push hook (advisory-only check on main push)
-chorus context-pack install-hooks
+chorus agent-context install-hooks
 ```
 
 Ask your agent explicitly:
@@ -303,7 +303,7 @@ Ask your agent explicitly:
 
 ![Context Pack Demo](docs/demo-context-pack.webp)
 
-Full context-pack internals and policy details: [`CONTEXT_PACK.md`](./CONTEXT_PACK.md)
+Full agent-context internals and policy details: [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md)
 
 <details><summary>Sync policy, usage boundaries, and layered model</summary>
 
@@ -316,25 +316,25 @@ Full context-pack internals and policy details: [`CONTEXT_PACK.md`](./CONTEXT_PA
 Optional pre-PR guard:
 
 ```bash
-chorus context-pack check-freshness --base origin/main
+chorus agent-context check-freshness --base origin/main
 ```
 
 ### Usage Boundaries
 
 - Do not treat context pack as a substitute for source-of-truth when changing behavior-critical code.
 - Do not expect automatic updates from commits alone or non-`main` branch pushes.
-- Do not put secrets in context-pack content; `.agent-context/current/` is tracked in git.
+- Do not put secrets in context pack content; `.agent-context/current/` is tracked in git.
 
 ### Layered Model
 
 - **Layer 0 (Evidence)**: cross-agent session reads with citations.
-- **Layer 1 (Context)**: context-pack index for deterministic repo onboarding.
+- **Layer 1 (Context)**: agent-context index for deterministic repo onboarding.
 - **Layer 2 (Coordination, optional)**: explicit orchestration only when layers 0-1 are insufficient.
 
 Recovery matrix:
 
 - `.agent-context/current/` -> `git checkout <commit> -- .agent-context/current`
-- `.agent-context/snapshots/` -> `chorus context-pack rollback`
+- `.agent-context/snapshots/` -> `chorus agent-context rollback`
 
 </details>
 
@@ -364,7 +364,7 @@ Chorus checks for updates once per version.
 | If you need... | Go here |
 | :--- | :--- |
 | Full command syntax and JSON outputs | [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md) |
-| Context-pack internals and policy details | [`CONTEXT_PACK.md`](./CONTEXT_PACK.md) |
+| Agent-context internals and policy details | [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md) |
 | Protocol and schema contract details | [`PROTOCOL.md`](./PROTOCOL.md) |
 | Contributing or extending the codebase | [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) / [`CONTRIBUTING.md`](./CONTRIBUTING.md) |
 | Release-level changes and upgrade notes | [`RELEASE_NOTES.md`](./RELEASE_NOTES.md) |

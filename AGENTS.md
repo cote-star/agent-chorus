@@ -17,8 +17,8 @@ If `.agent-context/current/routes.json` is missing, fall back to the markdown pa
 
 # Agent Instructions For This Repo
 
-> **Naming convention**: Use `chorus context-pack ...` commands. Legacy npm
-> wrappers (`npm run context-pack:*`) are still available in this repo.
+> **Naming convention**: Use `chorus agent-context ...` commands. Legacy npm
+> wrappers (`npm run agent-context:*`) are still available in this repo.
 
 ## End-to-End Understanding Shortcut
 When asked to understand this repository end-to-end:
@@ -30,16 +30,16 @@ When asked to understand this repository end-to-end:
 Run:
 
 ```bash
-chorus context-pack init
+chorus agent-context init
 # ...fill details...
-chorus context-pack seal
+chorus agent-context seal
 ```
 
 ## Main Push Context Sync
 Install hook once:
 
 ```bash
-chorus context-pack install-hooks
+chorus agent-context install-hooks
 ```
 
 The pre-push hook prints an advisory warning when a push targets `main` and changes context-relevant files. It never auto-builds or blocks the push.

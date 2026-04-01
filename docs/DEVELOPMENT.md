@@ -15,10 +15,10 @@ The repo supports a context pack for agent onboarding:
 
 ```bash
 # Build/update local context pack
-chorus context-pack build
+chorus agent-context build
 
 # Install pre-push hook that syncs pack on main pushes when needed
-chorus context-pack install-hooks
+chorus agent-context install-hooks
 ```
 
 The active pack (`.agent-context/current/`) is tracked in git. Recovery snapshots (`.agent-context/snapshots/`) and build history are git-ignored and stay local.
@@ -122,4 +122,4 @@ npm uninstall puppeteer
 
 - Contribution process: [`CONTRIBUTING.md`](../CONTRIBUTING.md)
 - Protocol contract: [`PROTOCOL.md`](../PROTOCOL.md)
-- Context pack details: [`CONTEXT_PACK.md`](../CONTEXT_PACK.md)
+- Context pack details: [`AGENT_CONTEXT.md`](../AGENT_CONTEXT.md)

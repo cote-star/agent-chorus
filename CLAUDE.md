@@ -14,8 +14,8 @@ For architecture questions, also read `10_SYSTEM_OVERVIEW.md`. For test/deploy q
 
 # Claude Code Instructions
 
-> **Naming convention**: Use `chorus context-pack ...` commands. Legacy npm
-> wrappers (`npm run context-pack:*`) are still available in this repo.
+> **Naming convention**: Use `chorus agent-context ...` commands. Legacy npm
+> wrappers (`npm run agent-context:*`) are still available in this repo.
 
 ## Context Pack
 
@@ -30,15 +30,15 @@ When asked to understand this repository (or any "what does this repo do?" inten
 If the context pack is missing, run:
 
 ```bash
-chorus context-pack init
+chorus agent-context init
 # ...fill in template sections...
-chorus context-pack seal
+chorus agent-context seal
 ```
 
 If the context pack is stale (already initialized), run:
 
 ```bash
-chorus context-pack seal
+chorus agent-context seal
 ```
 
 ## Context Pack Maintenance
@@ -48,7 +48,7 @@ needs updating. If the changes affect architecture, commands, behavioral
 invariants, or the code map, run:
 
 ```bash
-chorus context-pack seal
+chorus agent-context seal
 ```
 
 Skip for typo-only, comment-only, or test-only changes.

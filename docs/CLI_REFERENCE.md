@@ -14,9 +14,9 @@ chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<p
 chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
 chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
-chorus setup [--cwd=<path>] [--dry-run] [--force] [--context-pack] [--json]
+chorus setup [--cwd=<path>] [--dry-run] [--force] [--agent-context] [--json]
 chorus doctor [--cwd=<path>] [--json]
-chorus context-pack <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [...]
+chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [...]
 chorus teardown [--cwd=<path>] [--dry-run] [--global] [--json]
 ```
 
@@ -125,31 +125,31 @@ chorus report --handoff ./handoff_packet.json --json
 
 ```bash
 # Scaffold template files for agent-driven content
-chorus context-pack init
+chorus agent-context init
 
 # Validate and lock the pack after agents fill in content
-chorus context-pack seal
+chorus agent-context seal
 
 # Verify manifest checksums against actual file content
-chorus context-pack verify
+chorus agent-context verify
 
 # Build or refresh context pack files (backward-compatible wrapper)
-chorus context-pack build
+chorus agent-context build
 
 # Install pre-push hook to auto-sync context pack for main pushes
-chorus context-pack install-hooks
+chorus agent-context install-hooks
 
 # Restore latest local snapshot
-chorus context-pack rollback
+chorus agent-context rollback
 
 # Non-blocking warning check for stale pack updates
-chorus context-pack check-freshness --base origin/main
+chorus agent-context check-freshness --base origin/main
 ```
 
-You can also bootstrap context-pack from setup:
+You can also bootstrap agent-context from setup:
 
 ```bash
-chorus setup --context-pack
+chorus setup --agent-context
 ```
 
 ## Common Recipes
@@ -163,9 +163,9 @@ chorus search "processPayment" --agent codex --cwd . --json
 chorus compare --source codex --source claude --json
 
 # Cold-start onboarding: build a compact index before deeper reads
-chorus setup --context-pack
-chorus context-pack build
-chorus context-pack check-freshness --base origin/main
+chorus setup --agent-context
+chorus agent-context build
+chorus agent-context check-freshness --base origin/main
 
 # Track session evolution: compare two sessions from the same agent
 chorus diff --agent codex --from session-v1 --to session-v2 --json
@@ -214,7 +214,7 @@ chorus diff --agent claude --from fix-auth --to fix-auth-v2 --last 5 --json
 
 ## Relevance Introspection
 
-Inspect and test the context-pack filtering patterns that control which files are considered relevant.
+Inspect and test the agent-context filtering patterns that control which files are considered relevant.
 
 ```bash
 # Show current include/exclude patterns and their source
@@ -280,7 +280,7 @@ chorus setup --dry-run --json
 chorus setup --force
 
 # Also initialize context pack and install pre-push hook
-chorus setup --context-pack
+chorus setup --agent-context
 ```
 
 Setup performs these operations:
@@ -383,7 +383,7 @@ Teardown performs these operations:
     { "type": "directory", "path": ".agent-chorus", "status": "deleted", "note": "Removed scaffolding directory" },
     { "type": "gitignore", "path": ".gitignore", "status": "updated", "note": "Removed .agent-chorus/ from .gitignore" },
     { "type": "hook", "path": ".git/hooks/pre-push", "status": "unchanged", "note": "No hook sentinel found" },
-    { "type": "context-pack", "path": ".agent-context", "status": "preserved", "note": "Contains project data; not removed by teardown" }
+    { "type": "agent-context", "path": ".agent-context", "status": "preserved", "note": "Contains project data; not removed by teardown" }
   ],
   "warnings": [],
   "changed": 3
