@@ -28,11 +28,11 @@ jobs:
 
       - name: Validate context-pack script syntax
         run: |
-          node --check scripts/context_pack/build.cjs
-          node --check scripts/context_pack/sync_main.cjs
-          node --check scripts/context_pack/rollback.cjs
-          node --check scripts/context_pack/install_hooks.cjs
-          node --check scripts/context_pack/check_freshness.cjs
+          node --check scripts/agent_context/build.cjs
+          node --check scripts/agent_context/sync_main.cjs
+          node --check scripts/agent_context/rollback.cjs
+          node --check scripts/agent_context/install_hooks.cjs
+          node --check scripts/agent_context/check_freshness.cjs
 
       - name: Build Rust CLI
         run: cargo check --manifest-path cli/Cargo.toml
@@ -53,4 +53,4 @@ jobs:
         run: bash scripts/validate_schemas.sh
 
       - name: Check context pack freshness
-        run: bash scripts/context_pack/check_freshness.sh
+        run: bash scripts/agent_context/check_freshness.sh

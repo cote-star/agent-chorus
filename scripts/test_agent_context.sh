@@ -34,9 +34,9 @@ make_repo() {
   git -C "$dir" commit --allow-empty -m "init" -q
 }
 
-run_node_init() { node "$ROOT/scripts/context_pack/init.cjs" --cwd "$1" --force; }
+run_node_init() { node "$ROOT/scripts/agent_context/init.cjs" --cwd "$1" --force; }
 run_rust_init() { "$CHORUS_BIN" context-pack init --cwd "$1" --force; }
-run_node_seal() { node "$ROOT/scripts/context_pack/seal.cjs" --cwd "$1" --force; }
+run_node_seal() { node "$ROOT/scripts/agent_context/seal.cjs" --cwd "$1" --force; }
 run_rust_seal() { "$CHORUS_BIN" context-pack seal --cwd "$1" --force; }
 
 # Extract managed block content between markers (strips markers themselves)

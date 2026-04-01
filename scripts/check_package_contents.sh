@@ -18,8 +18,8 @@ const files = new Set((parsed?.[0]?.files ?? []).map((entry) => entry.path));
 const requiredPaths = [
   'scripts/read_session.cjs',
   'scripts/adapters/registry.cjs',
-  'scripts/context_pack/build.cjs',
-  'scripts/context_pack/install_hooks.cjs',
+  'scripts/agent_context/build.cjs',
+  'scripts/agent_context/install_hooks.cjs',
   'docs/architecture.svg',
   'README.md',
   'PROTOCOL.md',

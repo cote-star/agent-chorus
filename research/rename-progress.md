@@ -8,7 +8,7 @@
 
 | Phase | Description | Status | Notes |
 |---|---|---|---|
-| 1 | Deprecation alias (non-breaking) | NOT STARTED | |
+| 1 | Deprecation alias (non-breaking) | DONE | 9/9 conformance, both impls warn |
 | 2 | Internal rename (Rust + Node) | NOT STARTED | |
 | 3 | Documentation | NOT STARTED | |
 | 4 | Re-seal own context pack | NOT STARTED | |
@@ -24,11 +24,11 @@
 
 ## Phase 1 — Deprecation alias
 
-- [ ] Rust: add `agent-context` as primary, `context-pack` as hidden alias with warning
-- [ ] Node: add `agent-context` routing, warn on old name
-- [ ] Tests: new name works, old name warns
-- [ ] CLI_REFERENCE.md: show new name, note deprecation
-- [ ] Conformance: both implementations same deprecation message
+- [x] Rust: add `agent-context` as primary, `context-pack` as hidden alias with warning
+- [x] Node: add `agent-context` routing, warn on old name
+- [x] Tests: new name works, old name warns
+- [ ] CLI_REFERENCE.md: show new name, note deprecation (moved to Phase 3)
+- [x] Conformance: both implementations same deprecation message (9/9 pass)
 
 ## Phase 2 — Internal rename
 
@@ -82,3 +82,4 @@
 | Date | Phase | What happened |
 |---|---|---|
 | 2026-04-01 | — | Plan created, branch created, tracking started |
+| 2026-04-01 | 1 | DONE — Rust + Node alias, deprecation warning, 9/9 conformance |

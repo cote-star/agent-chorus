@@ -134,15 +134,15 @@ pub fn run_teardown(cwd: &str, dry_run: bool, global: bool) -> Result<TeardownRe
     }));
 
     // 5. Warn about .agent-context/ (never auto-delete)
-    let context_pack_dir = cwd_path.join(".agent-context");
-    if context_pack_dir.exists() {
+    let agent_context_dir = cwd_path.join(".agent-context");
+    if agent_context_dir.exists() {
         warnings.push(format!(
             "Context pack at {} preserved (contains project data). Remove manually if desired.",
-            context_pack_dir.display()
+            agent_context_dir.display()
         ));
         operations.push(json!({
             "type": "context-pack",
-            "path": context_pack_dir.to_string_lossy(),
+            "path": agent_context_dir.to_string_lossy(),
             "status": "preserved",
             "note": "Contains project data; not removed by teardown",
         }));

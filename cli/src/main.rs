@@ -1,6 +1,6 @@
 mod adapters;
 mod agents;
-mod context_pack;
+mod agent_context;
 pub mod diff;
 pub mod messaging;
 pub mod relevance;
@@ -856,7 +856,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             changed_files,
             force_snapshot,
         } => {
-            context_pack::build(context_pack::BuildOptions {
+            agent_context::build(agent_context::BuildOptions {
                 reason,
                 base,
                 head,
@@ -871,7 +871,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             remote_ref,
             remote_sha,
         } => {
-            context_pack::sync_main(
+            agent_context::sync_main(
                 &local_ref,
                 &local_sha,
                 &remote_ref,
@@ -880,18 +880,18 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
         }
         ContextPackCommand::InstallHooks { cwd, dry_run } => {
             let target_cwd = effective_cwd(cwd);
-            context_pack::install_hooks(&target_cwd, dry_run)?;
+            agent_context::install_hooks(&target_cwd, dry_run)?;
         }
         ContextPackCommand::Rollback { snapshot, pack_dir } => {
-            context_pack::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
+            agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
         }
         ContextPackCommand::Verify { pack_dir, cwd } => {
             let target_cwd = effective_cwd(cwd);
-            context_pack::verify(pack_dir.as_deref(), &target_cwd)?;
+            agent_context::verify(pack_dir.as_deref(), &target_cwd)?;
         }
         ContextPackCommand::CheckFreshness { base, cwd } => {
             let target_cwd = effective_cwd(cwd);
-            context_pack::check_freshness(
+            agent_context::check_freshness(
                 base.as_deref().unwrap_or("origin/main"),
                 &target_cwd,
             )?;
@@ -901,7 +901,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             cwd,
             force,
         } => {
-            context_pack::init(context_pack::InitOptions {
+            agent_context::init(agent_context::InitOptions {
                 pack_dir,
                 cwd,
                 force,
@@ -916,7 +916,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             force,
             force_snapshot,
         } => {
-            context_pack::seal(context_pack::SealOptions {
+            agent_context::seal(agent_context::SealOptions {
                 reason,
                 base,
                 head,

@@ -333,13 +333,13 @@ function runInternalNodeScript(scriptRelPath, scriptArgs, options = {}) {
 
 function runContextPackSubcommand(subcommand, subArgs, options = {}) {
   const scriptBySubcommand = {
-    build: 'context_pack/build.cjs',
-    init: 'context_pack/init.cjs',
-    seal: 'context_pack/seal.cjs',
-    'sync-main': 'context_pack/sync_main.cjs',
-    rollback: 'context_pack/rollback.cjs',
-    'install-hooks': 'context_pack/install_hooks.cjs',
-    'check-freshness': 'context_pack/check_freshness.cjs',
+    build: 'agent_context/build.cjs',
+    init: 'agent_context/init.cjs',
+    seal: 'agent_context/seal.cjs',
+    'sync-main': 'agent_context/sync_main.cjs',
+    rollback: 'agent_context/rollback.cjs',
+    'install-hooks': 'agent_context/install_hooks.cjs',
+    'check-freshness': 'agent_context/check_freshness.cjs',
   };
 
   const scriptRelPath = scriptBySubcommand[subcommand];
@@ -2498,7 +2498,7 @@ function runRelevance(inputArgs) {
   const suggestMode = hasFlag(inputArgs, '--suggest');
   const testPath = getOptionValue(inputArgs, '--test', null);
 
-  const { listPatterns, testFile, suggestPatterns } = require('./context_pack/relevance.cjs');
+  const { listPatterns, testFile, suggestPatterns } = require('./agent_context/relevance.cjs');
 
   if (testPath) {
     const result = testFile(cwd, testPath);

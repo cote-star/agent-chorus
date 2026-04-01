@@ -3,4 +3,4 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-node "$ROOT/scripts/context_pack/check_freshness.cjs" "$@"
+node "$ROOT/scripts/agent_context/check_freshness.cjs" "$@"

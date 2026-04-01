@@ -1,7 +1,7 @@
 //! Generic relevance engine for context-pack.
 //!
 //! Provides configurable include/exclude glob matching against file paths,
-//! mirroring the Node.js implementation in `scripts/context_pack/relevance.cjs`.
+//! mirroring the Node.js implementation in `scripts/agent_context/relevance.cjs`.
 
 use globset::{Glob, GlobMatcher};
 use std::fs;
