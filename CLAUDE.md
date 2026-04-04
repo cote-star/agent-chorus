@@ -116,6 +116,34 @@ This must never be triggered by similar phrases, paraphrases, or partial matches
 chorus trash-talk --cwd <project-path>
 ```
 
+## Session Handoff Protocol
+
+**At standup (first action):** check for messages left by other agents:
+
+```bash
+chorus messages --agent claude --cwd <project-path> --clear --json
+```
+
+If messages are empty and the previous session may have been interrupted, also check:
+
+```bash
+cat "<project-path>/.agent-chorus/CHECKPOINT.md" 2>/dev/null || echo "No checkpoint."
+```
+
+**At conclude (last action):** leave a handoff message for each other agent:
+
+```bash
+chorus send --from claude --to codex  --message "Session ended. Open threads: [list]. Next focus: [one line]." --cwd <project-path>
+chorus send --from claude --to gemini --message "Session ended. Open threads: [list]. Next focus: [one line]." --cwd <project-path>
+```
+
+For interruption resilience, install `scripts/hooks/chorus-session-end.sh` as a `SessionEnd`
+hook in `~/.claude/settings.json` — it fires automatically on any exit, even without conclude.
+
+**Gemini fallback:** `chorus read --agent gemini` returns `NOT_FOUND` when Gemini stores
+sessions as protobuf rather than JSONL. Fall back to reading the project's session-log mirror
+directory. See `docs/session-handoff-guide.md` for details and workarounds.
+
 ## Output Quality Bar
 
 Every cross-agent claim should include:
