@@ -1,8 +1,8 @@
-# Agent Context Packs — Team Presentation
+# Agent Context — Team Presentation
 
 **Duration:** 15 minutes
 **Audience:** Engineering team
-**Goal:** Explain what context packs are, show the evidence, get adoption
+**Goal:** Explain what agent context is, show the evidence, get adoption
 
 ---
 
@@ -35,7 +35,7 @@ When you ask Claude or Codex to work on a 500+ file repo:
   search_scope.json          ← "Search HERE, not THERE"
 ```
 
-Plus 2-3 sentences in `CLAUDE.md` / `AGENTS.md` pointing agents to the pack.
+Plus 2-3 imperative sentences in `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` pointing agents to the pack.
 
 **One-time setup. Auto-maintained on agent PRs.**
 
@@ -56,13 +56,13 @@ trust-stream-frontend (React/TS, 1,982 files)
   Claude:  50% → 100%   Codex:  50% → 75%
 ```
 
-**Context packs cut incorrect answers in half.**
+**Agent context cuts incorrect answers in half.**
 
 ---
 
 ## Slide 4: The Evidence — Efficiency (2 min)
 
-**Claude with context pack (averages across all repos):**
+**Claude with agent context (averages across all repos):**
 
 | Metric | Bare | Structured | Change |
 |--------|------|-----------|--------|
@@ -89,7 +89,7 @@ Examples prevented:
 - Missing `setup.tsx` store reset → flaky test suite
 - Using Apollo (deprecated) instead of React Query
 
-**Context packs eliminated every production-risk answer.**
+**Agent context eliminated every production-risk answer.**
 
 ---
 
@@ -106,6 +106,8 @@ Reads the pack → still greps the repo → but now knows WHAT to look for and W
 - JSON contracts → Claude trusts them as authoritative
 - Search scopes → Codex uses them to focus exploration
 
+**Key insight from Codex experiments (P13):** Don't prescribe when to stop — bound where to search. `search_directories` and `exclude_from_search` work; `stop_after` rules are ignored.
+
 ---
 
 ## Slide 7: The Headline Story (1 min)
@@ -118,58 +120,66 @@ Both agents in **structured** mode found it — because the behavioral invariant
 
 > "Zustand store schema change → `src/__tests__/setup.tsx` (store reset). Silent failure if missed — tests pass individually but fail in suite."
 
-**That one line in the context pack prevents a week of debugging flaky tests.**
+**That one line in the agent context prevents a week of debugging flaky tests.**
 
 ---
 
 ## Slide 8: How to Get It (2 min)
 
-```bash
-# Install (one time)
-npm install -g agent-chorus
+**Self-contained — no external CLI needed.**
 
-# Create the pack (15 min for a ~2K file repo)
-cd your-repo
-chorus context-pack init --force
-# Ask your agent to fill the templates
-chorus context-pack seal
-git add .agent-context/ CLAUDE.md AGENTS.md
-git commit -m "feat: add agent context pack"
+Install the `agent-context` skill from team_skills:
+
+```bash
+npx skills add Edelman-DxI/team_skills --skill agent-context --agent cursor claude-code codex
 ```
 
-**Or use the skill:**
+Then open a session in your repo and say:
+
 > "Create a context pack for this repo"
 
-The agent reads the repo, fills all 9 files, self-tests, and commits.
+The agent reads the repo, fills all 9 files, validates, self-tests, and commits. Takes ~10-15 minutes for a large repo.
 
 **Maintenance is automatic:**
 - Agent PRs include `.agent-context` updates as a separate commit
-- Pre-push hook warns about staleness
-- Manual catchup: "update the context pack"
+- Pre-push hook warns about staleness (advisory, never blocks)
+- Manual catchup: "update the context pack" — agent diffs and proposes per-section patches
+
+Full guide: `team_skills/skills/agent-context/references/getting-started.md`
 
 ---
 
 ## Slide 9: What's Next (1 min)
 
-- [ ] **Adopt on 2-3 team repos** (start with the ones agents use most)
-- [ ] **Context-pack skill in Claude Code** (trigger: "create context pack")
-- [ ] **Cursor integration** (`.cursorrules` routing to the pack)
-- [ ] **Auto-update on merge** (agent PRs include pack updates)
-- [ ] **Staleness CI check** (`chorus context-pack seal --verify` in CI)
+**Already done:**
+- [x] `agent-context` skill in team_skills (PR #10 merged)
+- [x] `.agent-context` created for stream-models (PR #392)
+- [x] `.agent-context` created for trust-stream-frontend
+- [x] 16 design principles (P1–P16) validated across 3 repo types
+- [x] Getting started guide for teammates
+- [x] Standardized naming: `.agent-context` everywhere (CLI, skill, directory)
 
-**The context pack is infrastructure for AI-assisted development.
+**Coming next:**
+- [ ] **Agent Context Map** — cross-repo routing layer (~500 tokens tells the agent which repos matter, how they connect, what cascades across repo boundaries)
+- [ ] **Adopt on 2-3 more team repos** (start with the ones agents use most)
+- [ ] **Cross-repo invariants** — "change X in stream-models → must update Y in trust-stream-frontend"
+- [ ] **Live demo** — end-to-end prompt registration on Databricks dev workspace
+
+**Agent context is infrastructure for AI-assisted development.
 The more repos have it, the better every agent works.**
 
 ---
 
 ## Appendix: Research Program
 
-- **6 experiment runs** across 3 repo types
+- **7 experiment runs** across 3 repo types (including P16 field test)
 - **78+ graded results** against ground truth
-- **15 design principles** derived from data
-- **3 layers** validated: content, authority, navigation
-- **1 template** — works for ML pipelines, CLI tools, React frontends
+- **16 design principles** derived from data (P1–P16)
+- **3 layers** validated: content (markdown), authority (JSON contracts), navigation (search scopes)
+- **1 template** — works for ML pipelines, CLI tools, React frontends with zero modifications
+- **Naming convention:** `.agent-context/` is the standard directory name across all repos
+- **CLI:** `chorus agent-context` (v0.10.0) — `context-pack` still works as deprecated alias
 
 Full research: `agent-chorus/research/`
-CLI: `npm install -g agent-chorus` (v0.9.0)
-Skill: `agent-chorus/skills/context-pack/SKILL.md`
+Skill: `team_skills/skills/agent-context/`
+Getting started: `team_skills/skills/agent-context/references/getting-started.md`
