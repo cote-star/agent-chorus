@@ -15,6 +15,15 @@ The `chorus context-pack` subcommand has been renamed to `chorus agent-context` 
 - The `.agent-context/` directory name is unchanged (it was already correct)
 - "Context pack" as a concept noun is unchanged in prose
 
+### Added — `chorus agent-context verify` with CI mode
+
+- `chorus agent-context verify` validates manifest checksums against actual file content (integrity check).
+- `chorus agent-context verify --ci` combines integrity and freshness checking for use in PR gates. Exits non-zero if the pack is stale or corrupt.
+- `--base` flag specifies the diff base for freshness detection (default: `origin/main`).
+- CI mode produces structured JSON output: `{ integrity, freshness, changed_files, pack_updated, exit_code }`.
+- CI workflow template available at `templates/ci-agent-context.yml`.
+- `manifest.json` now records provenance metadata (commit SHA and timestamp) used by the freshness check.
+
 ### Upgrade Notes
 - The old `chorus context-pack` subcommand will continue to work as an alias in a future compatibility release. For now, update scripts and automation to use `chorus agent-context`.
 

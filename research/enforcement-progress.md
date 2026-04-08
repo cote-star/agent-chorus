@@ -8,7 +8,7 @@
 
 | Phase | Description | Status | Notes |
 |---|---|---|---|
-| 1 | Agent-chorus engineering (A1-A8) | IN PROGRESS | A1-A5 done, A6-A8 remaining |
+| 1 | Agent-chorus engineering (A1-A8) | DONE | 11/11 conformance |
 | 2 | Agent-chorus docs + self-update (B+C) | NOT STARTED | depends on Phase 1 |
 | 3 | Team skills updates (D1-D4) | NOT STARTED | depends on Phase 1 |
 | 4 | Stream-models regen (E1-E6) | NOT STARTED | can start after Phase 1 |
@@ -24,9 +24,9 @@
 - [x] A3: CI mode flag (--ci) — exit code 0/1, JSON output
 - [x] A4: Semantic diff mapping — freshness via relevance patterns + changed file list
 - [x] A5: Manifest provenance in seal — removed chorus fields, retained base_sha/head_sha/build_reason
-- [ ] A6: Separate-commit detection
-- [ ] A7: CI template (GitHub Actions)
-- [ ] A8: Conformance tests
+- [x] A6: Separate-commit detection — optional job in CI template (commented out)
+- [x] A7: CI template — templates/ci-agent-context.yml with skip label, PR comments, concurrency
+- [x] A8: Conformance tests — 2 new verify tests (pass + tamper detection), 11/11 total
 
 ### Phase 2 — Agent-Chorus Docs + Self-Update
 
@@ -82,3 +82,4 @@
 |---|---|---|---|
 | 2026-04-08 | — | — | Plan created, progress tracker created |
 | 2026-04-08 | 1 | A1-A5 | verify subcommand enhanced (Rust+Node), CI mode, freshness, manifest cleaned. 9/9 conformance. |
+| 2026-04-08 | 1 | A6-A8 | CI template, separate-commit detection, verify conformance tests. 11/11 total. Phase 1 DONE. |

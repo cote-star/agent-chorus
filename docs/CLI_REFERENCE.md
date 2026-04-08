@@ -133,6 +133,12 @@ chorus agent-context seal
 # Verify manifest checksums against actual file content
 chorus agent-context verify
 
+# CI mode: combined integrity + freshness check (for PR gates)
+chorus agent-context verify --ci
+
+# CI mode with a custom diff base
+chorus agent-context verify --ci --base origin/develop
+
 # Build or refresh context pack files (backward-compatible wrapper)
 chorus agent-context build
 
@@ -151,6 +157,51 @@ You can also bootstrap agent-context from setup:
 ```bash
 chorus setup --agent-context
 ```
+
+## Context Pack Verification
+
+Verify the integrity and freshness of a context pack.
+
+```bash
+# Human-readable integrity check
+chorus agent-context verify
+
+# CI mode: combined integrity + freshness (exits non-zero if stale or corrupt)
+chorus agent-context verify --ci
+
+# Specify a custom diff base (default: origin/main)
+chorus agent-context verify --ci --base origin/develop
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--ci` | Combined integrity + freshness check with JSON output | off |
+| `--base` | Git ref to diff against for freshness detection | `origin/main` |
+| `--json` | Force JSON output (implied by `--ci`) | off |
+
+**JSON output (`--ci`):**
+
+```json
+{
+  "integrity": "pass",
+  "freshness": "stale",
+  "changed_files": ["src/main.rs", "PROTOCOL.md"],
+  "pack_updated": false,
+  "exit_code": 1
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `integrity` | `"pass"` / `"fail"` | Whether manifest checksums match file content |
+| `freshness` | `"fresh"` / `"stale"` | Whether context-relevant files changed since last seal |
+| `changed_files` | `string[]` | Context-relevant files modified relative to `--base` |
+| `pack_updated` | `boolean` | Whether `.agent-context/current/` was also modified |
+| `exit_code` | `number` | `0` if both checks pass, non-zero otherwise |
+
+A CI workflow template is available at `templates/ci-agent-context.yml`.
 
 ## Common Recipes
 

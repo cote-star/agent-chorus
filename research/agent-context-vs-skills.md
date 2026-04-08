@@ -38,7 +38,7 @@ Without agent context, teams create skills to compensate for missing repo knowle
 | "Don't use Apollo — it's deprecated" | Negative guidance | `30_BEHAVIORAL_INVARIANTS.md` Negative Guidance |
 | "Our CI pipeline runs these checks" | Operations | `40_OPERATIONS_AND_RELEASE.md` CI Checks |
 | "The architecture is X → Y → Z" | System overview | `10_SYSTEM_OVERVIEW.md` Runtime Architecture |
-| "When changing response formats, update the frontend" | Cross-repo invariant | `.agent-context-map/cross-repo-invariants.md` |
+| "When changing response formats, update the frontend" | Cross-repo invariant | `.agent-context-map/cross-repo-invariants.md` (planned; see design: `research/agent-context-map-design.md`) |
 
 **When agent context exists, these stray skills become redundant.** The knowledge lives where it's always visible (loaded every session) instead of needing explicit trigger.
 

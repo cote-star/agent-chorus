@@ -85,6 +85,47 @@ chorus relevance --test src/main.rs --cwd .  # Test if a file matches
 chorus relevance --suggest --cwd .           # Suggest patterns for this project
 ```
 
+## Enforcement
+
+### Verify subcommand
+
+```bash
+# Integrity check: validate manifest checksums against actual file content
+chorus agent-context verify
+
+# CI mode: combined integrity + freshness check for PR gates
+chorus agent-context verify --ci
+
+# Specify diff base (defaults to origin/main)
+chorus agent-context verify --ci --base origin/develop
+```
+
+A CI workflow template is available at `templates/ci-agent-context.yml`.
+
+### JSON output
+
+When run with `--ci`, the verify command produces structured JSON:
+
+```json
+{
+  "integrity": "pass",
+  "freshness": "stale",
+  "changed_files": ["src/main.rs", "PROTOCOL.md"],
+  "pack_updated": false,
+  "exit_code": 1
+}
+```
+
+- `integrity`: `"pass"` or `"fail"` — whether manifest checksums match file content.
+- `freshness`: `"fresh"` or `"stale"` — whether context-relevant files changed since the pack was last sealed.
+- `changed_files`: list of context-relevant files modified relative to `--base`.
+- `pack_updated`: whether `.agent-context/current/` was also modified in the diff.
+- `exit_code`: `0` if both integrity and freshness pass, non-zero otherwise.
+
+### Manifest provenance
+
+The `manifest.json` in `.agent-context/current/` records the commit SHA and timestamp of the last seal. The verify command uses this metadata to determine whether the pack is current relative to the diff base.
+
 ## Non-Goals
 - Context pack is not a source-of-truth replacement for behavior-critical edits.
 - Context pack does not write or mutate agent sessions.

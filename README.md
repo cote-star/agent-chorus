@@ -279,7 +279,8 @@ This works the same for private repositories: the pack is local-first and does n
 
 - `5` ordered docs + `manifest.json` (compact index, not a repo rewrite).
 - Deterministic read order: `00` -> `10` -> `20` -> `30` -> `40`.
-- Main-only smart sync: updates only when context-relevant files change.
+- Agent-maintained in the intended workflow; verify with `chorus agent-context verify`.
+- CI gate available: `chorus agent-context verify --ci` for PR freshness checks.
 - Local recovery snapshots with rollback support.
 
 ```bash

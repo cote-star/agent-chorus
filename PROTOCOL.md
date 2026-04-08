@@ -29,7 +29,7 @@ chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<p
 chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
 chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
-chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify>
+chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [--ci] [--base=<ref>] [--json]
 chorus teardown [--cwd=<path>] [--dry-run] [--global] [--json]
 ```
 
