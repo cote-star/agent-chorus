@@ -22,9 +22,9 @@
 - [x] A1: Verify subcommand (Rust) — CI mode + freshness + JSON output
 - [x] A2: Verify subcommand (Node) — parity with Rust
 - [x] A3: CI mode flag (--ci) — exit code 0/1, JSON output
-- [x] A4: Semantic diff mapping — freshness via relevance patterns + changed file list
+- [x] A4: Freshness detection — checks if pack was touched when code changed. NOTE: not full semantic mapping (which sections need updating) — that remains a future enhancement
 - [x] A5: Manifest provenance in seal — removed chorus fields, retained base_sha/head_sha/build_reason
-- [x] A6: Separate-commit detection — optional job in CI template (commented out)
+- [~] A6: Separate-commit detection — scaffolded as commented-out CI template job, not enforced
 - [x] A7: CI template — templates/ci-agent-context.yml with skip label, PR comments, concurrency
 - [x] A8: Conformance tests — 2 new verify tests (pass + tamper detection), 11/11 total
 

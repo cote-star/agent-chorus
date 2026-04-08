@@ -1,68 +1,66 @@
 {
-  "base_sha": null,
+  "schema_version": 1,
+  "generated_at": "2026-04-08T14:17:55.573Z",
+  "repo_name": "agent-chorus",
+  "repo_root": ".",
   "branch": "main",
+  "head_sha": "1487f29edadd2b286c3a4c3e8fa1facfaf6f4749",
   "build_reason": "manual-seal",
-  "bytes_total": 26143,
-  "cargo_version": "unknown",
+  "base_sha": null,
   "changed_files": [],
+  "files_count": 8,
+  "words_total": 3186,
+  "bytes_total": 27719,
+  "pack_checksum": "b011deb8ef63787d00777a4e18b35162e144e1387eae98b6e8a0dfbbc115dacf",
+  "stable_checksum": "04334794c96a358c260fb7e1e4720eccbee70a912e1725875f2f4108ae58c29e",
   "files": [
     {
-      "bytes": 3276,
       "path": "00_START_HERE.md",
-      "sha256": "f08de23a245fbaff81e5f2b881679ced6bda33059c8b887b6f233af7781e87d4",
+      "sha256": "8b0fa65f79367abf36d587fc9c1dbcd25c981c8f5dcc9ed7eb7a4c4f7e6a5f74",
+      "bytes": 3281,
       "words": 450
     },
     {
-      "bytes": 3438,
       "path": "10_SYSTEM_OVERVIEW.md",
-      "sha256": "881666621e0f09bb39c975183ceefe044c7c49724dfdf5c37e01ad844e4bd45c",
-      "words": 518
+      "sha256": "0b5baa40533e034ddc359151db5cc410e02b7d2e73497d3f2e308dbccd68f186",
+      "bytes": 3639,
+      "words": 535
     },
     {
-      "bytes": 4921,
       "path": "20_CODE_MAP.md",
-      "sha256": "19c0c9921fb6e07e2f671f9dc85ff60c012f201cbf200280ded5c7669b86637a",
-      "words": 675
+      "sha256": "ad9de47837070d3507072136b55d29bfdff5b8520974b05a7251d8b64fa7b8c6",
+      "bytes": 5243,
+      "words": 721
     },
     {
-      "bytes": 4827,
       "path": "30_BEHAVIORAL_INVARIANTS.md",
-      "sha256": "24c1622e71e55e1bb2194e8ae0f4b9d1a6ec21a741f43727b23a409928145673",
-      "words": 585
+      "sha256": "d80418acae69df5d5ebf9672876320b7abb3198502c97ab27d73eb8bbe46f8ab",
+      "bytes": 5095,
+      "words": 605
     },
     {
-      "bytes": 1647,
       "path": "40_OPERATIONS_AND_RELEASE.md",
-      "sha256": "8c16258842bb663b3f30860a4cd1d7e5596b19961d714f05c390b9f26cdb7cb9",
-      "words": 230
+      "sha256": "2500dd0526916c75d06a6978813e0bfd30a1bb71b7273c6aacd70cf1e23a0154",
+      "bytes": 1836,
+      "words": 251
     },
     {
-      "bytes": 1767,
       "path": "routes.json",
       "sha256": "13fc159adb1bd93ad22a9686a0141ddb965771c33c769214fb2536099c0b89f2",
+      "bytes": 1767,
       "words": 120
     },
     {
-      "bytes": 3480,
       "path": "completeness_contract.json",
-      "sha256": "b34e735d026220f5f8aaa32fb495ce432df7c52b193ee3aa48cfb181e6237e6b",
-      "words": 227
+      "sha256": "8de9020b1a121a79f84b74416bb30707f52492760f84e21a8877912b650acaeb",
+      "bytes": 4069,
+      "words": 250
     },
     {
-      "bytes": 2787,
       "path": "reporting_rules.json",
-      "sha256": "f124a40adde9628b0c91d7d3d3cdd1f45b5421b1d6ae2a7a67efec71a1166ef4",
+      "sha256": "a1a99bc9b7051265d6cfeaff9d462f92b5e6669f77550af261596e93cf22b6b1",
+      "bytes": 2789,
       "words": 254
     }
-  ],
-  "files_count": 8,
-  "generated_at": "2026-03-27T12:42:49Z",
-  "head_sha": "729dfeb19789bbb3bc8dc8100bb97bf0db7527d2",
-  "pack_checksum": "7ca0d5ff370459bd7a04426c518e898828e5b3233feac50346f33bf985d5c0c6",
-  "package_version": "unknown",
-  "repo_name": "agent-chorus",
-  "repo_root": ".",
-  "schema_version": 1,
-  "stable_checksum": "945d324c3052cff2cd7b6f2cb7ee3db346f3d4e1587a07dac7f9208ac511313a",
-  "words_total": 3059
+  ]
 }

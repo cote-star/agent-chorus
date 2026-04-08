@@ -201,10 +201,15 @@ function verify(packDir) {
 if (require.main === module) {
   const opts = parseArgs(process.argv);
 
+  // Resolve packDir relative to cwd when it's the default
+  const resolvedPackDir = path.isAbsolute(opts.packDir)
+    ? opts.packDir
+    : path.resolve(opts.cwd, opts.packDir);
+
   if (opts.ci) {
     // CI mode: JSON output combining integrity + freshness
     try {
-      const integrity = verifyIntegrity(opts.packDir, true);
+      const integrity = verifyIntegrity(resolvedPackDir, true);
       const freshness = checkFreshness(opts.base, opts.cwd);
 
       const integrityStatus = integrity.pass ? 'pass' : 'fail';
@@ -236,7 +241,7 @@ if (require.main === module) {
   } else {
     // Human-readable mode: integrity + freshness info
     try {
-      verify(opts.packDir);
+      verify(resolvedPackDir);
     } catch (err) {
       console.error(err.message);
       process.exit(1);
