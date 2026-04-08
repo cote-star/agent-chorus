@@ -209,6 +209,8 @@ A context pack is ready when:
 - 00_START_HERE.md read order says **"MANDATORY before starting work"** and **"Do NOT open repo source files until steps 1-3"**
 - AGENTS.md routing includes search_scope.json reference with "Search ONLY within scoped directories"
 - Routing blocks are under 200 tokens each
+- `chorus agent-context verify` passes (integrity check)
+- CI gate recommended: `chorus agent-context verify --ci` in PR checks (see `templates/ci-agent-context.yml`)
 
 ## What NOT to do
 

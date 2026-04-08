@@ -178,10 +178,11 @@ Then open a session in your repo and say:
 
 The agent reads the repo, fills all 9 files, validates, self-tests, and commits. Takes ~10-15 minutes for a large repo.
 
-**Maintenance is automatic:**
+**Agents keep it fresh:**
 - Agent PRs include `.agent-context` updates as a separate commit
+- `chorus agent-context verify --ci` as a PR gate — fails if code changed but pack wasn't updated
 - Pre-push hook warns about staleness (advisory, never blocks)
-- Manual catchup: "update the context pack" — agent diffs and proposes per-section patches
+- After human-only work: "update the context pack" — agent diffs and proposes per-section patches
 
 Full guide: `team_skills/skills/agent-context/references/getting-started.md`
 
@@ -196,6 +197,8 @@ Full guide: `team_skills/skills/agent-context/references/getting-started.md`
 - [x] 16 design principles (P1–P16) validated across 3 repo types
 - [x] Getting started guide for teammates
 - [x] Standardized naming: `.agent-context` everywhere (CLI, skill, directory)
+- [x] `chorus agent-context verify --ci` for PR enforcement gates
+- [x] CI template for teams to copy (`templates/ci-agent-context.yml`)
 
 **Coming next:**
 - [ ] **Agent Context Map** — cross-repo routing layer (~500 tokens tells the agent which repos matter, how they connect, what cascades across repo boundaries)
