@@ -68,6 +68,69 @@ struct ManifestBundle {
     pack_checksum: String,
 }
 
+pub struct VerifyOptions {
+    pub pack_dir: Option<String>,
+    pub cwd: String,
+    pub ci: bool,
+    pub base: Option<String>,
+}
+
+/// Result of running the freshness check as a reusable helper.
+struct FreshnessResult {
+    /// "pass", "warn", or "skip"
+    status: String,
+    /// Context-relevant files that changed
+    changed_files: Vec<String>,
+    /// Whether .agent-context/current/ was touched in the diff
+    pack_updated: bool,
+}
+
+fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
+    let changed_files_raw = {
+        let with_base = run_git(&["diff", "--name-only", &format!("{base}...HEAD")], cwd, true)?;
+        if with_base.is_empty() {
+            run_git(&["diff", "--name-only", "HEAD~1"], cwd, true)?
+        } else {
+            with_base
+        }
+    };
+
+    let mut pack_touched = false;
+    let mut relevant = Vec::new();
+
+    for file_path in changed_files_raw.lines().map(|line| line.trim()).filter(|line| !line.is_empty()) {
+        if file_path.starts_with(".agent-context/current/") {
+            pack_touched = true;
+            continue;
+        }
+        if is_context_relevant(file_path) {
+            relevant.push(file_path.to_string());
+        }
+    }
+
+    if relevant.is_empty() {
+        return Ok(FreshnessResult {
+            status: "pass".to_string(),
+            changed_files: Vec::new(),
+            pack_updated: pack_touched,
+        });
+    }
+
+    if pack_touched {
+        return Ok(FreshnessResult {
+            status: "pass".to_string(),
+            changed_files: relevant,
+            pack_updated: true,
+        });
+    }
+
+    Ok(FreshnessResult {
+        status: "warn".to_string(),
+        changed_files: relevant,
+        pack_updated: false,
+    })
+}
+
 pub fn build(options: BuildOptions) -> Result<()> {
     // Wrapper: route to init or seal based on current pack state.
     let cwd = env::current_dir().context("Failed to resolve current directory")?;
@@ -389,8 +452,6 @@ pub fn seal(options: SealOptions) -> Result<()> {
         &repo_name,
         branch.trim(),
         head_sha.as_deref(),
-        "unknown",
-        "unknown",
         &reason,
         options.base.as_deref(),
         &Vec::new(),
@@ -668,16 +729,27 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-pub fn verify(pack_dir: Option<&str>, cwd: &str) -> Result<()> {
-    let cwd_path = PathBuf::from(cwd);
+pub fn verify(options: VerifyOptions) -> Result<()> {
+    let cwd_path = PathBuf::from(&options.cwd);
     let repo_root = git_repo_root(&cwd_path).unwrap_or_else(|_| cwd_path.clone());
-    let pack_root = resolve_pack_root(&repo_root, pack_dir);
+    let pack_root = resolve_pack_root(&repo_root, options.pack_dir.as_deref());
     let current_dir = pack_root.join("current");
     let manifest_path = current_dir.join("manifest.json");
 
     if !manifest_path.exists() {
+        if options.ci {
+            let result = json!({
+                "integrity": "fail",
+                "freshness": "skip",
+                "changed_files": [],
+                "pack_updated": false,
+                "exit_code": 1
+            });
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(1);
+        }
         return Err(anyhow!(
-            "[context-pack] verify failed: manifest.json not found at {}",
+            "[agent-context] verify failed: manifest.json not found at {}",
             manifest_path.display()
         ));
     }
@@ -689,7 +761,18 @@ pub fn verify(pack_dir: Option<&str>, cwd: &str) -> Result<()> {
 
     let files = manifest.get("files").and_then(|f| f.as_array());
     if files.is_none() {
-        return Err(anyhow!("[context-pack] verify failed: manifest has no 'files' array"));
+        if options.ci {
+            let result = json!({
+                "integrity": "fail",
+                "freshness": "skip",
+                "changed_files": [],
+                "pack_updated": false,
+                "exit_code": 1
+            });
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            std::process::exit(1);
+        }
+        return Err(anyhow!("[agent-context] verify failed: manifest has no 'files' array"));
     }
 
     let mut pass_count = 0usize;
@@ -701,7 +784,9 @@ pub fn verify(pack_dir: Option<&str>, cwd: &str) -> Result<()> {
         let actual_path = current_dir.join(file_path_str);
 
         if !actual_path.exists() {
-            eprintln!("  FAIL  {}  (file missing)", file_path_str);
+            if !options.ci {
+                eprintln!("  FAIL  {}  (file missing)", file_path_str);
+            }
             fail_count += 1;
             continue;
         }
@@ -711,10 +796,14 @@ pub fn verify(pack_dir: Option<&str>, cwd: &str) -> Result<()> {
         let actual_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
 
         if actual_hash == expected_hash {
-            println!("  PASS  {}", file_path_str);
+            if !options.ci {
+                println!("  PASS  {}", file_path_str);
+            }
             pass_count += 1;
         } else {
-            eprintln!("  FAIL  {}  (checksum mismatch)", file_path_str);
+            if !options.ci {
+                eprintln!("  FAIL  {}  (checksum mismatch)", file_path_str);
+            }
             fail_count += 1;
         }
     }
@@ -733,69 +822,127 @@ pub fn verify(pack_dir: Option<&str>, cwd: &str) -> Result<()> {
         use sha2::{Digest, Sha256};
         let actual_pack_checksum = format!("{:x}", Sha256::digest(combined.as_bytes()));
         if actual_pack_checksum == expected_pack_checksum {
-            println!("  PASS  pack_checksum");
+            if !options.ci {
+                println!("  PASS  pack_checksum");
+            }
             pass_count += 1;
         } else {
-            eprintln!("  FAIL  pack_checksum (mismatch)");
+            if !options.ci {
+                eprintln!("  FAIL  pack_checksum (mismatch)");
+            }
             fail_count += 1;
         }
     }
 
+    let integrity_passed = fail_count == 0;
+    let integrity_status = if integrity_passed { "pass" } else { "fail" };
+
+    // Run freshness check
+    let base_ref = options.base.as_deref().unwrap_or("origin/main");
+    let freshness = if options.ci || options.base.is_some() {
+        match check_freshness_inner(base_ref, &cwd_path) {
+            Ok(result) => result,
+            Err(_) => FreshnessResult {
+                status: "skip".to_string(),
+                changed_files: Vec::new(),
+                pack_updated: false,
+            },
+        }
+    } else {
+        // When not in CI and no base specified, attempt freshness but treat errors as skip
+        match check_freshness_inner(base_ref, &cwd_path) {
+            Ok(result) => result,
+            Err(_) => FreshnessResult {
+                status: "skip".to_string(),
+                changed_files: Vec::new(),
+                pack_updated: false,
+            },
+        }
+    };
+
+    if options.ci {
+        let exit_code = if !integrity_passed || freshness.status == "warn" { 1 } else { 0 };
+        let result = json!({
+            "integrity": integrity_status,
+            "freshness": freshness.status,
+            "changed_files": freshness.changed_files,
+            "pack_updated": freshness.pack_updated,
+            "exit_code": exit_code
+        });
+        println!("{}", serde_json::to_string_pretty(&result)?);
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+        return Ok(());
+    }
+
+    // Human-readable output
     let total = pass_count + fail_count;
     println!("\n  Results: {pass_count}/{total} passed");
 
-    if fail_count > 0 {
-        Err(anyhow!("[context-pack] verify failed: {} file(s) did not match", fail_count))
+    if !integrity_passed {
+        eprintln!("[agent-context] verify: {} file(s) did not match", fail_count);
     } else {
         println!("  Context pack integrity verified.");
+    }
+
+    // Show freshness info in human-readable mode
+    match freshness.status.as_str() {
+        "pass" => {
+            if freshness.changed_files.is_empty() {
+                println!("  Freshness: PASS (no context-relevant files changed)");
+            } else {
+                println!("  Freshness: PASS (agent-context was updated)");
+            }
+        }
+        "warn" => {
+            println!(
+                "  Freshness: WARNING — {} context-relevant file(s) changed but .agent-context/current/ was not updated:",
+                freshness.changed_files.len()
+            );
+            for f in &freshness.changed_files {
+                println!("    - {}", f);
+            }
+            println!("  Consider running: chorus agent-context build");
+        }
+        _ => {
+            println!("  Freshness: skipped (no git history available)");
+        }
+    }
+
+    if !integrity_passed {
+        Err(anyhow!("[agent-context] verify failed: {} file(s) did not match", fail_count))
+    } else {
         Ok(())
     }
 }
 
 pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
     let cwd_path = PathBuf::from(cwd);
+    let result = check_freshness_inner(base, &cwd_path)?;
 
-    let changed_files = {
-        let with_base = run_git(&["diff", "--name-only", &format!("{base}...HEAD")], &cwd_path, true)?;
-        if with_base.is_empty() {
-            run_git(&["diff", "--name-only", "HEAD~1"], &cwd_path, true)?
-        } else {
-            with_base
+    match result.status.as_str() {
+        "pass" => {
+            if result.changed_files.is_empty() {
+                println!("PASS agent-context-freshness (no context-relevant files changed)");
+            } else {
+                println!("PASS agent-context-freshness (agent-context was updated)");
+            }
         }
-    };
-
-    let mut pack_touched = false;
-    let mut relevant = Vec::new();
-
-    for file_path in changed_files.lines().map(|line| line.trim()).filter(|line| !line.is_empty()) {
-        if file_path.starts_with(".agent-context/current/") {
-            pack_touched = true;
-            continue;
+        "warn" => {
+            println!(
+                "WARNING: {} context-relevant file(s) changed but .agent-context/current/ was not updated:",
+                result.changed_files.len()
+            );
+            for file_path in &result.changed_files {
+                println!("  - {}", file_path);
+            }
+            println!();
+            println!("Consider running: chorus agent-context build");
         }
-        if is_context_relevant(file_path) {
-            relevant.push(file_path.to_string());
-        }
+        _ => {}
     }
 
-    if relevant.is_empty() {
-        println!("PASS context-pack-freshness (no context-relevant files changed)");
-        return Ok(());
-    }
-
-    if pack_touched {
-        println!("PASS context-pack-freshness (context pack was updated)");
-        return Ok(());
-    }
-
-    println!(
-        "WARNING: {} context-relevant file(s) changed but .agent-context/current/ was not updated:",
-        relevant.len()
-    );
-    for file_path in relevant {
-        println!("  - {}", file_path);
-    }
-    println!();
-    println!("Consider running: chorus context-pack build");
     Ok(())
 }
 
@@ -989,8 +1136,6 @@ fn build_manifest(
     repo_name: &str,
     branch: &str,
     head_sha: Option<&str>,
-    package_version: &str,
-    cargo_version: &str,
     reason: &str,
     base_sha: Option<&str>,
     changed_files: &[String],
@@ -1033,8 +1178,6 @@ fn build_manifest(
         "repo_root": ".",
         "branch": branch,
         "head_sha": head_sha,
-        "package_version": package_version,
-        "cargo_version": cargo_version,
         "build_reason": reason,
         "base_sha": base_sha,
         "changed_files": changed_files,

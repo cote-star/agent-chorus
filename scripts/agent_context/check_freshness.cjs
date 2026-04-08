@@ -80,12 +80,12 @@ function main() {
   }
 
   if (relevant.length === 0) {
-    process.stdout.write('PASS context-pack-freshness (no context-relevant files changed)\n');
+    process.stdout.write('PASS agent-context-freshness (no context-relevant files changed)\n');
     return;
   }
 
   if (packTouched) {
-    process.stdout.write('PASS context-pack-freshness (context pack was updated)\n');
+    process.stdout.write('PASS agent-context-freshness (agent-context was updated)\n');
     return;
   }
 
@@ -97,7 +97,7 @@ function main() {
   }
   process.stdout.write('\n');
   process.stdout.write(
-    'Consider: update pack content with your agent, then run chorus context-pack seal\n'
+    'Consider: update pack content with your agent, then run chorus agent-context seal\n'
   );
 }
 

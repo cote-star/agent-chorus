@@ -363,8 +363,6 @@ function buildManifest({
       repo_root: '.',
       branch,
       head_sha: headSha || null,
-      package_version: 'unknown',
-      cargo_version: 'unknown',
       build_reason: reason,
       base_sha: baseSha || null,
       changed_files: [],

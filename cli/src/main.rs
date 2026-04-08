@@ -350,6 +350,14 @@ enum ContextPackCommand {
         /// Working directory (default: current directory)
         #[arg(long)]
         cwd: Option<String>,
+
+        /// CI mode: output JSON with integrity + freshness results, exit 1 on failure
+        #[arg(long)]
+        ci: bool,
+
+        /// Base ref for freshness check (default: origin/main)
+        #[arg(long)]
+        base: Option<String>,
     },
 
     /// Warn when context-relevant files changed without pack update
@@ -885,9 +893,14 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
         ContextPackCommand::Rollback { snapshot, pack_dir } => {
             agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
         }
-        ContextPackCommand::Verify { pack_dir, cwd } => {
+        ContextPackCommand::Verify { pack_dir, cwd, ci, base } => {
             let target_cwd = effective_cwd(cwd);
-            agent_context::verify(pack_dir.as_deref(), &target_cwd)?;
+            agent_context::verify(agent_context::VerifyOptions {
+                pack_dir,
+                cwd: target_cwd,
+                ci,
+                base,
+            })?;
         }
         ContextPackCommand::CheckFreshness { base, cwd } => {
             let target_cwd = effective_cwd(cwd);
