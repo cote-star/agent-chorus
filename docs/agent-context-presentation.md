@@ -110,7 +110,45 @@ Reads the pack → still greps the repo → but now knows WHAT to look for and W
 
 ---
 
-## Slide 7: The Headline Story (1 min)
+## Slide 7: Agent Context vs Skills (2 min)
+
+**Skills = reusable process** (how do we do X?)
+**Agent context = repo-specific truth** (what's in this repo, what's risky, what to avoid?)
+
+| | Skill | Agent Context |
+|---|---|---|
+| **Scope** | Cross-repo (works anywhere) | This repo only |
+| **Trigger** | On demand | Always-on (every session) |
+| **Content** | How to do a task | What's here + what's dangerous |
+| **Token cost** | Loaded when needed | ~4500 tokens per session |
+| **Maintenance** | Manual, versioned | Semi-auto (agent PRs) |
+
+**The stray skill problem:** Without agent context, teams create skills that are really repo knowledge:
+- "Always check setup.tsx when adding stores" → that's a **behavioral invariant**
+- "Important files in our frontend" → that's a **code map**
+- "Don't use Apollo" → that's **negative guidance**
+- "Our CI pipeline" → that's **operations**
+
+**Agent context absorbs these.** The stray skills die.
+
+**What stays as skills:**
+- Process patterns (code review, ADR, PR review)
+- Generators (slides, documentation)
+- Integrations (Jira, Databricks metadata)
+- Teaching (backend mentor, PR learner)
+- Cross-repo workflows (model migration, prompt registration)
+
+**The clean model:**
+```
+Skill:  "How to add a Zustand store" (reusable process)
+Context: "When adding a store, also update src/__tests__/setup.tsx" (this repo's invariant)
+```
+
+The skill tells you the process. Agent context tells you the files and risks. Both together = an agent that knows how AND where.
+
+---
+
+## Slide 8: The Headline Story (1 min)
 
 **trust-stream-frontend, M1 task: "Add a new Zustand store"**
 
@@ -124,7 +162,7 @@ Both agents in **structured** mode found it — because the behavioral invariant
 
 ---
 
-## Slide 8: How to Get It (2 min)
+## Slide 9: How to Get It (2 min)
 
 **Self-contained — no external CLI needed.**
 
@@ -149,7 +187,7 @@ Full guide: `team_skills/skills/agent-context/references/getting-started.md`
 
 ---
 
-## Slide 9: What's Next (1 min)
+## Slide 10: What's Next (1 min)
 
 **Already done:**
 - [x] `agent-context` skill in team_skills (PR #10 merged)
