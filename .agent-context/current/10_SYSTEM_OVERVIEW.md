@@ -32,7 +32,8 @@
 | `chorus send` / `messages` | Agent-to-agent messaging | `messaging.rs`, `read_session.cjs` |
 | `chorus setup` / `doctor` | Bootstrap and diagnose installation | `main.rs`, `read_session.cjs` |
 | `chorus teardown` | Cleanly reverse setup | `read_session.cjs` |
-| `chorus agent-context *` | Init, seal, verify, build context packs | `agent_context.rs`, `agent_context/*.cjs` |
+| `chorus agent-context init/seal/build` | Init, seal, build context packs | `agent_context.rs`, `agent_context/*.cjs` |
+| `chorus agent-context verify` | Verify context pack completeness (interactive or `--ci` mode) | `agent_context.rs`, `scripts/agent_context/verify.cjs`, `templates/ci-agent-context.yml` |
 | `chorus trash-talk` | Roast agents (easter egg) | `read_session.cjs` |
 
 ## Tracked Path Density

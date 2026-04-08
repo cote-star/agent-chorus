@@ -31,7 +31,8 @@ bash scripts/test_context_pack.sh  # Agent-context integration tests (9 tests)
 1. Initialize scaffolding: `chorus agent-context init` (pre-push hook installed automatically)
 2. Have your agent fill in the template sections (markdown + structured JSON).
 3. Seal the pack: `chorus agent-context seal`
-4. When freshness warnings appear on push, update content then run `chorus agent-context seal`
+4. Verify the pack: `chorus agent-context verify` (interactive report) or `chorus agent-context verify --ci` (exit-code only, uses `templates/ci-agent-context.yml` for CI pipelines)
+5. When freshness warnings appear on push, update content then run `chorus agent-context seal`
 
 ## Rollback/Recovery
 - Restore latest snapshot: `chorus agent-context rollback`

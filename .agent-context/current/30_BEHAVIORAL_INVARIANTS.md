@@ -22,6 +22,7 @@
 | New redaction pattern | `cli/src/agents.rs` (`redact_sensitive_text`), `scripts/adapters/utils.cjs` (`redactSecrets`). Silent failure if one is missed — secret passes through in output. |
 | New context-pack artifact | `cli/src/agent_context.rs` (build function + init list + seal validation), `scripts/agent_context/init.cjs` (template function + outputs array), `scripts/agent_context/seal.cjs` (validation), `scripts/test_context_pack.sh` |
 | Context-pack template change | `cli/src/agent_context.rs` (Rust template), `scripts/agent_context/init.cjs` (Node template). Must change both — parity tested by `test_context_pack.sh`. |
+| New agent-context subcommand | `cli/src/main.rs` (Clap subcommand enum), `scripts/read_session.cjs` (command dispatch), `scripts/agent_context/<sub>.cjs` (Node implementation), `scripts/test_context_pack.sh` (integration tests), `docs/CLI_REFERENCE.md` |
 | Skill definition change | `skills/agent-context/SKILL.md`. Update `wip/context-pack-skill/evolution/` log with rationale. |
 
 ## File Families

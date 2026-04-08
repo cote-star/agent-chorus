@@ -71,6 +71,24 @@
             "scripts/test_context_pack.sh"
           ]
         },
+        "new_agent_context_subcommand": {
+          "contractually_required_files": [
+            "cli/src/main.rs",
+            "scripts/read_session.cjs",
+            "scripts/test_context_pack.sh",
+            "docs/CLI_REFERENCE.md"
+          ],
+          "required_file_families": [
+            "scripts/agent_context/*.cjs"
+          ]
+        },
+        "context_pack_verify": {
+          "contractually_required_files": [
+            "scripts/agent_context/verify.cjs",
+            "templates/ci-agent-context.yml",
+            "cli/src/agent_context.rs"
+          ]
+        },
         "redaction_pattern_change": {
           "contractually_required_files": [
             "cli/src/agents.rs",

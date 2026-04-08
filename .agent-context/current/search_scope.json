@@ -26,7 +26,8 @@
         "cli/src/",
         "scripts/",
         "schemas/",
-        "fixtures/golden/"
+        "fixtures/golden/",
+        "templates/"
       ],
       "exclude_from_search": [
         "fixtures/session-store/",
@@ -48,7 +49,8 @@
         "cli/src/",
         "scripts/",
         "schemas/",
-        "skills/"
+        "skills/",
+        "templates/"
       ],
       "exclude_from_search": [
         "fixtures/",

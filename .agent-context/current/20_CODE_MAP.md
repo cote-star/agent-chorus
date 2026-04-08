@@ -14,6 +14,8 @@
 | `scripts/adapters/utils.cjs` | Shared Node utilities | Redaction, path normalization, JSON parsing | Silent redaction miss | authoritative |
 | `cli/src/agent_context.rs` | Rust agent-context commands | Init, seal, verify, build, hooks | Complex but self-contained | authoritative |
 | `scripts/agent_context/*.cjs` | Node agent-context commands | Mirror of Rust agent-context | Parity break if Rust not updated | authoritative |
+| `scripts/agent_context/verify.cjs` | Node verify subcommand | Context pack verification + CI mode | Must stay in parity with Rust | authoritative |
+| `templates/ci-agent-context.yml` | CI template for verify --ci | Defines CI pipeline step for verification | Referenced by verify subcommand | authoritative |
 | `schemas/*.json` | JSON Schema definitions | Output contract for all commands | Breaking change for consumers | authoritative |
 | `fixtures/golden/*.json` | Golden output files | Conformance test baselines | Must update when output changes | derived |
 | `skills/agent-context/SKILL.md` | Agent-context creation skill | Three-flow skill definition (create/update/catchup) | Governs how agents create and maintain packs | authoritative |
