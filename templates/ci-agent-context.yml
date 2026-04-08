@@ -1,0 +1,201 @@
+# Agent Context PR Gate
+# =====================
+# Reusable GitHub Actions workflow that verifies .agent-context/ is updated
+# whenever context-relevant files change in a pull request.
+#
+# Usage:
+#   Copy this file into your repo at .github/workflows/agent-context.yml
+#   No configuration needed — it works out of the box with default settings.
+#
+# How it works:
+#   1. Runs `npx agent-chorus agent-context verify --ci` against the PR diff
+#   2. If code changed but .agent-context/ was not updated, the check fails
+#   3. A comment is posted on the PR explaining what to do
+#
+# Emergency bypass:
+#   Add the label "skip-agent-context-check" to the PR to skip this gate.
+
+name: Agent Context Freshness
+
+on:
+  pull_request:
+    branches: [main]
+
+# Cancel redundant runs when the PR is updated.
+concurrency:
+  group: agent-context-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write  # needed to post the status comment
+
+jobs:
+  verify-agent-context:
+    name: Verify agent-context pack
+    runs-on: ubuntu-latest
+
+    # Skip the entire job when the bypass label is present.
+    if: "!contains(github.event.pull_request.labels.*.name, 'skip-agent-context-check')"
+
+    steps:
+      # -----------------------------------------------------------
+      # 1. Check out the full branch so we can diff against origin/main.
+      # -----------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history so origin/main is available for the diff.
+          fetch-depth: 0
+
+      # -----------------------------------------------------------
+      # 2. Pin a stable Node.js version.
+      # -----------------------------------------------------------
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # -----------------------------------------------------------
+      # 3. Run the freshness check.
+      #    Exit codes:
+      #      0 — pack is up to date (or no relevant files changed)
+      #      1 — relevant code changed but pack was NOT updated
+      # -----------------------------------------------------------
+      - name: Check agent-context freshness
+        id: freshness
+        run: |
+          set +e
+          OUTPUT=$(npx agent-chorus@latest agent-context check-freshness --base origin/main 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+
+          # Make the output available to later steps.
+          {
+            echo "result<<EOF"
+            echo "$OUTPUT"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # Even with exit 0, check for the WARNING prefix that
+          # check-freshness emits when the pack is stale.
+          if echo "$OUTPUT" | grep -q "^WARNING"; then
+            echo "status=stale" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          echo "status=pass" >> "$GITHUB_OUTPUT"
+
+      # -----------------------------------------------------------
+      # 4. On failure, post a helpful comment on the PR.
+      # -----------------------------------------------------------
+      - name: Post PR comment on failure
+        if: failure() && steps.freshness.outputs.status != 'pass'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = [
+              '### Agent Context check failed',
+              '',
+              'This PR changes context-relevant files but `.agent-context/` was not updated.',
+              '',
+              '**How to fix:**',
+              '1. Run your agent to update the context pack contents',
+              '2. Run `npx agent-chorus agent-context seal`',
+              '3. Commit the updated `.agent-context/` directory',
+              '',
+              '**Emergency bypass:**',
+              'Add the label `skip-agent-context-check` to this PR.',
+              '',
+              '<details><summary>Check output</summary>',
+              '',
+              '```',
+              `${{ steps.freshness.outputs.result }}`,
+              '```',
+              '',
+              '</details>',
+            ].join('\n');
+
+            // Avoid duplicate comments on re-runs — update if one exists.
+            const marker = '### Agent Context check failed';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.startsWith(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+
+  # =================================================================
+  # OPTIONAL: Separate-commit enforcement
+  # =================================================================
+  # Uncomment the job below if your team wants to enforce that
+  # .agent-context/ changes live in their own commit, separate from
+  # code changes. This keeps the git history clean and makes reverts
+  # easier. This is advisory — many teams prefer to skip this.
+  #
+  # check-separate-commit:
+  #   name: Check agent-context in separate commit
+  #   runs-on: ubuntu-latest
+  #   if: "!contains(github.event.pull_request.labels.*.name, 'skip-agent-context-check')"
+  #
+  #   steps:
+  #     - name: Checkout repository
+  #       uses: actions/checkout@v4
+  #       with:
+  #         fetch-depth: 0
+  #
+  #     - name: Verify .agent-context/ changes are isolated
+  #       run: |
+  #         # Get the merge base so we only inspect commits in this PR.
+  #         BASE=$(git merge-base origin/main HEAD)
+  #
+  #         MIXED_COMMITS=0
+  #         for COMMIT in $(git rev-list "$BASE"..HEAD); do
+  #           FILES=$(git diff-tree --no-commit-id --name-only -r "$COMMIT")
+  #
+  #           HAS_CONTEXT=false
+  #           HAS_OTHER=false
+  #
+  #           while IFS= read -r FILE; do
+  #             case "$FILE" in
+  #               .agent-context/*) HAS_CONTEXT=true ;;
+  #               *)                HAS_OTHER=true ;;
+  #             esac
+  #           done <<< "$FILES"
+  #
+  #           if [ "$HAS_CONTEXT" = true ] && [ "$HAS_OTHER" = true ]; then
+  #             echo "::warning::Commit $COMMIT mixes .agent-context/ changes with code changes"
+  #             MIXED_COMMITS=$((MIXED_COMMITS + 1))
+  #           fi
+  #         done
+  #
+  #         if [ "$MIXED_COMMITS" -gt 0 ]; then
+  #           echo ""
+  #           echo "Found $MIXED_COMMITS commit(s) that mix .agent-context/ with code changes."
+  #           echo "Consider keeping .agent-context/ updates in a dedicated commit."
+  #           echo "Run: npx agent-chorus agent-context seal && git add .agent-context/ && git commit -m 'chore: update agent-context pack'"
+  #           exit 1
+  #         fi
+  #
+  #         echo "PASS: .agent-context/ changes are in separate commits (or not present)"

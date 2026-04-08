@@ -35,9 +35,9 @@ make_repo() {
 }
 
 run_node_init() { node "$ROOT/scripts/agent_context/init.cjs" --cwd "$1" --force; }
-run_rust_init() { "$CHORUS_BIN" context-pack init --cwd "$1" --force; }
+run_rust_init() { "$CHORUS_BIN" agent-context init --cwd "$1" --force; }
 run_node_seal() { node "$ROOT/scripts/agent_context/seal.cjs" --cwd "$1" --force; }
-run_rust_seal() { "$CHORUS_BIN" context-pack seal --cwd "$1" --force; }
+run_rust_seal() { "$CHORUS_BIN" agent-context seal --cwd "$1" --force; }
 
 # Extract managed block content between markers (strips markers themselves)
 extract_block() {
@@ -213,6 +213,46 @@ if [[ -n "$CHORUS_BIN" ]]; then
 else
   echo "SKIP node-rust-seal-parity (no Rust binary found — run cargo build first)"
 fi
+
+# --- Test 13: verify-ci-mode-json ---
+T13="$TMP_DIR/t13"
+make_repo "$T13"
+run_node_init "$T13" >/dev/null 2>&1
+for f in "$T13/.agent-context/current/"*.md; do
+  sed -i '' 's/<!-- AGENT:.*-->/Filled by test/g' "$f" 2>/dev/null || true
+done
+run_node_seal "$T13" >/dev/null 2>&1
+
+# Verify should pass (integrity ok, freshness ok — no changed files)
+NODE_VERIFY=$(node "$ROOT/scripts/agent_context/verify.cjs" --pack-dir "$T13/.agent-context" --ci --cwd "$T13" 2>/dev/null || true)
+
+check "verify-ci-mode-json" '
+  echo "$NODE_VERIFY" | node -e "
+    const d = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
+    process.exit(d.integrity === \"pass\" && (d.freshness === \"pass\" || d.freshness === \"skip\") ? 0 : 1);
+  "
+'
+
+# --- Test 13b: verify-ci-detects-tampered-file ---
+T13B="$TMP_DIR/t13b"
+make_repo "$T13B"
+run_node_init "$T13B" >/dev/null 2>&1
+for f in "$T13B/.agent-context/current/"*.md; do
+  sed -i '' 's/<!-- AGENT:.*-->/Filled by test/g' "$f" 2>/dev/null || true
+done
+run_node_seal "$T13B" >/dev/null 2>&1
+
+# Tamper with a file after sealing
+echo "TAMPERED" >> "$T13B/.agent-context/current/00_START_HERE.md"
+
+NODE_VERIFY_TAMPERED=$(node "$ROOT/scripts/agent_context/verify.cjs" --pack-dir "$T13B/.agent-context" --ci --cwd "$T13B" 2>/dev/null || true)
+
+check "verify-ci-detects-tampered-file" '
+  echo "$NODE_VERIFY_TAMPERED" | node -e "
+    const d = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
+    process.exit(d.integrity === \"fail\" && d.exit_code === 1 ? 0 : 1);
+  "
+'
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
