@@ -110,41 +110,40 @@ Reads the pack → still greps the repo → but now knows WHAT to look for and W
 
 ---
 
-## Slide 7: Agent Context vs Skills (2 min)
+## Slide 7: Two Layers, Both Required (2 min)
 
-**Skills = reusable process** (how do we do X?)
-**Agent context = repo-specific truth** (what's in this repo, what's risky, what to avoid?)
+**Skills are the process layer.** They tell an agent how to do a task: workflows, tool usage, review patterns, generators.
 
-| | Skill | Agent Context |
+**Agent context is the repo intelligence layer.** It tells the agent what is true in this codebase: what's risky, what's connected, where to look, what the real blast radius is.
+
+**The model already comes with a harness.** Agent context is the repo-local extension that makes that harness effective for brownfield work.
+
+| | Skills (Process Layer) | Agent Context (Intelligence Layer) |
 |---|---|---|
+| **Answers** | "How do I do this?" | "What's true, risky, and connected here?" |
 | **Scope** | Cross-repo (works anywhere) | This repo only |
-| **Trigger** | On demand | Always-on (every session) |
-| **Content** | How to do a task | What's here + what's dangerous |
-| **Token cost** | Loaded when needed | ~4500 tokens per session |
-| **Maintenance** | Manual, versioned | Semi-auto (agent PRs) |
+| **Loaded** | On demand | Every session (~4500 tokens) |
+| **Maintenance** | Manual, versioned | Agent-maintained (CI enforced) |
 
-**The stray skill problem:** Without agent context, teams create skills that are really repo knowledge:
-- "Always check setup.tsx when adding stores" → that's a **behavioral invariant**
-- "Important files in our frontend" → that's a **code map**
-- "Don't use Apollo" → that's **negative guidance**
-- "Our CI pipeline" → that's **operations**
+**Why skills alone aren't enough for brownfield work:**
 
-**Agent context absorbs these.** The stray skills die.
+With only skills, agents still:
+- Miss blast radius (hidden coupling, cross-file invariants)
+- Follow stale or deprecated patterns
+- Need multiple shots instead of one-shot execution
+- Give process-correct but repo-wrong answers
 
-**What stays as skills:**
-- Process patterns (code review, ADR, PR review)
-- Generators (slides, documentation)
-- Integrations (Jira, Databricks metadata)
-- Teaching (backend mentor, PR learner)
-- Cross-repo workflows (model migration, prompt registration)
+**Agent context absorbs repo-specific knowledge that was previously stuffed into stray skills** ("always check setup.tsx", "don't use Apollo", "our CI pipeline"):
+- "Always check setup.tsx" → **behavioral invariant** (agent context)
+- "Don't use Apollo" → **negative guidance** (agent context)
+- Code review, ADR, slides → **stays as skills** (reusable process)
 
 **The clean model:**
 ```
-Skill:  "How to add a Zustand store" (reusable process)
-Context: "When adding a store, also update src/__tests__/setup.tsx" (this repo's invariant)
+Skills tell the agent how to work.
+Agent context tells it what is true, risky, and connected in this repo.
+Both are required for reliable brownfield engineering.
 ```
-
-The skill tells you the process. Agent context tells you the files and risks. Both together = an agent that knows how AND where.
 
 ---
 
