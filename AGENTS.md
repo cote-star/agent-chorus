@@ -82,6 +82,46 @@ When this skill is triggered:
 10. Use `chorus send` / `chorus messages` when agents need to coordinate or leave notes for each other.
 11. Use `chorus read --audit-redactions` when the user asks what was redacted or wants a security audit.
 
+### Session Handoff Protocol
+
+**At standup (first action):** check for messages left by other agents:
+
+```bash
+chorus messages --agent codex --cwd <project-path> --clear --json
+```
+
+If messages are empty and the previous session may have been interrupted, also check:
+
+```bash
+cat "<project-path>/.agent-chorus/CHECKPOINT.md" 2>/dev/null || echo "No checkpoint."
+```
+
+**When starting a significant task block** (new feature, migration, multi-file fix),
+write a checkpoint so other agents can recover if interrupted:
+
+```bash
+cat > "<project-path>/.agent-chorus/CHECKPOINT.md" << 'EOF'
+# Agent Checkpoint
+**Agent:** codex
+**Timestamp:** <ISO timestamp>
+**Branch:** feature/my-feature
+**Current task:** <one-line description of what you are about to do>
+**Files being modified:** <list key files>
+**Status:** in-progress — do not overwrite without reading this
+EOF
+```
+
+**At conclude (last action):** leave a handoff message for each other agent:
+
+```bash
+chorus send --from codex --to claude  --message "Session ended. Open threads: [list]. Next focus: [one line]." --cwd <project-path>
+chorus send --from codex --to gemini --message "Session ended. Open threads: [list]. Next focus: [one line]." --cwd <project-path>
+```
+
+**Gemini fallback:** `chorus read --agent gemini` returns `NOT_FOUND` when Gemini stores
+sessions as protobuf rather than JSONL. Fall back to reading the project's session-log mirror
+directory. See `docs/session-handoff-guide.md` for details and workarounds.
+
 ### Output Quality Bar
 
 Every cross-agent claim should include:
