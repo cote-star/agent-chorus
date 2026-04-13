@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const { getAdapter } = require('./adapters/registry.cjs');
 
 const rawArgs = process.argv.slice(2);
-const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'teardown', 'doctor', 'trash-talk', 'context-pack', 'agent-context', 'relevance', 'diff', 'send', 'messages']);
+const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'teardown', 'doctor', 'trash-talk', 'context-pack', 'agent-context', 'relevance', 'diff', 'send', 'messages', 'summary', 'timeline']);
 const command = commandNames.has(rawArgs[0]) ? rawArgs[0] : 'read';
 const args = commandNames.has(rawArgs[0]) ? rawArgs.slice(1) : rawArgs;
 
@@ -341,6 +341,7 @@ function runContextPackSubcommand(subcommand, subArgs, options = {}) {
     rollback: 'agent_context/rollback.cjs',
     'install-hooks': 'agent_context/install_hooks.cjs',
     'check-freshness': 'agent_context/check_freshness.cjs',
+    verify: 'agent_context/verify.cjs',
   };
 
   const scriptRelPath = scriptBySubcommand[subcommand];
@@ -1275,7 +1276,7 @@ function searchSessions(query, agent, cwd, limit) {
   return adapter.search(query, cwd || null, limit || 10);
 }
 
-function readSessionViaAdapter(agent, { id, cwd, chatsDir, lastN, includeUser }) {
+function readSessionViaAdapter(agent, { id, cwd, chatsDir, lastN, includeUser, includeToolCalls }) {
   const adapter = getAdapter(agent);
   const resolved = adapter.resolve(id || null, cwd, { chatsDir: chatsDir || null });
 
@@ -1286,7 +1287,7 @@ function readSessionViaAdapter(agent, { id, cwd, chatsDir, lastN, includeUser })
     throw new Error(`No ${agent.charAt(0).toUpperCase() + agent.slice(1)} session found.`);
   }
 
-  const result = adapter.read(resolved.path, lastN || 1, { includeUser: includeUser === true });
+  const result = adapter.read(resolved.path, lastN || 1, { includeUser: includeUser === true, includeToolCalls: includeToolCalls === true });
   const adapterWarnings = Array.isArray(resolved.warnings) ? resolved.warnings : [];
   result.warnings = [...adapterWarnings, ...(result.warnings || [])];
   return result;
@@ -1618,6 +1619,85 @@ function validateMode(mode) {
   }
 }
 
+function renderReadAsMarkdown(result) {
+  const label = result.agent.charAt(0).toUpperCase() + result.agent.slice(1);
+  const lines = [];
+  lines.push(`## ${label} Session: ${result.session_id || '(unknown)'}`);
+  lines.push('');
+  lines.push(`| Field | Value |`);
+  lines.push(`|---|---|`);
+  lines.push(`| Source | \`${path.basename(result.source || '')}\` |`);
+  lines.push(`| CWD | \`${result.cwd || '(unknown)'}\` |`);
+  lines.push(`| Messages | ${result.messages_returned || 0} of ${result.message_count || 0} |`);
+  if (result.timestamp) lines.push(`| Timestamp | ${result.timestamp} |`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+  lines.push(result.content || '(no content)');
+  console.log(lines.join('\n'));
+}
+
+function renderSummaryAsMarkdown(result) {
+  const label = result.agent.charAt(0).toUpperCase() + result.agent.slice(1);
+  const lines = [];
+  lines.push(`## ${label} Session Summary`);
+  lines.push('');
+  lines.push(`| Field | Value |`);
+  lines.push(`|---|---|`);
+  lines.push(`| Session | \`${result.session_id}\` |`);
+  lines.push(`| CWD | \`${result.cwd || '(unknown)'}\` |`);
+  lines.push(`| Messages | ${result.message_count} |`);
+  if (result.duration_estimate) lines.push(`| Duration | ${result.duration_estimate} |`);
+  lines.push('');
+  if (result.user_requests && result.user_requests.length > 0) {
+    lines.push('### User Requests');
+    for (const req of result.user_requests) lines.push(`- ${req.replace(/\n/g, ' ')}`);
+    lines.push('');
+  }
+  if (result.tool_calls_by_type && Object.keys(result.tool_calls_by_type).length > 0) {
+    lines.push('### Tool Calls');
+    lines.push('| Tool | Count |');
+    lines.push('|---|---|');
+    for (const [name, count] of Object.entries(result.tool_calls_by_type).sort((a, b) => b[1] - a[1])) {
+      lines.push(`| ${name} | ${count} |`);
+    }
+    lines.push('');
+  }
+  if (result.files_referenced && result.files_referenced.length > 0) {
+    lines.push('### Files Referenced');
+    for (const f of result.files_referenced.slice(0, 20)) lines.push(`- \`${f}\``);
+    if (result.files_referenced.length > 20) lines.push(`- *... and ${result.files_referenced.length - 20} more*`);
+    lines.push('');
+  }
+  if (result.last_response_snippet) {
+    lines.push('### Last Response');
+    lines.push(`> ${result.last_response_snippet.replace(/\n/g, '\n> ')}`);
+  }
+  console.log(lines.join('\n'));
+}
+
+function renderTimelineAsMarkdown(result) {
+  const lines = [];
+  lines.push(`## Agent Timeline`);
+  lines.push('');
+  lines.push(`**CWD:** \`${result.cwd}\``);
+  lines.push(`**Agents:** ${result.agents_included.join(', ') || '(none)'}`);
+  lines.push('');
+  lines.push('| Time | Agent | Session | Snippet |');
+  lines.push('|---|---|---|---|');
+  for (const entry of result.timeline) {
+    const ts = entry.timestamp ? entry.timestamp.slice(0, 16).replace('T', ' ') : '?';
+    const snip = (entry.snippet || '').slice(0, 80).replace(/\n/g, ' ').replace(/\|/g, '\\|');
+    lines.push(`| ${ts} | ${entry.agent} | \`${entry.session_id.slice(0, 30)}\` | ${snip} |`);
+  }
+  if (result.warnings && result.warnings.length > 0) {
+    lines.push('');
+    lines.push('**Warnings:**');
+    for (const w of result.warnings) lines.push(`- ${w}`);
+  }
+  console.log(lines.join('\n'));
+}
+
 function runRead(inputArgs) {
   const agent = getOptionValue(inputArgs, '--agent', 'codex');
   const id = getOptionValue(inputArgs, '--id', null);
@@ -1628,6 +1708,8 @@ function runRead(inputArgs) {
   const auditRedactions = hasFlag(inputArgs, '--audit-redactions');
   const lastN = parseInt(getOptionValue(inputArgs, '--last', '1'), 10) || 1;
   const includeUser = hasFlag(inputArgs, '--include-user');
+  const includeToolCalls = hasFlag(inputArgs, '--tool-calls');
+  const format = getOptionValue(inputArgs, '--format', null);
 
   const result = readSessionViaAdapter(agent, {
     id,
@@ -1635,9 +1717,14 @@ function runRead(inputArgs) {
     chatsDir,
     lastN,
     includeUser,
+    includeToolCalls,
   });
 
-  renderReadResult(result, asJson, metadataOnly, auditRedactions);
+  if (format === 'markdown' || format === 'md') {
+    renderReadAsMarkdown(result);
+  } else {
+    renderReadResult(result, asJson, metadataOnly, auditRedactions);
+  }
 }
 
 function runSearch(inputArgs) {
@@ -2736,6 +2823,252 @@ function runReport(inputArgs) {
   renderReport(report, asJson);
 }
 
+function runSummary(inputArgs) {
+  const agent = getOptionValue(inputArgs, '--agent', null);
+  if (!agent) throw new Error('summary requires --agent');
+  const id = getOptionValue(inputArgs, '--id', null);
+  const cwd = normalizePath(getOptionValue(inputArgs, '--cwd', process.cwd()));
+  const chatsDir = getOptionValue(inputArgs, '--chats-dir', null);
+  const asJson = hasFlag(inputArgs, '--json');
+  const format = getOptionValue(inputArgs, '--format', null);
+
+  const adapter = getAdapter(agent);
+  const resolved = adapter.resolve(id || null, cwd, { chatsDir: chatsDir || null });
+  if (!resolved || !resolved.path) {
+    throw new Error(`No ${agent.charAt(0).toUpperCase() + agent.slice(1)} session found.`);
+  }
+
+  const { readJsonlLines, extractClaudeText, extractClaudeContentWithToolCalls, extractText, extractContentWithToolCalls, extractToolCallSummary, extractFilePaths, redactSensitiveText, getFileTimestamp } = require('./adapters/utils.cjs');
+  const lines = readJsonlLines(resolved.path);
+
+  const userRequests = [];
+  const toolCallCounts = {};
+  const filePaths = new Set();
+  let assistantCount = 0;
+  let lastAssistantText = '';
+  let sessionCwd = null;
+  let firstTimestamp = null;
+  let lastTimestamp = null;
+
+  for (const line of lines) {
+    try {
+      const json = JSON.parse(line);
+
+      // Extract timestamps from any field that looks like a timestamp
+      const ts = json.timestamp || json.created_at || null;
+      if (ts && typeof ts === 'string') {
+        if (!firstTimestamp) firstTimestamp = ts;
+        lastTimestamp = ts;
+      } else if (ts && typeof ts === 'number') {
+        const isoTs = new Date(ts * 1000).toISOString();
+        if (!firstTimestamp) firstTimestamp = isoTs;
+        lastTimestamp = isoTs;
+      }
+
+      // CWD extraction (agent-specific)
+      if (typeof json.cwd === 'string' && !sessionCwd) sessionCwd = json.cwd;
+      if (json.type === 'session_meta' && json.payload && typeof json.payload.cwd === 'string' && !sessionCwd) {
+        sessionCwd = json.payload.cwd;
+      }
+
+      // Claude-format messages
+      const message = json.message || json;
+      const role = (message.role || json.type || '').toLowerCase();
+      if (role === 'user') {
+        const content = message.content !== undefined ? message.content : json.content;
+        const text = extractClaudeText(content) || extractText(content) || '';
+        if (text && userRequests.length < 5) {
+          userRequests.push(text.slice(0, 150));
+        }
+      }
+      if (role === 'assistant') {
+        const content = message.content !== undefined ? message.content : json.content;
+        const text = extractClaudeText(content) || '';
+        if (text) {
+          assistantCount += 1;
+          lastAssistantText = text;
+        }
+        // Extract tool calls from content array
+        if (Array.isArray(content)) {
+          const counts = extractToolCallSummary(content);
+          for (const [name, count] of Object.entries(counts)) {
+            toolCallCounts[name] = (toolCallCounts[name] || 0) + count;
+          }
+          const paths = extractFilePaths(content);
+          for (const p of paths) filePaths.add(p);
+        }
+      }
+
+      // Codex-format messages
+      if (json.type === 'response_item' && json.payload && json.payload.type === 'message') {
+        const payloadRole = (json.payload.role || '').toLowerCase();
+        if (payloadRole === 'user') {
+          const text = extractText(json.payload.content) || '';
+          if (text && userRequests.length < 5) {
+            userRequests.push(text.slice(0, 150));
+          }
+        }
+        if (payloadRole === 'assistant') {
+          const text = extractText(json.payload.content) || '';
+          if (text) {
+            assistantCount += 1;
+            lastAssistantText = text;
+          }
+        }
+      }
+    } catch (_) {
+      // skip
+    }
+  }
+
+  // Duration estimate
+  let durationEstimate = null;
+  if (firstTimestamp && lastTimestamp) {
+    try {
+      const diffMs = new Date(lastTimestamp) - new Date(firstTimestamp);
+      if (diffMs > 0) {
+        const mins = Math.round(diffMs / 60000);
+        durationEstimate = mins < 1 ? '< 1 min' : `~${mins} min`;
+      }
+    } catch (_) { /* ignore */ }
+  }
+
+  const sessionId = path.basename(resolved.path, path.extname(resolved.path));
+  const snippet = lastAssistantText ? lastAssistantText.slice(0, 300) : null;
+
+  const result = {
+    chorus_output_version: 1,
+    agent,
+    session_id: sessionId,
+    cwd: sessionCwd || cwd,
+    source: resolved.path,
+    message_count: assistantCount,
+    duration_estimate: durationEstimate,
+    user_requests: userRequests,
+    files_referenced: [...filePaths].sort(),
+    tool_calls_by_type: toolCallCounts,
+    last_response_snippet: snippet ? redactSensitiveText(snippet) : null,
+    warnings: resolved.warnings || [],
+  };
+
+  if (format === 'markdown' || format === 'md') {
+    renderSummaryAsMarkdown(result);
+  } else if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`Session: ${result.session_id}`);
+    console.log(`Agent: ${result.agent} | Messages: ${result.message_count}${result.duration_estimate ? ` | Duration: ${result.duration_estimate}` : ''}`);
+    console.log(`CWD: ${result.cwd || '(unknown)'}`);
+    if (result.user_requests.length > 0) {
+      console.log('\nUser requests:');
+      for (const req of result.user_requests) console.log(`  - ${req}`);
+    }
+    if (Object.keys(result.tool_calls_by_type).length > 0) {
+      console.log('\nTool calls:');
+      for (const [name, count] of Object.entries(result.tool_calls_by_type).sort((a, b) => b[1] - a[1])) {
+        console.log(`  ${name}: ${count}`);
+      }
+    }
+    if (result.files_referenced.length > 0) {
+      console.log('\nFiles referenced:');
+      for (const f of result.files_referenced.slice(0, 20)) console.log(`  ${f}`);
+      if (result.files_referenced.length > 20) console.log(`  ... and ${result.files_referenced.length - 20} more`);
+    }
+    if (result.last_response_snippet) {
+      console.log(`\nLast response: ${result.last_response_snippet}`);
+    }
+  }
+}
+
+function runTimeline(inputArgs) {
+  const cwd = normalizePath(getOptionValue(inputArgs, '--cwd', process.cwd()));
+  const asJson = hasFlag(inputArgs, '--json');
+  const format = getOptionValue(inputArgs, '--format', null);
+  const limitPerAgent = parseInt(getOptionValue(inputArgs, '--limit', '5'), 10) || 5;
+
+  // Collect --agent flags (repeatable), default to all
+  const agentArgs = [];
+  let idx = 0;
+  while (idx < inputArgs.length) {
+    if (inputArgs[idx] === '--agent' && idx + 1 < inputArgs.length) {
+      agentArgs.push(inputArgs[idx + 1]);
+      idx += 2;
+    } else {
+      idx += 1;
+    }
+  }
+  const agents = agentArgs.length > 0 ? agentArgs : ['claude', 'codex', 'gemini', 'cursor'];
+
+  const entries = [];
+  const agentsIncluded = [];
+  const warnings = [];
+
+  for (const agent of agents) {
+    try {
+      const adapter = getAdapter(agent);
+      const sessions = adapter.list(cwd, limitPerAgent);
+      if (sessions.length > 0) {
+        agentsIncluded.push(agent);
+        for (const session of sessions) {
+          let snippet = null;
+          try {
+            const readResult = adapter.read(session.path || session.file_path, 1, {});
+            if (readResult && readResult.content) {
+              snippet = readResult.content.slice(0, 200);
+            }
+          } catch (_) { /* skip snippet on error */ }
+
+          entries.push({
+            timestamp: session.modified_at || null,
+            agent,
+            session_id: session.session_id || path.basename(session.path || session.file_path, '.jsonl'),
+            cwd: session.cwd || null,
+            snippet,
+          });
+        }
+      }
+    } catch (err) {
+      warnings.push(`${agent}: ${err.message}`);
+    }
+  }
+
+  // Sort by timestamp descending (newest first)
+  entries.sort((a, b) => {
+    if (!a.timestamp && !b.timestamp) return 0;
+    if (!a.timestamp) return 1;
+    if (!b.timestamp) return -1;
+    return b.timestamp.localeCompare(a.timestamp);
+  });
+
+  const result = {
+    chorus_output_version: 1,
+    timeline: entries,
+    agents_included: agentsIncluded,
+    cwd,
+    warnings,
+  };
+
+  if (format === 'markdown' || format === 'md') {
+    renderTimelineAsMarkdown(result);
+  } else if (asJson) {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(`Timeline for ${cwd}`);
+    console.log(`Agents: ${agentsIncluded.join(', ') || '(none found)'}`);
+    console.log('');
+    for (const entry of entries) {
+      const ts = entry.timestamp ? entry.timestamp.slice(0, 16).replace('T', ' ') : '?';
+      const snip = entry.snippet ? entry.snippet.slice(0, 80).replace(/\n/g, ' ') : '';
+      console.log(`${ts}  [${entry.agent}]  ${entry.session_id}`);
+      if (snip) console.log(`  ${snip}`);
+    }
+    if (warnings.length > 0) {
+      console.log('\nWarnings:');
+      for (const w of warnings) console.log(`  ${w}`);
+    }
+  }
+}
+
 try {
   if (command === 'read') {
     runRead(args);
@@ -2768,6 +3101,10 @@ try {
     runRelevance(args);
   } else if (command === 'trash-talk') {
     runTrashTalk(args);
+  } else if (command === 'summary') {
+    runSummary(args);
+  } else if (command === 'timeline') {
+    runTimeline(args);
   } else {
     throw new Error(`Unknown command: ${command}`);
   }

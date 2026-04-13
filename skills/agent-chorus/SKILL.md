@@ -1,7 +1,7 @@
 ---
 name: agent-chorus
-description: This skill should be used when the user asks "What is Claude doing?", "What did Gemini say?", "What is Codex working on?", "Compare Codex and Claude outputs.", "Read session from Cursor.", "How did that session change?", "Send a message to Codex.", "Any messages for me?", "What was redacted?", "Which files are relevant?", or any request to inspect, compare, diff, search, summarize, or coordinate activity across Codex, Claude, Gemini, or Cursor agents using chorus.
-version: 0.8.3
+description: This skill should be used when the user asks "What is Claude doing?", "What did Gemini say?", "What is Codex working on?", "Compare Codex and Claude outputs.", "Read session from Cursor.", "How did that session change?", "Send a message to Codex.", "Any messages for me?", "What was redacted?", "Which files are relevant?", "Summarize this session.", "Show a timeline of agent activity.", or any request to inspect, compare, diff, search, summarize, or coordinate activity across Codex, Claude, Gemini, or Cursor agents using chorus.
+version: 0.11.0
 ---
 
 # Agent Chorus Skill
@@ -11,11 +11,13 @@ Use this skill to inspect, compare, diff, message, or summarize activity across 
 ## Commands
 
 ```bash
-chorus read --agent <agent> [--id=<id>] [--cwd=<path>] [--last=<N>] [--json] [--metadata-only] [--audit-redactions]
+chorus read --agent <agent> [--id=<id>] [--cwd=<path>] [--last=<N>] [--include-user] [--tool-calls] [--format=<fmt>] [--json] [--metadata-only] [--audit-redactions]
 chorus list --agent <agent> [--cwd=<path>] [--limit=<N>] [--json]
 chorus search <query> --agent <agent> [--cwd=<path>] [--json]
 chorus compare --source <agent[:id]>... [--cwd=<path>] [--normalize] [--json]
 chorus diff --agent <agent> --from <id1> --to <id2> [--cwd=<path>] [--last=<N>] [--json]
+chorus summary --agent <agent> [--id=<id>] [--cwd=<path>] [--json]
+chorus timeline [--agent <agent>]... [--cwd=<path>] [--limit=<N>] [--json]
 chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
 chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
@@ -43,15 +45,23 @@ When this skill is triggered:
 9. Use `chorus diff` when the user asks how a session changed or wants to compare two sessions from the same agent.
 10. Use `chorus send` / `chorus messages` when agents need to coordinate or leave notes for each other.
 11. Use `chorus read --audit-redactions` when the user asks what was redacted or wants a security audit.
+12. Use `chorus read --include-user` when checking what an agent is actively working on (status checks). Omit it for output-only handoff reads.
+13. Use `chorus read --tool-calls` when the user needs to see which files were read/edited or which commands were run in a session.
+14. Use `chorus summary` for a quick structured digest of a session (files referenced, tool call counts, duration) without reading full content.
+15. Use `chorus timeline` for a cross-agent chronological view of activity in a project.
+16. Use `chorus agent-context verify --ci` in CI pipelines to validate context pack integrity and freshness in a single pass.
 
 ## Intent Router
 
 | User phrase | Command |
 |---|---|
-| "What is Claude doing?" | `chorus read --agent claude --cwd <path> --json` |
+| "What is Claude doing?" | `chorus read --agent claude --cwd <path> --include-user --json` |
 | "What did Gemini say?" | `chorus read --agent gemini --cwd <path> --json` |
-| "What is Codex working on?" | `chorus read --agent codex --cwd <path> --json` |
+| "What is Codex working on?" | `chorus read --agent codex --cwd <path> --include-user --json` |
 | "Evaluate Gemini's plan." | `chorus read --agent gemini --cwd <path> --last 5 --json` |
+| "What files did Claude touch?" | `chorus summary --agent claude --cwd <path> --json` |
+| "Show a timeline of agent activity." | `chorus timeline --cwd <path> --json` |
+| "What tools did Codex use?" | `chorus read --agent codex --cwd <path> --tool-calls --json` |
 | "Compare Codex and Claude." | `chorus compare --source codex --source claude --cwd <path> --json` |
 | "Show the past session from Claude." | `chorus list --agent claude --cwd <path> --limit 2 --json` → read second ID |
 | "Show past 3 Gemini sessions." | `chorus list --agent gemini --cwd <path> --limit 4 --json` → read older 3 IDs |
@@ -69,6 +79,7 @@ When working in a repo that has `.agent-context/current/`:
 2. **Navigation tasks** (find a file, find a value): start with `20_CODE_MAP.md`.
 3. **Diagnosis tasks** (silent failures, unexpected output): start with `10_SYSTEM_OVERVIEW.md` Silent Failure Modes section.
 4. Never treat CODE_MAP as a complete list of affected files for a given change — always cross-reference BEHAVIORAL_INVARIANTS and verify with grep.
+5. Use `chorus agent-context verify --ci` in PR gates to validate pack integrity and freshness automatically.
 
 ## Output Quality Bar
 

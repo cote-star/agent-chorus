@@ -43,6 +43,15 @@
       "type": "integer",
       "minimum": 0
     },
+    "included_roles": {
+      "type": "array",
+      "description": "Which roles are included in the output (present when --include-user is used)",
+      "items": { "type": "string", "enum": ["user", "assistant"] }
+    },
+    "included_tool_calls": {
+      "type": "boolean",
+      "description": "Whether tool call content is included (present when --tool-calls is used)"
+    },
     "redactions": {
       "type": "array",
       "description": "Redaction audit trail (present when --audit-redactions is used)",

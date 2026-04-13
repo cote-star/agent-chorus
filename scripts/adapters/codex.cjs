@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   normalizePath, collectMatchingFiles, readJsonlLines,
-  findLatestByCwd, cwdMatchesProject, getFileTimestamp, extractText, redactSensitiveText, isSystemDirectory,
+  findLatestByCwd, cwdMatchesProject, getFileTimestamp, extractText, extractContentWithToolCalls, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
 const codexSessionsBase = normalizePath(process.env.CHORUS_CODEX_SESSIONS_DIR || process.env.BRIDGE_CODEX_SESSIONS_DIR || '~/.codex/sessions');
@@ -94,7 +94,8 @@ function read(filePath, lastN, opts = {}) {
       }
       if (json.type === 'response_item' && json.payload && json.payload.type === 'message') {
         const role = (json.payload.role || '').toLowerCase();
-        const text = extractText(json.payload.content) || '[No text content]';
+        const extractFn = opts.includeToolCalls ? extractContentWithToolCalls : extractText;
+        const text = extractFn(json.payload.content) || '[No text content]';
         if (role === 'assistant' || role === 'user') {
           turns.push({ role, text });
           if (role === 'assistant') assistantMsgs.push(text);
@@ -151,6 +152,7 @@ function read(filePath, lastN, opts = {}) {
     message_count: messageCount,
     messages_returned: messagesReturned,
     included_roles: rolesIncluded,
+    ...(opts.includeToolCalls ? { included_tool_calls: true } : {}),
   };
 }
 

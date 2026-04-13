@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const {
   normalizePath, collectMatchingFiles, readJsonlLines,
-  findLatestByCwd, cwdMatchesProject, getFileTimestamp, extractClaudeText, redactSensitiveText, isSystemDirectory,
+  findLatestByCwd, cwdMatchesProject, getFileTimestamp, extractClaudeText, extractClaudeContentWithToolCalls, redactSensitiveText, isSystemDirectory,
 } = require('./utils.cjs');
 
 const claudeProjectsBase = normalizePath(process.env.CHORUS_CLAUDE_PROJECTS_DIR || process.env.BRIDGE_CLAUDE_PROJECTS_DIR || '~/.claude/projects');
@@ -94,7 +94,8 @@ function read(filePath, lastN, opts = {}) {
       const role = (message.role || json.type || '').toLowerCase();
       if (role === 'assistant' || role === 'user') {
         const content = message.content !== undefined ? message.content : json.content;
-        const text = extractClaudeText(content);
+        const extractFn = opts.includeToolCalls ? extractClaudeContentWithToolCalls : extractClaudeText;
+        const text = extractFn(content);
         if (text) {
           turns.push({ role, text });
           if (role === 'assistant') messages.push(text);
@@ -145,6 +146,7 @@ function read(filePath, lastN, opts = {}) {
     message_count: messageCount,
     messages_returned: messagesReturned,
     included_roles: rolesIncluded,
+    ...(opts.includeToolCalls ? { included_tool_calls: true } : {}),
   };
 }
 

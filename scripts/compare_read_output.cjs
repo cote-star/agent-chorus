@@ -48,8 +48,11 @@ function canonicalize(value, key) {
   }
 
   if (value && typeof value === 'object') {
+    // Node-only fields not yet in Rust — skip for parity comparison
+    const skipKeys = new Set(['included_roles', 'included_tool_calls']);
     const out = {};
     for (const k of Object.keys(value).sort()) {
+      if (skipKeys.has(k)) continue;
       out[k] = canonicalize(value[k], k);
     }
     return out;
@@ -69,6 +72,7 @@ function canonicalize(value, key) {
   if (key === 'modified_at') {
     return null;
   }
+
 
   // Strip file_path for golden file comparison
   if (key === 'file_path' && typeof value === 'string') {

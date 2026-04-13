@@ -151,6 +151,104 @@ function extractClaudeText(value) {
     .join('');
 }
 
+function extractClaudeContentWithToolCalls(value) {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return '';
+
+  return value
+    .map(part => {
+      if (!part) return '';
+      if (part.type === 'text') return part.text || '';
+      if (part.type === 'tool_use') {
+        const name = part.name || 'unknown';
+        let inputStr = '';
+        try {
+          inputStr = JSON.stringify(part.input, null, 2);
+        } catch (_) {
+          inputStr = String(part.input || '');
+        }
+        return `[TOOL: ${name}]\n${inputStr}\n[/TOOL]`;
+      }
+      if (part.type === 'tool_result') {
+        const toolId = part.tool_use_id || '';
+        const content = typeof part.content === 'string'
+          ? part.content
+          : (Array.isArray(part.content)
+            ? part.content.map(c => c.text || '').join('')
+            : '');
+        return `[TOOL_RESULT: ${toolId}]\n${content}\n[/TOOL_RESULT]`;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractContentWithToolCalls(value) {
+  if (typeof value === 'string') return value;
+  if (!Array.isArray(value)) return '';
+
+  return value
+    .map(part => {
+      if (typeof part === 'string') return part;
+      if (part && typeof part.text === 'string') return part.text;
+      if (part && part.type === 'function_call') {
+        const name = part.name || 'unknown';
+        let argStr = '';
+        try {
+          argStr = typeof part.arguments === 'string'
+            ? part.arguments
+            : JSON.stringify(part.arguments, null, 2);
+        } catch (_) {
+          argStr = String(part.arguments || '');
+        }
+        return `[TOOL: ${name}]\n${argStr}\n[/TOOL]`;
+      }
+      if (part && part.type === 'tool_use') {
+        const name = part.name || 'unknown';
+        let inputStr = '';
+        try {
+          inputStr = JSON.stringify(part.input, null, 2);
+        } catch (_) {
+          inputStr = String(part.input || '');
+        }
+        return `[TOOL: ${name}]\n${inputStr}\n[/TOOL]`;
+      }
+      return '';
+    })
+    .filter(Boolean)
+    .join('\n');
+}
+
+function extractToolCallSummary(value) {
+  if (!Array.isArray(value)) return {};
+  const counts = {};
+  for (const part of value) {
+    if (!part) continue;
+    if (part.type === 'tool_use' && part.name) {
+      counts[part.name] = (counts[part.name] || 0) + 1;
+    }
+    if (part.type === 'function_call' && part.name) {
+      counts[part.name] = (counts[part.name] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function extractFilePaths(value) {
+  if (!Array.isArray(value)) return [];
+  const paths = new Set();
+  for (const part of value) {
+    if (!part) continue;
+    if ((part.type === 'tool_use' || part.type === 'function_call') && part.input) {
+      const input = typeof part.input === 'string' ? (() => { try { return JSON.parse(part.input); } catch (_) { return {}; } })() : part.input;
+      if (input.file_path) paths.add(input.file_path);
+      if (input.path) paths.add(input.path);
+    }
+  }
+  return [...paths];
+}
+
 function redactSensitiveText(input) {
   let output = String(input || '');
   // OpenAI keys (sk-proj-, sk-ant-, sk-...) with hyphens allowed
@@ -244,6 +342,10 @@ module.exports = {
   getFileTimestamp,
   extractText,
   extractClaudeText,
+  extractClaudeContentWithToolCalls,
+  extractContentWithToolCalls,
+  extractToolCallSummary,
+  extractFilePaths,
   redactSensitiveText,
   redactSensitiveTextWithAudit,
   isSystemDirectory,
