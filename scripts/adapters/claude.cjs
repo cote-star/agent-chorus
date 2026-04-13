@@ -30,6 +30,31 @@ function getClaudeSessionCwd(filePath) {
   return null;
 }
 
+function selectConversationTurns(turns, lastN) {
+  const assistantIndexes = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    if (turns[i].role === 'assistant') assistantIndexes.push(i);
+  }
+  if (assistantIndexes.length === 0) return [];
+
+  const selected = [];
+  const chosen = assistantIndexes.slice(-Math.max(1, lastN));
+  let lowerBound = 0;
+  for (const assistantIndex of chosen) {
+    let userIndex = -1;
+    for (let i = assistantIndex - 1; i >= lowerBound; i -= 1) {
+      if (turns[i].role === 'user') {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex >= 0) selected.push(turns[userIndex]);
+    selected.push(turns[assistantIndex]);
+    lowerBound = assistantIndex + 1;
+  }
+  return selected;
+}
+
 function resolve(id, cwd, opts) {
   const warnings = [];
   if (!fs.existsSync(claudeProjectsBase)) return null;
@@ -53,10 +78,11 @@ function resolve(id, cwd, opts) {
   return { path: files[0].path, warnings };
 }
 
-function read(filePath, lastN) {
+function read(filePath, lastN, opts = {}) {
   lastN = lastN || 1;
   const lines = readJsonlLines(filePath);
   const messages = [];
+  const turns = [];
   let skipped = 0;
   let sessionCwd = null;
 
@@ -65,10 +91,14 @@ function read(filePath, lastN) {
       const json = JSON.parse(line);
       if (typeof json.cwd === 'string' && !sessionCwd) sessionCwd = json.cwd;
       const message = json.message || json;
-      if (json.type === 'assistant' || message.role === 'assistant') {
+      const role = (message.role || json.type || '').toLowerCase();
+      if (role === 'assistant' || role === 'user') {
         const content = message.content !== undefined ? message.content : json.content;
         const text = extractClaudeText(content);
-        if (text) messages.push(text);
+        if (text) {
+          turns.push({ role, text });
+          if (role === 'assistant') messages.push(text);
+        }
       }
     } catch (error) {
       skipped += 1;
@@ -84,9 +114,15 @@ function read(filePath, lastN) {
   const sessionId = path.basename(filePath, path.extname(filePath));
   let content;
   let messagesReturned = 1;
+  let rolesIncluded = ['assistant'];
 
   if (messages.length > 0) {
-    if (lastN > 1) {
+    if (opts.includeUser) {
+      const selected = selectConversationTurns(turns, lastN);
+      messagesReturned = selected.length;
+      rolesIncluded = ['user', 'assistant'];
+      content = selected.map(entry => `${entry.role.toUpperCase()}:\n${entry.text}`).join('\n---\n');
+    } else if (lastN > 1) {
       const selected = messages.slice(-lastN);
       messagesReturned = selected.length;
       content = selected.join('\n---\n');
@@ -108,6 +144,7 @@ function read(filePath, lastN) {
     timestamp: getFileTimestamp(filePath),
     message_count: messageCount,
     messages_returned: messagesReturned,
+    included_roles: rolesIncluded,
   };
 }
 

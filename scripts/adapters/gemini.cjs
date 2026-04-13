@@ -18,6 +18,30 @@ function compareByMtimeDesc(a, b) {
   return String(a.path).localeCompare(String(b.path));
 }
 
+function selectConversationTurns(turns, lastN) {
+  const assistantIndexes = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    if (turns[i].role === 'assistant') assistantIndexes.push(i);
+  }
+  if (assistantIndexes.length === 0) return [];
+
+  const selected = [];
+  let lowerBound = 0;
+  for (const assistantIndex of assistantIndexes.slice(-Math.max(1, lastN))) {
+    let userIndex = -1;
+    for (let i = assistantIndex - 1; i >= lowerBound; i -= 1) {
+      if (turns[i].role === 'user') {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex >= 0) selected.push(turns[userIndex]);
+    selected.push(turns[assistantIndex]);
+    lowerBound = assistantIndex + 1;
+  }
+  return selected;
+}
+
 function listGeminiChatDirs() {
   if (!fs.existsSync(geminiTmpBase)) return [];
   let entries = [];
@@ -79,7 +103,7 @@ function resolve(id, cwd, opts) {
   return candidates.length > 0 ? { path: candidates[0].path, warnings, searchedDirs: dirs } : null;
 }
 
-function read(filePath, lastN) {
+function read(filePath, lastN, opts = {}) {
   lastN = lastN || 1;
   let session;
   try {
@@ -92,44 +116,61 @@ function read(filePath, lastN) {
   let content = '';
   let messageCount = 0;
   let messagesReturned = 1;
+  let rolesIncluded = ['assistant'];
+  const turns = [];
 
   if (Array.isArray(session.messages)) {
-    const assistantMsgs = session.messages.filter(m => {
-      const type = (m.type || '').toLowerCase();
-      return type === 'gemini' || type === 'assistant' || type === 'model';
-    });
+    for (const msg of session.messages) {
+      const type = (msg.type || msg.role || '').toLowerCase();
+      const role = (type === 'gemini' || type === 'assistant' || type === 'model')
+        ? 'assistant'
+        : (type === 'user' ? 'user' : null);
+      if (!role) continue;
+      const text = typeof msg.content === 'string'
+        ? msg.content
+        : (extractText(msg.content || msg.parts) || '[No text content]');
+      if (text) turns.push({ role, text });
+    }
+    const assistantMsgs = turns.filter(t => t.role === 'assistant').map(t => t.text);
     messageCount = assistantMsgs.length;
 
-    if (lastN > 1 && assistantMsgs.length > 0) {
+    if (opts.includeUser && assistantMsgs.length > 0) {
+      const selected = selectConversationTurns(turns, lastN);
+      messagesReturned = selected.length;
+      rolesIncluded = ['user', 'assistant'];
+      content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
+    } else if (lastN > 1 && assistantMsgs.length > 0) {
       const selected = assistantMsgs.slice(-lastN);
       messagesReturned = selected.length;
-      content = selected.map(m => typeof m.content === 'string' ? m.content : extractText(m.content) || '[No text content]').join('\n---\n');
+      content = selected.join('\n---\n');
     } else {
-      const selected = [...session.messages].reverse().find(m => {
-        const type = (m.type || '').toLowerCase();
-        return type === 'gemini' || type === 'assistant' || type === 'model';
-      }) || session.messages[session.messages.length - 1];
-      if (!selected) throw new Error('Gemini session has no messages.');
-      content = typeof selected.content === 'string' ? selected.content : extractText(selected.content) || '[No text content]';
+      if (assistantMsgs.length === 0) throw new Error('Gemini session has no assistant messages.');
+      content = assistantMsgs[assistantMsgs.length - 1];
     }
   } else if (Array.isArray(session.history)) {
-    const assistantTurns = session.history.filter(t => (t.role || '').toLowerCase() !== 'user');
+    for (const turn of session.history) {
+      const role = (turn.role || '').toLowerCase() === 'user' ? 'user' : 'assistant';
+      let text = '';
+      if (Array.isArray(turn.parts)) text = turn.parts.map(p => p.text || '').join('\n');
+      else if (typeof turn.parts === 'string') text = turn.parts;
+      else text = '[No text content]';
+      if (text) turns.push({ role, text });
+    }
+    const assistantTurns = turns.filter(t => t.role === 'assistant').map(t => t.text);
     messageCount = assistantTurns.length;
 
-    if (lastN > 1 && assistantTurns.length > 0) {
+    if (opts.includeUser && assistantTurns.length > 0) {
+      const selected = selectConversationTurns(turns, lastN);
+      messagesReturned = selected.length;
+      rolesIncluded = ['user', 'assistant'];
+      content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
+    } else if (lastN > 1 && assistantTurns.length > 0) {
       const selected = assistantTurns.slice(-lastN);
       messagesReturned = selected.length;
-      content = selected.map(turn => {
-        if (Array.isArray(turn.parts)) return turn.parts.map(p => p.text || '').join('\n');
-        if (typeof turn.parts === 'string') return turn.parts;
-        return '[No text content]';
-      }).join('\n---\n');
+      content = selected.join('\n---\n');
     } else {
-      const selected = [...session.history].reverse().find(t => (t.role || '').toLowerCase() !== 'user') || session.history[session.history.length - 1];
-      if (!selected) throw new Error('Gemini history is empty.');
-      if (Array.isArray(selected.parts)) content = selected.parts.map(p => p.text || '').join('\n');
-      else if (typeof selected.parts === 'string') content = selected.parts;
-      else content = '[No text content]';
+      if (assistantTurns.length === 0) throw new Error('Gemini history is empty.');
+      content = assistantTurns[assistantTurns.length - 1];
     }
   } else {
     throw new Error('Unknown Gemini session schema. Supported fields: messages, history.');
@@ -145,6 +186,7 @@ function read(filePath, lastN) {
     timestamp: getFileTimestamp(filePath),
     message_count: messageCount,
     messages_returned: messagesReturned,
+    included_roles: rolesIncluded,
   };
 }
 

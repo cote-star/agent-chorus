@@ -74,6 +74,7 @@ function printHelp(topic = null) {
     lines.push('  --cwd <path>');
     lines.push('  --chats-dir <path> (gemini)');
     lines.push('  --last <N>');
+    lines.push('  --include-user       Include the latest user prompt(s) that anchor returned assistant messages');
     lines.push('  --json');
   } else if (topic === 'list') {
     lines.push('');
@@ -387,11 +388,12 @@ function makeManagedBlock(provider, snippetRelPath) {
     'run Agent Chorus commands first and answer with evidence from session output.',
     '',
     'Session routing and defaults:',
-    '1. Start with `chorus read --agent <target-agent> --cwd <project-path> --json` (omit `--id` for latest).',
-    '2. "past session" means previous session: list 2 and read the second session ID.',
-    '3. "past N sessions" means exclude latest: list N+1 and read the older N session IDs.',
-    '4. "last N sessions" means include latest: list N and read/summarize those sessions.',
-    '5. Ask for a session ID only after an initial read/list attempt fails or when exact ID is requested.',
+    '1. For status checks like "What is Claude doing?", start with `chorus read --agent <target-agent> --cwd <project-path> --include-user --json` (omit `--id` for latest).',
+    '2. For plain handoff/output checks, use `chorus read --agent <target-agent> --cwd <project-path> --json`.',
+    '3. "past session" means previous session: list 2 and read the second session ID.',
+    '4. "past N sessions" means exclude latest: list N+1 and read the older N session IDs.',
+    '5. "last N sessions" means include latest: list N and read/summarize those sessions.',
+    '6. Ask for a session ID only after an initial read/list attempt fails or when exact ID is requested.',
     '',
     'Support commands:',
     '- `chorus list --agent <agent> --cwd <project-path> --json`',
@@ -1273,7 +1275,7 @@ function searchSessions(query, agent, cwd, limit) {
   return adapter.search(query, cwd || null, limit || 10);
 }
 
-function readSessionViaAdapter(agent, { id, cwd, chatsDir, lastN }) {
+function readSessionViaAdapter(agent, { id, cwd, chatsDir, lastN, includeUser }) {
   const adapter = getAdapter(agent);
   const resolved = adapter.resolve(id || null, cwd, { chatsDir: chatsDir || null });
 
@@ -1284,7 +1286,7 @@ function readSessionViaAdapter(agent, { id, cwd, chatsDir, lastN }) {
     throw new Error(`No ${agent.charAt(0).toUpperCase() + agent.slice(1)} session found.`);
   }
 
-  const result = adapter.read(resolved.path, lastN || 1);
+  const result = adapter.read(resolved.path, lastN || 1, { includeUser: includeUser === true });
   const adapterWarnings = Array.isArray(resolved.warnings) ? resolved.warnings : [];
   result.warnings = [...adapterWarnings, ...(result.warnings || [])];
   return result;
@@ -1625,12 +1627,14 @@ function runRead(inputArgs) {
   const metadataOnly = hasFlag(inputArgs, '--metadata-only');
   const auditRedactions = hasFlag(inputArgs, '--audit-redactions');
   const lastN = parseInt(getOptionValue(inputArgs, '--last', '1'), 10) || 1;
+  const includeUser = hasFlag(inputArgs, '--include-user');
 
   const result = readSessionViaAdapter(agent, {
     id,
     cwd,
     chatsDir,
     lastN,
+    includeUser,
   });
 
   renderReadResult(result, asJson, metadataOnly, auditRedactions);
@@ -1740,7 +1744,7 @@ function runSetup(inputArgs) {
       '- "Show the past 3 sessions from Claude"',
       '',
       'Intent router:',
-      '- "What is Claude doing?" -> `chorus read --agent claude --cwd <project-path> --json`',
+      '- "What is Claude doing?" -> `chorus read --agent claude --cwd <project-path> --include-user --json`',
       '- "What did Gemini say?" -> `chorus read --agent gemini --cwd <project-path> --json`',
       '- "Compare Codex and Claude outputs" -> `chorus compare --source codex --source claude --cwd <project-path> --json`',
       '',
@@ -1752,7 +1756,8 @@ function runSetup(inputArgs) {
       '- Ask for session ID only after first fetch fails or exact ID is requested.',
       '',
       'Commands:',
-      '- `chorus read --agent <target-agent> --cwd <project-path> --json`',
+      '- `chorus read --agent <target-agent> --cwd <project-path> --include-user --json` for live status checks',
+      '- `chorus read --agent <target-agent> --cwd <project-path> --json` for assistant-only handoff/output reads',
       '- `chorus list --agent <agent> --cwd <project-path> --json`',
       '- `chorus search "<query>" --agent <agent> --cwd <project-path> --json`',
       '- `chorus compare --source codex --source gemini --source claude --cwd <project-path> --json`',

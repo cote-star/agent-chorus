@@ -14,7 +14,7 @@ Ask one agent what another is doing, and get an evidence-backed answer. No copy-
 ![Before/after workflow](docs/silo-tax-before-after.webp)
 
 ```bash
-chorus read --agent claude --json
+chorus read --agent claude --include-user --json
 ```
 
 **Two problems, one tool:**
@@ -40,24 +40,26 @@ Three agents working on checkout. You ask Codex what the others are doing.
 Every response is structured, source-tracked, and redacted:
 
 ```bash
-chorus read --agent codex --json
+chorus read --agent codex --include-user --json
 ```
 
 ```json
 {
   "agent": "codex",
   "source": "/home/user/.codex/sessions/2026/03/12/session-abc123.jsonl",
-  "content": "The assistant's response with evidence...",
+  "content": "USER:\nInvestigate the auth regression in the latest branch.\n---\nASSISTANT:\nI am tracing the auth middleware and session issuance flow now...",
   "warnings": [],
   "session_id": "session-abc123",
   "cwd": "/workspace/project",
   "timestamp": "2026-03-12T10:30:00Z",
   "message_count": 12,
-  "messages_returned": 1
+  "messages_returned": 2,
+  "included_roles": ["user", "assistant"]
 }
 ```
 
 Source file, session ID, and timestamp on every response. Secrets auto-redacted before output. Warnings surface scope mismatches.
+Assistant-only remains the default; `--include-user` is the opt-in mode for live status checks where the latest prompt matters.
 
 ## Quick Start
 
@@ -132,7 +134,7 @@ After `chorus setup`, provider instructions follow this behavior:
 Gemini crashed mid-task. Tell Claude to pick up where it left off.
 
 ```bash
-chorus read --agent gemini --cwd . --json
+chorus read --agent gemini --cwd . --include-user --json
 ```
 
 Your agent reads Gemini's last output with full context — file paths, session ID, timestamps — and continues the work.
@@ -251,7 +253,7 @@ sequenceDiagram
     participant Sessions as Other Agent Sessions
 
     User->>Agent: "What is Claude doing?"
-    Agent->>Chorus: chorus read --agent claude --json
+    Agent->>Chorus: chorus read --agent claude --include-user --json
     Chorus->>Sessions: Scan ~/.claude/projects/*.jsonl
     Sessions-->>Chorus: Raw session data
     Chorus->>Chorus: Redact secrets, format

@@ -27,6 +27,30 @@ function isCursorFile(name) {
     && (name.includes('chat') || name.includes('composer') || name.includes('conversation'));
 }
 
+function selectConversationTurns(turns, lastN) {
+  const assistantIndexes = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    if (turns[i].role === 'assistant') assistantIndexes.push(i);
+  }
+  if (assistantIndexes.length === 0) return [];
+
+  const selected = [];
+  let lowerBound = 0;
+  for (const assistantIndex of assistantIndexes.slice(-Math.max(1, lastN))) {
+    let userIndex = -1;
+    for (let i = assistantIndex - 1; i >= lowerBound; i -= 1) {
+      if (turns[i].role === 'user') {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex >= 0) selected.push(turns[userIndex]);
+    selected.push(turns[assistantIndex]);
+    lowerBound = assistantIndex + 1;
+  }
+  return selected;
+}
+
 function resolve(id, cwd, opts) {
   if (!fs.existsSync(cursorDataBase)) return null;
   const workspacesDir = getWorkspacesDir();
@@ -42,20 +66,39 @@ function resolve(id, cwd, opts) {
   return files.length > 0 ? { path: files[0].path, warnings } : null;
 }
 
-function read(filePath, lastN) {
+function read(filePath, lastN, opts = {}) {
   lastN = lastN || 1;
   const raw = fs.readFileSync(filePath, 'utf-8');
   let content = '';
   let messageCount = 0;
+  let messagesReturned = 1;
+  let rolesIncluded = ['assistant'];
 
   try {
     const json = JSON.parse(raw);
     if (Array.isArray(json.messages)) {
-      const assistantMsgs = json.messages.filter(m => m.role === 'assistant');
+      const turns = json.messages
+        .filter(m => m.role === 'assistant' || m.role === 'user')
+        .map(m => ({
+          role: m.role,
+          text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
+        }));
+      const assistantMsgs = turns.filter(m => m.role === 'assistant').map(m => m.text);
       messageCount = assistantMsgs.length;
-      content = assistantMsgs.length > 0
-        ? (assistantMsgs[assistantMsgs.length - 1].content || '[No text content]')
-        : '[No assistant messages found]';
+      if (opts.includeUser && assistantMsgs.length > 0) {
+        const selected = selectConversationTurns(turns, lastN);
+        messagesReturned = selected.length;
+        rolesIncluded = ['user', 'assistant'];
+        content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
+      } else if (lastN > 1 && assistantMsgs.length > 0) {
+        const selected = assistantMsgs.slice(-lastN);
+        messagesReturned = selected.length;
+        content = selected.join('\n---\n');
+      } else {
+        content = assistantMsgs.length > 0
+          ? assistantMsgs[assistantMsgs.length - 1]
+          : '[No assistant messages found]';
+      }
     } else if (typeof json.content === 'string') {
       content = json.content;
       messageCount = 1;
@@ -64,17 +107,34 @@ function read(filePath, lastN) {
     }
   } catch (error) {
     const lines = raw.split('\n').filter(Boolean);
-    const msgs = [];
+    const turns = [];
     for (const line of lines) {
       try {
         const json = JSON.parse(line);
-        if (json.role === 'assistant' && typeof json.content === 'string') {
-          msgs.push(json.content);
+        if ((json.role === 'assistant' || json.role === 'user') && typeof json.content === 'string') {
+          turns.push({ role: json.role, text: json.content });
         }
       } catch (e) { /* skip */ }
     }
-    messageCount = msgs.length;
-    content = msgs.length > 0 ? msgs[msgs.length - 1] : lines.slice(-20).join('\n');
+    const assistantMsgs = turns.filter(m => m.role === 'assistant').map(m => m.text);
+    messageCount = assistantMsgs.length;
+    if (opts.includeUser && assistantMsgs.length > 0) {
+      const selected = selectConversationTurns(turns, lastN);
+      messagesReturned = selected.length;
+      rolesIncluded = ['user', 'assistant'];
+      content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
+    } else if (assistantMsgs.length > 0) {
+      if (lastN > 1) {
+        const selected = assistantMsgs.slice(-lastN);
+        messagesReturned = selected.length;
+        content = selected.join('\n---\n');
+      } else {
+        content = assistantMsgs[assistantMsgs.length - 1];
+      }
+    } else {
+      content = lines.slice(-20).join('\n');
+      messagesReturned = 0;
+    }
   }
 
   const sessionId = path.basename(filePath, path.extname(filePath));
@@ -88,7 +148,8 @@ function read(filePath, lastN) {
     cwd: null,
     timestamp: getFileTimestamp(filePath),
     message_count: messageCount,
-    messages_returned: 1,
+    messages_returned: messagesReturned,
+    included_roles: rolesIncluded,
   };
 }
 

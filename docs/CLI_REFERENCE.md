@@ -5,7 +5,7 @@ Use this page for full command syntax, examples, output contracts, and operation
 ## Command Contract
 
 ```bash
-chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json] [--metadata-only] [--audit-redactions]
+chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--include-user] [--json] [--metadata-only] [--audit-redactions]
 chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--last=<N>] [--json]
 chorus report --handoff <handoff.json> [--cwd=<path>] [--json]
 chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
@@ -29,6 +29,9 @@ chorus read --agent codex
 # Read from Claude, scoped to current working directory
 chorus read --agent claude --cwd /path/to/project
 
+# Read live status with the latest user prompt included
+chorus read --agent claude --cwd /path/to/project --include-user --json
+
 # Read the previous (past) Claude session
 chorus list --agent claude --cwd /path/to/project --limit 2 --json
 chorus read --agent claude --id "<second-session-id>" --cwd /path/to/project
@@ -44,6 +47,7 @@ chorus read --agent gemini --json
 ```
 
 When `--last N` is greater than 1, multiple messages are separated by `\n---\n` in the `content` field.
+When `--include-user` is present, Chorus includes the user prompt(s) that anchor the returned assistant message(s). This is intended for live status checks; assistant-only remains the default for narrower handoff reads.
 
 **JSON output includes metadata:**
 
@@ -51,13 +55,14 @@ When `--last N` is greater than 1, multiple messages are separated by `\n---\n` 
 {
   "agent": "codex",
   "source": "/path/to/session.jsonl",
-  "content": "The assistant's response...",
+  "content": "USER:\nInvestigate the auth regression.\n---\nASSISTANT:\nI am tracing the middleware and session issuance flow now...",
   "warnings": [],
   "session_id": "session-abc123",
   "cwd": "/workspace/project",
   "timestamp": "2026-01-15T10:30:00Z",
   "message_count": 12,
-  "messages_returned": 1
+  "messages_returned": 2,
+  "included_roles": ["user", "assistant"]
 }
 ```
 
@@ -208,6 +213,9 @@ A CI workflow template is available at `templates/ci-agent-context.yml`.
 ```bash
 # Handoff recovery: read latest work from another agent in this repo
 chorus read --agent claude --cwd . --json
+
+# Live status check: include the current prompt that defines the work
+chorus read --agent claude --cwd . --include-user --json
 
 # Cross-agent verification: validate a claim with search + compare
 chorus search "processPayment" --agent codex --cwd . --json

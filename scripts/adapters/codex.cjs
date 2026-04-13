@@ -29,6 +29,30 @@ function getCodexSessionCwd(filePath) {
   return null;
 }
 
+function selectConversationTurns(turns, lastN) {
+  const assistantIndexes = [];
+  for (let i = 0; i < turns.length; i += 1) {
+    if (turns[i].role === 'assistant') assistantIndexes.push(i);
+  }
+  if (assistantIndexes.length === 0) return [];
+
+  const selected = [];
+  let lowerBound = 0;
+  for (const assistantIndex of assistantIndexes.slice(-Math.max(1, lastN))) {
+    let userIndex = -1;
+    for (let i = assistantIndex - 1; i >= lowerBound; i -= 1) {
+      if (turns[i].role === 'user') {
+        userIndex = i;
+        break;
+      }
+    }
+    if (userIndex >= 0) selected.push(turns[userIndex]);
+    selected.push(turns[assistantIndex]);
+    lowerBound = assistantIndex + 1;
+  }
+  return selected;
+}
+
 function resolve(id, cwd, opts) {
   const warnings = [];
   if (!fs.existsSync(codexSessionsBase)) return null;
@@ -52,10 +76,11 @@ function resolve(id, cwd, opts) {
   return { path: files[0].path, warnings };
 }
 
-function read(filePath, lastN) {
+function read(filePath, lastN, opts = {}) {
   lastN = lastN || 1;
   const lines = readJsonlLines(filePath);
-  const messages = [];
+  const assistantMsgs = [];
+  const turns = [];
   let skipped = 0;
   let sessionCwd = null;
   let sessionId = null;
@@ -68,9 +93,18 @@ function read(filePath, lastN) {
         if (typeof json.payload.session_id === 'string') sessionId = json.payload.session_id;
       }
       if (json.type === 'response_item' && json.payload && json.payload.type === 'message') {
-        messages.push(json.payload);
+        const role = (json.payload.role || '').toLowerCase();
+        const text = extractText(json.payload.content) || '[No text content]';
+        if (role === 'assistant' || role === 'user') {
+          turns.push({ role, text });
+          if (role === 'assistant') assistantMsgs.push(text);
+        }
       } else if (json.type === 'event_msg' && json.payload && json.payload.type === 'agent_message') {
-        messages.push({ role: 'assistant', content: json.payload.message });
+        const text = typeof json.payload.message === 'string'
+          ? json.payload.message
+          : (extractText(json.payload.message) || '[No text content]');
+        turns.push({ role: 'assistant', text });
+        assistantMsgs.push(text);
       }
     } catch (error) {
       skipped += 1;
@@ -82,20 +116,24 @@ function read(filePath, lastN) {
     warnings.push(`Warning: skipped ${skipped} unparseable line(s) in ${filePath}`);
   }
 
-  const assistantMsgs = messages.filter(m => (m.role || '').toLowerCase() === 'assistant');
   const messageCount = assistantMsgs.length;
   if (!sessionId) sessionId = path.basename(filePath, path.extname(filePath));
 
   let content = '';
   let messagesReturned = 1;
-  if (messages.length > 0) {
-    if (lastN > 1 && assistantMsgs.length > 0) {
+  let rolesIncluded = ['assistant'];
+  if (turns.length > 0) {
+    if (opts.includeUser && assistantMsgs.length > 0) {
+      const selected = selectConversationTurns(turns, lastN);
+      messagesReturned = selected.length;
+      rolesIncluded = ['user', 'assistant'];
+      content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
+    } else if (lastN > 1 && assistantMsgs.length > 0) {
       const selected = assistantMsgs.slice(-lastN);
       messagesReturned = selected.length;
-      content = selected.map(m => extractText(m.content) || '[No text content]').join('\n---\n');
+      content = selected.join('\n---\n');
     } else {
-      const selected = assistantMsgs.length > 0 ? assistantMsgs[assistantMsgs.length - 1] : messages[messages.length - 1];
-      content = extractText(selected.content) || '[No text content]';
+      content = assistantMsgs.length > 0 ? assistantMsgs[assistantMsgs.length - 1] : turns[turns.length - 1].text;
     }
   } else {
     content = `Could not extract structured messages. Showing last 20 raw lines:\n${lines.slice(-20).join('\n')}`;
@@ -112,6 +150,7 @@ function read(filePath, lastN) {
     timestamp: getFileTimestamp(filePath),
     message_count: messageCount,
     messages_returned: messagesReturned,
+    included_roles: rolesIncluded,
   };
 }
 
