@@ -9,6 +9,7 @@ repository = "https://github.com/cote-star/agent-chorus"
 homepage = "https://github.com/cote-star/agent-chorus"
 documentation = "https://docs.rs/agent-chorus"
 readme = "../README.md"
+exclude = ["tests/", "fixtures/", ".env*", "target/"]
 keywords = ["agent-chorus", "multi-agent", "cli", "cross-agent", "context-engineering"]
 categories = ["command-line-utilities", "development-tools"]
 
