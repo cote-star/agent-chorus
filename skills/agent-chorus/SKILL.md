@@ -49,7 +49,6 @@ When this skill is triggered:
 13. Use `chorus read --tool-calls` when the user needs to see which files were read/edited or which commands were run in a session.
 14. Use `chorus summary` for a quick structured digest of a session (files referenced, tool call counts, duration) without reading full content.
 15. Use `chorus timeline` for a cross-agent chronological view of activity in a project.
-16. Use `chorus agent-context verify --ci` in CI pipelines to validate context pack integrity and freshness in a single pass.
 
 ## Intent Router
 
@@ -71,15 +70,11 @@ When this skill is triggered:
 | "Any messages for me?" | `chorus messages --agent claude --cwd <path> --json` |
 | "Which files are relevant?" | `chorus relevance --list --cwd <path> --json` |
 
-## Context Pack Usage
+## Scope Boundary
 
-When working in a repo that has `.agent-context/current/`:
+Chorus is a **session visibility and coordination** tool. It reads, compares, and routes across agent sessions.
 
-1. **Impact analysis tasks** (list all files that must change): read `30_BEHAVIORAL_INVARIANTS.md` Update Checklist *before* `20_CODE_MAP.md`. The checklist has the full blast radius per change type. CODE_MAP is a navigation index — it is not exhaustive.
-2. **Navigation tasks** (find a file, find a value): start with `20_CODE_MAP.md`.
-3. **Diagnosis tasks** (silent failures, unexpected output): start with `10_SYSTEM_OVERVIEW.md` Silent Failure Modes section.
-4. Never treat CODE_MAP as a complete list of affected files for a given change — always cross-reference BEHAVIORAL_INVARIANTS and verify with grep.
-5. Use `chorus agent-context verify --ci` in PR gates to validate pack integrity and freshness automatically.
+Creating, validating, and maintaining `.agent-context/` packs is a separate concern handled by the repo's own tooling (e.g., the `agent-context` skill from your team's skill registry, or the helper tools in `.agent-context/tools/`). When working in a repo that already has `.agent-context/current/`, follow that repo's `CLAUDE.md` or `AGENTS.md` routing — do not use chorus commands for pack management.
 
 ## Output Quality Bar
 

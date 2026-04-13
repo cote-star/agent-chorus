@@ -179,7 +179,8 @@ The agent reads the repo, fills all 9 files, validates, self-tests, and commits.
 
 **Agents keep it fresh:**
 - Agent PRs include `.agent-context` updates as a separate commit
-- `chorus agent-context verify --ci` as a PR gate — fails if code changed but pack wasn't updated
+- `python3 .agent-context/tools/verify_context_pack.py` as a PR gate — fails if pack structure is invalid
+- `sh .agent-context/tools/check_freshness.sh` — fails if code changed but pack wasn't updated
 - Pre-push hook warns about staleness (advisory, never blocks)
 - After human-only work: "update the context pack" — agent diffs and proposes per-section patches
 
@@ -196,8 +197,8 @@ Full guide: `team_skills/skills/agent-context/references/getting-started.md`
 - [x] 16 design principles (P1–P16) validated across 3 repo types
 - [x] Getting started guide for teammates
 - [x] Standardized naming: `.agent-context` everywhere (CLI, skill, directory)
-- [x] `chorus agent-context verify --ci` for PR enforcement gates
-- [x] CI template for teams to copy (`templates/ci-agent-context.yml`)
+- [x] `verify_context_pack.py` + `check_freshness.sh` shipped with every pack for CI enforcement
+- [x] CI adaptation guide for teams (`references/ci-adaptation.md`, `references/ci-example.yml`)
 
 **Coming next:**
 - [ ] **Agent Context Map** — cross-repo routing layer (~500 tokens tells the agent which repos matter, how they connect, what cascades across repo boundaries)
@@ -218,7 +219,8 @@ The more repos have it, the better every agent works.**
 - **3 layers** validated: content (markdown), authority (JSON contracts), navigation (search scopes)
 - **1 template** — works for ML pipelines, CLI tools, React frontends with zero modifications
 - **Naming convention:** `.agent-context/` is the standard directory name across all repos
-- **CLI:** `chorus agent-context` (v0.10.0) — `context-pack` still works as deprecated alias
+
+**Note:** The `agent-context` skill in team_skills is the canonical team interface. It is self-contained — no external CLI needed. The agent-chorus CLI (`chorus agent-context`) is the upstream R&D prototype where improvements are tested before graduating into the skill.
 
 Full research: `agent-chorus/research/`
 Skill: `team_skills/skills/agent-context/`
