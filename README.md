@@ -2,7 +2,7 @@
 
 ![CI Status](https://github.com/cote-star/agent-chorus/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.10.0-green.svg)
+![Version](https://img.shields.io/badge/version-0.11.0-green.svg)
 [![Star History](https://img.shields.io/github/stars/cote-star/agent-chorus?style=social)](https://github.com/cote-star/agent-chorus)
 
 **Let your AI agents talk about each other.**
@@ -46,20 +46,23 @@ chorus read --agent codex --include-user --json
 ```json
 {
   "agent": "codex",
-  "source": "/home/user/.codex/sessions/2026/03/12/session-abc123.jsonl",
-  "content": "USER:\nInvestigate the auth regression in the latest branch.\n---\nASSISTANT:\nI am tracing the auth middleware and session issuance flow now...",
-  "warnings": [],
   "session_id": "session-abc123",
-  "cwd": "/workspace/project",
+  "content": "USER:\nInvestigate the auth regression...\n---\nASSISTANT:\nI am tracing the auth middleware...",
   "timestamp": "2026-03-12T10:30:00Z",
   "message_count": 12,
-  "messages_returned": 2,
-  "included_roles": ["user", "assistant"]
+  "source": "/home/user/.codex/sessions/2026/03/12/session-abc123.jsonl"
 }
 ```
 
-Source file, session ID, and timestamp on every response. Secrets auto-redacted before output. Warnings surface scope mismatches.
-Assistant-only remains the default; `--include-user` is the opt-in mode for live status checks where the latest prompt matters.
+Source file, session ID, and timestamp on every response. Secrets auto-redacted before output.
+
+Prefer markdown over JSON for human-facing output:
+
+```bash
+chorus read --agent codex --include-user --format markdown
+```
+
+Full JSON schema and field reference: [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md)
 
 ## Quick Start
 
@@ -118,7 +121,7 @@ After `chorus setup`, provider instructions follow this behavior:
 ## How It Works
 
 1. **Ask naturally** - "What is Claude doing?" / "Did Gemini finish the API?"
-2. **Agent runs chorus** - Your agent calls `chorus read`, `chorus list`, `chorus search`, `chorus compare`, `chorus diff`, `chorus send`, `chorus messages`, etc. behind the scenes.
+2. **Agent runs chorus** - Your agent calls `chorus summary`, `chorus read`, `chorus timeline`, `chorus compare`, `chorus search`, `chorus diff`, `chorus send`, `chorus messages`, etc. behind the scenes.
 3. **Evidence-backed answer** - Sources cited, divergences flagged, no hallucination.
 
 **Tenets:**
@@ -129,15 +132,37 @@ After `chorus setup`, provider instructions follow this behavior:
 
 ## Real-World Recipes
 
+### Quick Status Check
+
+What is Claude working on right now? Get a structured digest — files touched, tools used, duration — without reading the full session. No LLM calls.
+
+```bash
+chorus summary --agent claude --cwd . --json
+```
+
+### Cross-Agent Timeline
+
+See what every agent did across your project, in chronological order.
+
+```bash
+chorus timeline --cwd . --format markdown
+```
+
+### Tool Call Forensics
+
+See exactly which files an agent read and edited — not just what it said.
+
+```bash
+chorus read --agent codex --tool-calls --json
+```
+
 ### Handoff Recovery
 
-Gemini crashed mid-task. Tell Claude to pick up where it left off.
+Gemini crashed mid-task. Claude picks up where it left off, with full context.
 
 ```bash
 chorus read --agent gemini --cwd . --include-user --json
 ```
-
-Your agent reads Gemini's last output with full context — file paths, session ID, timestamps — and continues the work.
 
 ### Cross-Agent Verification
 
@@ -147,48 +172,78 @@ Codex says it fixed the payment bug. Verify against Claude's analysis before dep
 chorus compare --source codex --source claude --cwd . --json
 ```
 
-The response highlights agreements, contradictions, and divergences with evidence from both sessions.
-
 ### Security Audit
 
-Before merging, check what secrets appeared in agent sessions and were redacted.
+Check what secrets appeared in agent sessions and were redacted.
 
 ```bash
 chorus read --agent claude --audit-redactions --json
 ```
 
-Returns a `redactions` array showing each pattern matched (e.g., `openai_api_key`, `bearer_token`) and how many times.
-
 ### Agent Coordination
 
-Tell Codex the auth module is ready for review — without switching tabs.
+Tell Codex the auth module is ready — without switching tabs.
 
 ```bash
 chorus send --from claude --to codex --message "auth module ready for review" --cwd .
 chorus messages --agent codex --cwd . --json
 ```
 
-Messages are stored locally in `.agent-chorus/messages/` and never leave your machine.
-
 ## Supported Agents
 
-Full multi-agent coverage. No other tool matches this breadth across 4 agents and 9 capabilities.
+Full multi-agent coverage. No other tool matches this breadth across 4 agents and 11 capabilities.
 
-| Feature              | Codex | Gemini | Claude | Cursor |
-| :------------------- | :---: | :----: | :----: | :----: |
-| **Read Content**     |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Auto-Discovery**   |  Yes  |  Yes   |  Yes   |  Yes   |
-| **CWD Scoping**      |  Yes  |   No   |  Yes   |   No   |
-| **List Sessions**    |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Search**           |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Comparisons**      |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Session Diff**     |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Redaction Audit**  |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Messaging**        |  Yes  |  Yes   |  Yes   |  Yes   |
+| Feature               | Codex | Gemini | Claude | Cursor |
+| :-------------------- | :---: | :----: | :----: | :----: |
+| **Read Content**      |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Session Summary***  |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Timeline***         |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Auto-Discovery**    |  Yes  |  Yes   |  Yes   |  Yes   |
+| **CWD Scoping**       |  Yes  |   No   |  Yes   |   No   |
+| **List Sessions**     |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Search**            |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Comparisons**       |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Session Diff**      |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Redaction Audit**   |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Messaging**         |  Yes  |  Yes   |  Yes   |  Yes   |
 
-Both Node.js and Rust implementations pass identical conformance tests against shared fixtures.
+*\*New in v0.11.0. v0.11.0 features (Summary, Timeline, Tool Calls, Markdown output) are Node-only. Rust parity planned for v0.12.0.*
+
+Both Node.js and Rust implementations pass identical conformance tests against shared fixtures for core commands.
 
 ## Key Capabilities
+
+### Session Summary
+
+Structured session digest — files touched, tools used, duration — without reading the full content. No LLM calls required.
+
+```bash
+chorus summary --agent claude --cwd . --json
+```
+
+### Cross-Agent Timeline
+
+Chronological view interleaving sessions from multiple agents. See what happened across your entire project.
+
+```bash
+chorus timeline --cwd . --agent claude --agent codex --limit 5 --json
+```
+
+### Tool Call Visibility
+
+Surface every `Read`, `Edit`, `Bash`, and `Write` call an agent made — not just the text it produced.
+
+```bash
+chorus read --agent codex --tool-calls --json
+```
+
+### Markdown Output
+
+Render any read, summary, or timeline as formatted markdown instead of JSON. Useful for demos, docs, and human review.
+
+```bash
+chorus summary --agent claude --format markdown
+```
 
 ### Session Diff
 
@@ -200,7 +255,7 @@ chorus diff --agent codex --from session-abc --to session-def --cwd . --json
 
 ### Redaction Audit Trail
 
-See exactly what was redacted and why in any `chorus read` output.
+See exactly what was redacted and why in any session read.
 
 ```bash
 chorus read --agent claude --audit-redactions --json
@@ -212,7 +267,6 @@ Agents leave messages for each other through a local JSONL queue.
 
 ```bash
 chorus send --from claude --to codex --message "auth module ready for review" --cwd .
-chorus messages --agent codex --cwd . --json
 ```
 
 ### Relevance Introspection
@@ -222,8 +276,9 @@ Inspect and test the agent-context filtering patterns that decide which files ma
 ```bash
 chorus relevance --list --cwd .              # Show current include/exclude patterns
 chorus relevance --test src/main.rs --cwd .  # Test if a file matches
-chorus relevance --suggest --cwd .           # Suggest patterns for this project
 ```
+
+Full flag reference and JSON output schemas: [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md)
 
 ## How It Compares
 
@@ -234,6 +289,9 @@ chorus relevance --suggest --cwd .           # Suggest patterns for this project
 | **Agents** | Codex, Claude, Gemini, Cursor | Provider-specific | Usually Claude-only |
 | **Dependencies** | Zero npm prod deps | Heavy Python/TS stack | Moderate |
 | **Privacy** | Local-first, auto-redaction | Cloud-optional | Varies |
+| **Session summaries** | Built-in (no LLM) | None | None |
+| **Cross-agent timeline** | Built-in | None | None |
+| **Markdown output** | Built-in | N/A | None |
 | **Cold-start solution** | Context Pack (5-doc briefing) | None | None |
 | **Language** | Node.js + Rust (conformance-tested) | Python or TypeScript | Single language |
 | **Agent messaging** | Built-in JSONL queue | Framework-specific | None |
@@ -306,40 +364,9 @@ Ask your agent explicitly:
 
 ![Context Pack Demo](docs/demo-agent-context.webp)
 
-Full agent-context internals and policy details: [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md)
+CI gate available: `chorus agent-context verify --ci` exits non-zero if the pack is stale or corrupt — wire it into your PR checks.
 
-<details><summary>Sync policy, usage boundaries, and layered model</summary>
-
-### Main Push Sync Policy
-
-- Pushes that do not target `main`: skipped.
-- Pushes to `main` with no context-relevant changes: skipped.
-- Pushes to `main` with context-relevant changes: advisory warning printed (no auto-build).
-
-Optional pre-PR guard:
-
-```bash
-chorus agent-context check-freshness --base origin/main
-```
-
-### Usage Boundaries
-
-- Do not treat context pack as a substitute for source-of-truth when changing behavior-critical code.
-- Do not expect automatic updates from commits alone or non-`main` branch pushes.
-- Do not put secrets in context pack content; `.agent-context/current/` is tracked in git.
-
-### Layered Model
-
-- **Layer 0 (Evidence)**: cross-agent session reads with citations.
-- **Layer 1 (Context)**: agent-context index for deterministic repo onboarding.
-- **Layer 2 (Coordination, optional)**: explicit orchestration only when layers 0-1 are insufficient.
-
-Recovery matrix:
-
-- `.agent-context/current/` -> `git checkout <commit> -- .agent-context/current`
-- `.agent-context/snapshots/` -> `chorus agent-context rollback`
-
-</details>
+Full agent-context internals, sync policy, layered model, and enforcement details: [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md)
 
 ## Easter Egg
 
@@ -349,18 +376,10 @@ Recovery matrix:
 
 ## Roadmap
 
+- **Rust parity for v0.11.0** - summary, timeline, tool-calls, and markdown output in the Rust CLI (planned v0.12.0).
 - **Context Pack customization** - user-defined doc structure, custom sections, team templates.
 - **Windows installation** - native Windows support (currently macOS/Linux).
 - **Cross-agent context sharing** - agents share context snippets (still read-only, still local).
-
-<details><summary>Update notifications</summary>
-
-Chorus checks for updates once per version.
-- **Privacy**: Only contacts `registry.npmjs.org`.
-- **Fail-silent**: If the check fails, it says nothing.
-- **Opt-out**: Set `CHORUS_SKIP_UPDATE_CHECK=1`.
-
-</details>
 
 ## Go Deeper
 

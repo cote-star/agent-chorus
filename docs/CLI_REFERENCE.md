@@ -5,7 +5,9 @@ Use this page for full command syntax, examples, output contracts, and operation
 ## Command Contract
 
 ```bash
-chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--include-user] [--json] [--metadata-only] [--audit-redactions]
+chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--include-user] [--tool-calls] [--format=<json|markdown>] [--json] [--metadata-only] [--audit-redactions]
+chorus summary --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--format=<json|markdown>] [--json]
+chorus timeline [--agent <agent>]... [--cwd=<path>] [--limit=<N>] [--format=<json|markdown>] [--json]
 chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--last=<N>] [--json]
 chorus report --handoff <handoff.json> [--cwd=<path>] [--json]
 chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
@@ -64,6 +66,127 @@ When `--include-user` is present, Chorus includes the user prompt(s) that anchor
   "messages_returned": 2,
   "included_roles": ["user", "assistant"]
 }
+```
+
+### Tool Calls
+
+Use `--tool-calls` to include tool call content (Read, Edit, Bash, Write, etc.) that is normally stripped during extraction. When active, assistant messages include `[TOOL: <name>]...[/TOOL]` blocks alongside text content.
+
+```bash
+# See which files an agent read and edited
+chorus read --agent codex --tool-calls --json
+
+# Combine with --include-user for full forensics
+chorus read --agent claude --tool-calls --include-user --json
+```
+
+The JSON response includes `"included_tool_calls": true` in metadata when active. Without the flag, behavior is unchanged.
+
+## Session Summary
+
+Structured session digest without reading full content. Extracts metadata locally — no LLM calls.
+
+```bash
+# Quick status check
+chorus summary --agent claude --cwd . --json
+
+# Human-readable markdown output
+chorus summary --agent claude --format markdown
+```
+
+**JSON output:**
+
+```json
+{
+  "agent": "claude",
+  "session_id": "...",
+  "message_count": 47,
+  "duration_estimate": "~25 min",
+  "user_requests": ["Fix the auth bug"],
+  "files_referenced": ["src/auth.ts"],
+  "tool_calls_by_type": {"Read": 12, "Edit": 8, "Bash": 5},
+  "last_response_snippet": "Auth bug was in token refresh logic..."
+}
+```
+
+**Fields:**
+
+| Field | Type | Description |
+|---|---|---|
+| `agent` | `string` | Agent name |
+| `session_id` | `string` | Session identifier |
+| `message_count` | `number` | Total messages in session |
+| `duration_estimate` | `string` | First-to-last message timestamp delta |
+| `user_requests` | `string[]` | First 5 user messages, truncated to 150 chars each |
+| `files_referenced` | `string[]` | Extracted from `tool_use` inputs (`file_path`, `path` fields) |
+| `tool_calls_by_type` | `object` | Count of tool calls by tool name |
+| `last_response_snippet` | `string` | Last assistant message excerpt (300 chars, not an LLM summary) |
+
+## Timeline
+
+Cross-agent chronological view interleaving sessions from multiple agents for a given working directory.
+
+```bash
+# All agents, default limit
+chorus timeline --cwd . --json
+
+# Specific agents with custom limit
+chorus timeline --cwd ~/project --agent claude --agent codex --limit 5 --json
+
+# Human-readable markdown
+chorus timeline --cwd . --format markdown
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--agent` | Agent to include (repeatable) | All four agents |
+| `--cwd` | Working directory to scope sessions | Current directory |
+| `--limit` | Maximum sessions per agent | `5` |
+| `--format` | Output format: `json`, `markdown` / `md` | `json` (with `--json`) |
+
+**JSON output:**
+
+```json
+[
+  {
+    "agent": "claude",
+    "session_id": "session-abc",
+    "timestamp": "2026-04-13T14:30:00Z",
+    "snippet": "Last assistant message excerpt (200 chars)..."
+  },
+  {
+    "agent": "codex",
+    "session_id": "session-def",
+    "timestamp": "2026-04-13T14:15:00Z",
+    "snippet": "Another session excerpt..."
+  }
+]
+```
+
+Sessions are sorted by timestamp descending. Each entry includes a snippet from the last assistant message (200 chars).
+
+## Output Formats
+
+The `--format` flag controls output rendering. Supported on `chorus read`, `chorus summary`, and `chorus timeline`.
+
+| Format | Flag | Description |
+|---|---|---|
+| JSON | `--json` or `--format json` | Machine-readable structured output (default with `--json`) |
+| Markdown | `--format markdown` or `--format md` | Formatted markdown for human review, demos, and documentation |
+| Text | *(default)* | Plain text output |
+
+```bash
+# JSON (machine-readable)
+chorus summary --agent claude --json
+
+# Markdown (human-friendly)
+chorus summary --agent claude --format markdown
+
+# Works on read and timeline too
+chorus read --agent codex --format md
+chorus timeline --cwd . --format markdown
 ```
 
 ## Listing Sessions
@@ -211,8 +334,17 @@ A CI workflow template is available at `templates/ci-agent-context.yml`.
 ## Common Recipes
 
 ```bash
+# Quick status check: structured digest without full read
+chorus summary --agent claude --cwd . --json
+
+# Cross-agent timeline: what happened across all agents
+chorus timeline --cwd . --format markdown
+
+# Tool call forensics: what files did the agent actually touch?
+chorus read --agent codex --tool-calls --json
+
 # Handoff recovery: read latest work from another agent in this repo
-chorus read --agent claude --cwd . --json
+chorus read --agent claude --cwd . --include-user --json
 
 # Live status check: include the current prompt that defines the work
 chorus read --agent claude --cwd . --include-user --json
@@ -238,6 +370,9 @@ chorus messages --agent codex --cwd . --json
 
 # Context-pack filtering: check if a file is relevant
 chorus relevance --test src/api/routes.ts --cwd .
+
+# Human-friendly output for any command
+chorus summary --agent claude --format markdown
 ```
 
 ## Session Diff
@@ -516,3 +651,15 @@ The JSON response includes a `redactions` array:
 ```
 
 In text mode, a redaction summary is printed after the session content.
+
+## Update Notifications
+
+Chorus checks for updates once per version.
+
+- **Privacy**: Only contacts `registry.npmjs.org`.
+- **Fail-silent**: If the check fails, it says nothing.
+- **Opt-out**: Set `CHORUS_SKIP_UPDATE_CHECK=1`.
+
+## Parity Notes
+
+v0.11.0 features (`chorus summary`, `chorus timeline`, `--tool-calls`, `--format markdown`) are Node-only. Rust parity is planned for v0.12.0. Core commands (`read`, `list`, `search`, `compare`, `diff`, `send`, `messages`, `setup`, `doctor`, `teardown`, `agent-context`) have full Node/Rust parity with conformance-tested output contracts.

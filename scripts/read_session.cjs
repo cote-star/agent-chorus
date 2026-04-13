@@ -36,19 +36,20 @@ function printHelp(topic = null) {
     '',
     'Commands:',
     '  read      Read assistant messages from a session (default command)',
+    '  summary   Structured session digest (files, tools, duration)',
+    '  timeline  Cross-agent chronological view of sessions',
     '  list      List recent sessions for an agent',
     '  search    Search sessions by query text',
     '  compare   Compare outputs across agents',
+    '  diff      Compare two sessions from the same agent',
     '  report    Generate a coordinator report from a handoff JSON',
+    '  send      Send a message from one agent to another',
+    '  messages  Read messages for an agent',
     '  setup     Install cross-provider instruction scaffolding in this project',
     '  teardown  Reverse setup: remove managed blocks, scaffolding, and hooks',
     '  doctor    Check session paths and provider instruction wiring',
-    '  agent-context Build/sync/install agent-context automation',
-    '  context-pack  (deprecated alias for agent-context)',
-    '  relevance     Inspect relevance patterns for context-pack filtering',
-    '  diff          Compare two sessions from the same agent',
-    '  send          Send a message from one agent to another',
-    '  messages      Read messages for an agent',
+    '  agent-context  Build/sync/install agent-context automation',
+    '  relevance      Inspect relevance patterns for agent-context filtering',
     '',
     'Global Flags:',
     '  -h, --help       Show help',
@@ -75,6 +76,10 @@ function printHelp(topic = null) {
     lines.push('  --chats-dir <path> (gemini)');
     lines.push('  --last <N>');
     lines.push('  --include-user       Include the latest user prompt(s) that anchor returned assistant messages');
+    lines.push('  --tool-calls         Include tool call content (Read, Edit, Bash, etc.) in output');
+    lines.push('  --format <fmt>       Output format: json (default with --json), markdown/md');
+    lines.push('  --metadata-only      Return session metadata without content');
+    lines.push('  --audit-redactions   Include redaction audit trail in output');
     lines.push('  --json');
   } else if (topic === 'list') {
     lines.push('');
@@ -91,6 +96,29 @@ function printHelp(topic = null) {
     lines.push('  --cwd <path>');
     lines.push('  --limit <N> (default: 10)');
     lines.push('  --json');
+  } else if (topic === 'summary') {
+    lines.push('');
+    lines.push('summary options:');
+    lines.push('  --agent <codex|gemini|claude|cursor> (required)');
+    lines.push('  --id <session-substring> (optional; omitted = latest session in scope)');
+    lines.push('  --cwd <path>');
+    lines.push('  --chats-dir <path> (gemini)');
+    lines.push('  --format <fmt>       Output format: markdown/md');
+    lines.push('  --json');
+    lines.push('');
+    lines.push('  Produces a structured digest: message count, duration estimate,');
+    lines.push('  user requests, tool call counts, files referenced, last response snippet.');
+    lines.push('  No LLM calls — all extraction is local.');
+  } else if (topic === 'timeline') {
+    lines.push('');
+    lines.push('timeline options:');
+    lines.push('  --agent <agent> (repeatable; default: all four agents)');
+    lines.push('  --cwd <path> (default: current directory)');
+    lines.push('  --limit <N>          Sessions per agent (default: 5)');
+    lines.push('  --format <fmt>       Output format: markdown/md');
+    lines.push('  --json');
+    lines.push('');
+    lines.push('  Cross-agent chronological view interleaving sessions by timestamp.');
   } else if (topic === 'compare') {
     lines.push('');
     lines.push('compare options:');
