@@ -1,5 +1,98 @@
 # Release Notes
 
+## v0.11.0 — 2026-04-13
+
+### Added — `--tool-calls` flag on `chorus read`
+
+Surfaces tool call content (Read, Edit, Bash, Write, etc.) that was previously stripped during extraction. When `--tool-calls` is passed, assistant messages include `[TOOL: <name>]...[/TOOL]` blocks alongside text content.
+
+- New extraction functions in `utils.cjs`: `extractClaudeContentWithToolCalls()`, `extractContentWithToolCalls()`, `extractToolCallSummary()`, `extractFilePaths()`
+- Claude and Codex adapters switch extraction based on the flag
+- Result includes `included_tool_calls: true` metadata when active
+- Without the flag, behavior is unchanged (backward compatible)
+
+### Added — `chorus summary` command
+
+Structured session digest without reading full content. Extracts metadata locally — no LLM calls.
+
+```json
+{
+  "agent": "claude",
+  "session_id": "...",
+  "message_count": 47,
+  "duration_estimate": "~25 min",
+  "user_requests": ["Fix the auth bug"],
+  "files_referenced": ["src/auth.ts"],
+  "tool_calls_by_type": {"Read": 12, "Edit": 8, "Bash": 5},
+  "last_response_snippet": "Auth bug was in token refresh logic..."
+}
+```
+
+- `files_referenced`: extracted from `tool_use` inputs (`file_path`, `path` fields)
+- `tool_calls_by_type`: count of tool calls by tool name
+- `duration_estimate`: first-to-last message timestamp delta
+- `user_requests`: first 5 user messages, truncated to 150 chars each
+- `last_response_snippet`: last assistant message excerpt (300 chars, not an LLM summary)
+
+### Added — `chorus timeline` command
+
+Cross-agent chronological view interleaving sessions from multiple agents for a given cwd.
+
+```bash
+chorus timeline --cwd ~/project --agent claude --agent codex --limit 5 --json
+```
+
+- Lists sessions from all requested agents (default: all four), sorted by timestamp descending
+- Each entry includes a snippet (last assistant message, 200 chars)
+- `--agent` is repeatable; `--limit` controls per-agent session count (default 5)
+
+### Added — `--format markdown` output mode
+
+Renders `chorus read`, `chorus summary`, and `chorus timeline` output as formatted markdown instead of JSON or raw text. Useful for human-facing demos and documentation.
+
+```bash
+chorus summary --agent claude --format markdown
+chorus timeline --cwd . --format md
+chorus read --agent codex --format markdown
+```
+
+### Added — `--include-user` flag on `chorus read` (from v0.10.1)
+
+Pairs each returned assistant message with the preceding user prompt. Useful for "what is this agent doing?" status checks where the task-defining prompt matters.
+
+- Intent router updated: "What is Claude doing?" now routes to `--include-user`
+- All four adapters (Claude, Codex, Gemini, Cursor) support the flag
+- Result includes `included_roles: ["user", "assistant"]` when active
+
+### Changed — `verify` subcommand wired into dispatch
+
+`chorus agent-context verify` was implemented in v0.10.0 but not registered in the CLI dispatch map. Now works correctly from the command line.
+
+### Changed — Skill v0.11.0 with clean scope boundary
+
+- SKILL.md updated with all new commands in synopsis, intent contract, and intent router
+- "Context Pack Usage" section replaced with "Scope Boundary" — chorus is for session visibility and coordination only; pack creation/management is handled by repo-local tooling (e.g., team skills)
+- Presentation docs cleaned of cross-tool terminology leakage
+
+### Changed — Conformance comparator
+
+`compare_read_output.cjs` now skips `included_roles` and `included_tool_calls` fields during Node vs Rust parity comparison, since these are Node-only additions pending Rust implementation.
+
+### Testing
+
+- Conformance: 14/14 passing
+- Full suite: 34/34 passing, 0 failures
+- Schema updated: `read-output.schema.json` extended for `included_roles`, `included_tool_calls`
+
+### Upgrade Notes
+
+- The global binary must be rebuilt: `npm install -g .` (or via npm registry after publish)
+- Skill auto-updates via symlink for Codex (`~/.codex/skills/`) and Gemini (`~/.gemini/skills/`)
+- Claude Code plugin updates via marketplace path after `npm install -g`
+- Rust implementation does not yet include v0.11.0 features — parity deferred to v0.12.0
+
+---
+
 ## v0.10.0 — 2026-03-27
 
 ### Changed — CLI subcommand renamed: `context-pack` to `agent-context`
