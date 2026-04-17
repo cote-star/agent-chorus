@@ -91,6 +91,29 @@ struct ManifestBundle {
     pack_checksum: String,
 }
 
+/// P1 — semantic baseline fields recorded on the manifest at seal so later
+/// verification can detect drift without re-reading the full repo.
+///
+/// All fields are computed up-front by helpers in this module; `build_manifest`
+/// simply serializes them. Helpers degrade to empty values when their source
+/// config files are absent so `build_manifest` never has to branch on presence.
+#[derive(Default)]
+struct SemanticBaseline {
+    /// Glob pattern -> number of repo-relative files currently matching.
+    /// Sourced from `completeness_contract.json` `required_file_families[]`
+    /// and `reporting_rules.json` `groupable_families[]`.
+    family_counts: std::collections::BTreeMap<String, usize>,
+    /// Numeric claims extracted from prose in `.agent-context/current/*.md`.
+    /// Each entry: `{noun, count, file, line}`.
+    declared_counts: Vec<Value>,
+    /// For every file referenced in `search_scope.json` `verification_shortcuts`,
+    /// top-level function signatures keyed `"<file>::<fn_name>"`.
+    shortcut_signatures: std::collections::BTreeMap<String, String>,
+    /// SHA256 of the dependency-declaring files that exist at the repo root.
+    /// Keys: `pyproject`, `cargo`, `npm`. Missing files are simply omitted.
+    dependencies_snapshot: std::collections::BTreeMap<String, String>,
+}
+
 pub struct VerifyOptions {
     pub pack_dir: Option<String>,
     pub cwd: String,
@@ -723,6 +746,10 @@ pub fn seal(options: SealOptions) -> Result<()> {
 
     let previous_manifest = read_json(&manifest_path)?;
 
+    // P1 — compute semantic baseline once, pass into build_manifest. Helpers
+    // degrade to empty for repos without the optional structured configs.
+    let baseline = collect_semantic_baseline(&repo_root, &current_dir);
+
     let manifest = build_manifest(
         &generated_at,
         &repo_root,
@@ -734,6 +761,7 @@ pub fn seal(options: SealOptions) -> Result<()> {
         options.base.as_deref(),
         &Vec::new(),
         &files_meta,
+        &baseline,
     );
 
     write_text_atomic(
@@ -961,8 +989,24 @@ const HOOK_SENTINEL_END: &str = "# --- agent-chorus:pre-push:end ---";
 // Legacy sentinels for backward compatibility during migration
 const LEGACY_HOOK_SENTINEL_START: &str = "# --- agent-bridge:pre-push:start ---";
 const LEGACY_HOOK_SENTINEL_END: &str = "# --- agent-bridge:pre-push:end ---";
+// P1 — sentinels for the opt-in post-commit-reconcile hook. Kept distinct from
+// the pre-push sentinels so installing or uninstalling one never mangles the
+// other.
+const POST_COMMIT_SENTINEL_START: &str = "# --- agent-chorus:post-commit:start ---";
+const POST_COMMIT_SENTINEL_END: &str = "# --- agent-chorus:post-commit:end ---";
 
 pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
+    install_hooks_with_options(cwd, dry_run, false)
+}
+
+/// P1 — `install-hooks` extended surface. Callers that want the post-commit
+/// reconcile hook pass `enable_post_commit_reconcile: true`. The base
+/// pre-push install path is unchanged so existing callers keep working.
+pub fn install_hooks_with_options(
+    cwd: &str,
+    dry_run: bool,
+    enable_post_commit_reconcile: bool,
+) -> Result<()> {
     let cwd_path = PathBuf::from(cwd);
     let repo_root = git_repo_root(&cwd_path)?;
 
@@ -1064,6 +1108,146 @@ pub fn install_hooks(cwd: &str, dry_run: bool) -> Result<()> {
         println!("[context-pack] pre-push hook is active");
     }
 
+    // P1 — opt-in post-commit reconcile hook. When enabled, we write
+    // `.githooks/post-commit` (or the configured hooks dir) that invokes
+    // `chorus agent-context post-commit-reconcile` when the commit touched
+    // `.agent-context/**`. This keeps the manifest's `post_commit_sha` aligned
+    // with HEAD after a pack-bearing commit lands.
+    if enable_post_commit_reconcile {
+        let post_commit_path = hooks_dir.join("post-commit");
+        let post_commit_section = format!(
+            "{}\n{}\n{}",
+            POST_COMMIT_SENTINEL_START,
+            build_post_commit_hook_section(),
+            POST_COMMIT_SENTINEL_END
+        );
+        let final_pc = if post_commit_path.exists() {
+            let existing = fs::read_to_string(&post_commit_path).unwrap_or_default();
+            if existing.contains(POST_COMMIT_SENTINEL_START)
+                && existing.contains(POST_COMMIT_SENTINEL_END)
+            {
+                let start_idx = existing.find(POST_COMMIT_SENTINEL_START).unwrap();
+                let end_idx = existing.find(POST_COMMIT_SENTINEL_END).unwrap()
+                    + POST_COMMIT_SENTINEL_END.len();
+                let end_idx = if existing.as_bytes().get(end_idx) == Some(&b'\n') {
+                    end_idx + 1
+                } else {
+                    end_idx
+                };
+                format!(
+                    "{}{}\n{}",
+                    &existing[..start_idx],
+                    post_commit_section,
+                    &existing[end_idx..]
+                )
+            } else {
+                let mut content = existing;
+                if !content.ends_with('\n') {
+                    content.push('\n');
+                }
+                content.push('\n');
+                content.push_str(&post_commit_section);
+                content.push('\n');
+                content
+            }
+        } else {
+            format!(
+                "#!/usr/bin/env bash\nset -euo pipefail\n\n{}\n",
+                post_commit_section
+            )
+        };
+        if !dry_run {
+            ensure_dir(&hooks_dir)?;
+            write_text(&post_commit_path, &final_pc)?;
+            #[cfg(unix)]
+            {
+                let mut perms = fs::metadata(&post_commit_path)?.permissions();
+                perms.set_mode(0o755);
+                fs::set_permissions(&post_commit_path, perms)?;
+            }
+        }
+        println!(
+            "[context-pack] {}: {}",
+            if dry_run { "planned" } else { "updated" },
+            rel_path(&post_commit_path, &repo_root)
+        );
+    }
+
+    Ok(())
+}
+
+/// P1 — `chorus agent-context post-commit-reconcile`. Reads the current
+/// manifest, stamps `post_commit_sha` with the current git HEAD, and writes
+/// the manifest atomically back. No-op (Ok) when the manifest is absent —
+/// this lets the post-commit hook run unconditionally without crashing on
+/// repos that have not run `init` yet.
+///
+/// Invariant: never mutates `head_sha_at_seal`, `head_sha`, or any content
+/// hashes. Only `post_commit_sha` (and `post_commit_reconciled_at` for
+/// operator forensics) are updated.
+pub fn post_commit_reconcile(cwd: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
+    let cwd_path = match cwd {
+        Some(c) => PathBuf::from(c),
+        None => env::current_dir().context("Failed to resolve current directory")?,
+    };
+    if !is_git_repo(&cwd_path) {
+        return Err(anyhow!(
+            "[context-pack] post-commit-reconcile failed: not a git repository (cwd: {})",
+            cwd_path.display()
+        ));
+    }
+    let repo_root = git_repo_root(&cwd_path)?;
+    let pack_root = resolve_pack_root(&repo_root, pack_dir);
+    let current_dir = pack_root.join("current");
+    let manifest_path = current_dir.join("manifest.json");
+    if !manifest_path.exists() {
+        eprintln!(
+            "[context-pack] post-commit-reconcile: manifest not found at {} — skipping",
+            rel_path(&manifest_path, &repo_root)
+        );
+        return Ok(());
+    }
+
+    let lock_path = pack_root.join("seal.lock");
+    // F29/F30: reconcile rewrites the manifest, so we acquire the same lock
+    // seal uses. Verify is lock-free and unaffected.
+    let _lock = acquire_lock(&lock_path)?;
+
+    let raw = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let mut manifest: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
+
+    let head_sha = run_git(&["rev-parse", "HEAD"], &repo_root, true)?
+        .trim()
+        .to_string();
+    if head_sha.is_empty() {
+        return Err(anyhow!(
+            "[context-pack] post-commit-reconcile failed: could not resolve git HEAD"
+        ));
+    }
+
+    if let Some(obj) = manifest.as_object_mut() {
+        obj.insert("post_commit_sha".to_string(), Value::String(head_sha.clone()));
+        obj.insert(
+            "post_commit_reconciled_at".to_string(),
+            Value::String(now_stamp()),
+        );
+    } else {
+        return Err(anyhow!(
+            "[context-pack] post-commit-reconcile failed: manifest is not a JSON object"
+        ));
+    }
+
+    write_text_atomic(
+        &manifest_path,
+        &format!("{}\n", serde_json::to_string_pretty(&manifest)?),
+    )?;
+    println!(
+        "[context-pack] post-commit-reconcile: post_commit_sha={} ({})",
+        short_sha(Some(&head_sha)),
+        rel_path(&manifest_path, &repo_root)
+    );
     Ok(())
 }
 
@@ -1862,6 +2046,628 @@ fn collect_files_meta(
     Ok(out)
 }
 
+// ---- P1: semantic baseline helpers ----------------------------------------
+//
+// Each helper is self-contained and degrades to empty on absent/malformed
+// input so `collect_semantic_baseline` can compose them without branching.
+
+/// P1 — resolve globs from `completeness_contract.json` `required_file_families[]`
+/// and `reporting_rules.json` `groupable_families[]`. Keyed by the raw glob;
+/// value is the number of repo-relative files currently matching.
+///
+/// Returns an empty map if both config files are absent or do not define
+/// `task_families`. Malformed JSON is treated as absent.
+fn resolve_family_counts(
+    repo_root: &Path,
+    current_dir: &Path,
+) -> std::collections::BTreeMap<String, usize> {
+    let mut patterns: BTreeSet<String> = BTreeSet::new();
+
+    let completeness_path = current_dir.join("completeness_contract.json");
+    if let Ok(Some(completeness)) = read_json(&completeness_path) {
+        if let Some(families) = completeness
+            .get("task_families")
+            .and_then(|v| v.as_object())
+        {
+            for (_task, entry) in families {
+                if let Some(list) = entry
+                    .get("required_file_families")
+                    .and_then(|v| v.as_array())
+                {
+                    for item in list {
+                        if let Some(p) = item.as_str() {
+                            patterns.insert(p.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let reporting_path = current_dir.join("reporting_rules.json");
+    if let Ok(Some(reporting)) = read_json(&reporting_path) {
+        if let Some(families) = reporting
+            .get("task_families")
+            .and_then(|v| v.as_object())
+        {
+            for (_task, entry) in families {
+                if let Some(list) = entry.get("groupable_families").and_then(|v| v.as_array()) {
+                    for item in list {
+                        if let Some(p) = item.as_str() {
+                            patterns.insert(p.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut out = std::collections::BTreeMap::new();
+    for pattern in patterns {
+        let count = resolve_pattern_matches(repo_root, &pattern)
+            .map(|v| v.len())
+            .unwrap_or(0);
+        out.insert(pattern, count);
+    }
+    out
+}
+
+/// P1 — noun+count pattern for prose claim extraction. Matches occurrences like
+/// "6 files", "12 scripts", "study doc" (singular/plural). Kept narrow to avoid
+/// false positives on unrelated numeric text.
+///
+/// The pattern is intentionally lightweight — a single pass returns
+/// `(count_str, noun_str)` pairs per line which callers normalize.
+fn prose_claim_nouns() -> &'static [&'static str] {
+    &[
+        "study doc",
+        "study docs",
+        "script",
+        "scripts",
+        "test",
+        "tests",
+        "file",
+        "files",
+        "API symbol",
+        "API symbols",
+        "brand",
+        "brands",
+    ]
+}
+
+/// Parse a single markdown file body into `{noun, count, file, line}` Value
+/// entries using the prose-claim regex. Lines inside a
+/// `<!-- count-claim: ignore -->` region (toggled by any occurrence of the
+/// literal comment; region persists until a matching `<!-- count-claim: end -->`
+/// or EOF) are skipped to give authors an explicit opt-out.
+fn extract_declared_counts_from_text(text: &str, file_label: &str, out: &mut Vec<Value>) {
+    let nouns = prose_claim_nouns();
+    let mut ignore = false;
+    for (idx, raw_line) in text.lines().enumerate() {
+        // Region toggles — any explicit end closes the region; otherwise a
+        // stray `count-claim: ignore` marker opens one.
+        if raw_line.contains("<!-- count-claim: end -->")
+            || raw_line.contains("<!-- count-claim: /ignore -->")
+        {
+            ignore = false;
+            continue;
+        }
+        if raw_line.contains("<!-- count-claim: ignore -->") {
+            ignore = true;
+            // If the ignore marker is inline with content, still skip this
+            // line so callers can annotate a specific sentence without
+            // opening a multi-line region.
+            continue;
+        }
+        if ignore {
+            continue;
+        }
+
+        // Walk the line and find `<number> <noun>` occurrences. We match the
+        // longest noun first (e.g. "study docs" before "study doc") to avoid
+        // double counting plural forms.
+        let mut cursor = 0;
+        let bytes = raw_line.as_bytes();
+        while cursor < bytes.len() {
+            if !bytes[cursor].is_ascii_digit() {
+                cursor += 1;
+                continue;
+            }
+            // Capture the leading integer.
+            let start = cursor;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                cursor += 1;
+            }
+            let number_str = &raw_line[start..cursor];
+            // Must be followed by exactly one whitespace then a recognized
+            // noun phrase. Allow tab/space.
+            let after_digits = cursor;
+            if after_digits >= bytes.len()
+                || !(bytes[after_digits] == b' ' || bytes[after_digits] == b'\t')
+            {
+                continue;
+            }
+            let rest = &raw_line[after_digits + 1..];
+            let mut matched: Option<&'static str> = None;
+            // Try longest noun first by iterating sorted-desc by length.
+            let mut ordered: Vec<&&str> = nouns.iter().collect();
+            ordered.sort_by_key(|s| std::cmp::Reverse(s.len()));
+            for noun in ordered {
+                if rest.len() < noun.len() {
+                    continue;
+                }
+                if !rest.is_char_boundary(noun.len()) {
+                    continue;
+                }
+                let candidate = &rest[..noun.len()];
+                if candidate.eq_ignore_ascii_case(noun) {
+                    // Require a word boundary after the noun (end of line,
+                    // whitespace, or punctuation) so "scripts" doesn't match
+                    // inside "scriptsdirectory".
+                    let next = rest.as_bytes().get(noun.len()).copied();
+                    let is_boundary = match next {
+                        None => true,
+                        Some(b) => !(b.is_ascii_alphanumeric() || b == b'_'),
+                    };
+                    if is_boundary {
+                        matched = Some(noun);
+                        break;
+                    }
+                }
+            }
+            if let Some(noun) = matched {
+                if let Ok(count) = number_str.parse::<u64>() {
+                    out.push(json!({
+                        "noun": noun,
+                        "count": count,
+                        "file": file_label,
+                        "line": (idx + 1) as u64,
+                    }));
+                }
+                // Advance cursor past the matched noun to avoid re-scanning.
+                cursor = after_digits + 1 + noun.len();
+            }
+        }
+    }
+}
+
+/// P1 — scan every `.agent-context/current/*.md` file for numeric prose
+/// claims. Binary / unreadable files are skipped silently (P8 boundary).
+fn extract_declared_counts(current_dir: &Path) -> Vec<Value> {
+    let mut out: Vec<Value> = Vec::new();
+    let entries = match fs::read_dir(current_dir) {
+        Ok(e) => e,
+        Err(_) => return out,
+    };
+    let mut md_paths: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        md_paths.push(path);
+    }
+    // Deterministic order so identical repos produce identical manifests.
+    md_paths.sort();
+    for path in md_paths {
+        let file_label = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        extract_declared_counts_from_text(&text, &file_label, &mut out);
+    }
+    out
+}
+
+/// P1 — parse Python top-level function signatures via a regex that tolerates
+/// decorators, async, and multi-line parameter lists. `ast`-level parsing would
+/// be ideal but would introduce a non-stdlib dep; the regex is narrow enough to
+/// only trigger on `def name(...)` at column 0.
+fn parse_python_signatures(
+    source: &str,
+    file_label: &str,
+    out: &mut std::collections::BTreeMap<String, String>,
+) {
+    let mut lines = source.lines().peekable();
+    let mut accumulated = String::new();
+    let mut collecting = false;
+    let mut fn_name = String::new();
+    while let Some(line) = lines.next() {
+        if !collecting {
+            // Detect `def NAME(` or `async def NAME(` at column 0 (no leading
+            // whitespace) — top-level only per the P1 spec.
+            let trimmed_prefix = line.trim_start_matches(|c: char| c == '\t' || c == ' ');
+            let is_indented = trimmed_prefix.len() != line.len();
+            if is_indented {
+                continue;
+            }
+            let candidate = if let Some(rest) = line.strip_prefix("async def ") {
+                Some(rest)
+            } else {
+                line.strip_prefix("def ")
+            };
+            let rest = match candidate {
+                Some(r) => r,
+                None => continue,
+            };
+            let paren = match rest.find('(') {
+                Some(p) => p,
+                None => continue,
+            };
+            let name_part = &rest[..paren];
+            if !name_part
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_')
+                || name_part.is_empty()
+            {
+                continue;
+            }
+            fn_name = name_part.to_string();
+            accumulated.clear();
+            accumulated.push_str(line.trim_end());
+            // Short-circuit: signature fits on one line.
+            if line.contains(':') && paren_balanced(line) {
+                let sig = one_line_signature(&accumulated);
+                out.insert(format!("{}::{}", file_label, fn_name), sig);
+                fn_name.clear();
+                continue;
+            }
+            collecting = true;
+        } else {
+            accumulated.push(' ');
+            accumulated.push_str(line.trim());
+            if accumulated.contains(':') && paren_balanced(&accumulated) {
+                let sig = one_line_signature(&accumulated);
+                out.insert(format!("{}::{}", file_label, fn_name), sig);
+                fn_name.clear();
+                accumulated.clear();
+                collecting = false;
+            }
+        }
+    }
+}
+
+/// Parens balanced on the accumulated prefix so we know the param list closed.
+fn paren_balanced(s: &str) -> bool {
+    let mut depth: i32 = 0;
+    for ch in s.chars() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0
+}
+
+/// Normalize whitespace in a captured signature so equal signatures compare
+/// byte-identically across cross-platform line endings and indent variants.
+fn one_line_signature(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut prev_space = false;
+    for ch in raw.chars() {
+        if ch.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+            }
+            prev_space = true;
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    // Trim trailing colon-only variants and trailing whitespace.
+    out.trim().to_string()
+}
+
+/// P1 — Rust top-level `fn NAME(params) -> RetType` or `fn NAME(params)`.
+/// Visibility modifiers and generics are preserved in the captured signature.
+fn parse_rust_signatures(
+    source: &str,
+    file_label: &str,
+    out: &mut std::collections::BTreeMap<String, String>,
+) {
+    let mut lines = source.lines().peekable();
+    let mut acc = String::new();
+    let mut collecting = false;
+    let mut fn_name = String::new();
+    while let Some(line) = lines.next() {
+        if !collecting {
+            // Top-level fn: leading whitespace disallowed to skip method impls.
+            let is_indented = line.chars().next().map(|c| c.is_whitespace()).unwrap_or(false);
+            if is_indented {
+                continue;
+            }
+            // Trim visibility and `async`/`unsafe`/`extern` qualifiers.
+            let mut scan = line.trim_start();
+            for prefix in ["pub(crate) ", "pub ", "async ", "unsafe ", "extern ", "const "] {
+                if let Some(rest) = scan.strip_prefix(prefix) {
+                    scan = rest;
+                }
+            }
+            let rest = match scan.strip_prefix("fn ") {
+                Some(r) => r,
+                None => continue,
+            };
+            // Extract the function name up to '(' or '<'.
+            let stop = rest
+                .find(|c: char| c == '(' || c == '<' || c.is_whitespace())
+                .unwrap_or(rest.len());
+            let name = &rest[..stop];
+            if name.is_empty()
+                || !name.chars().all(|c| c.is_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            fn_name = name.to_string();
+            acc.clear();
+            acc.push_str(line.trim_end());
+            // Signature ends at `{` or `;` with balanced parens.
+            if (acc.contains('{') || acc.contains(';')) && paren_balanced(&acc) {
+                let sig = rust_signature_head(&acc);
+                out.insert(format!("{}::{}", file_label, fn_name), sig);
+                fn_name.clear();
+                continue;
+            }
+            collecting = true;
+        } else {
+            acc.push(' ');
+            acc.push_str(line.trim());
+            if (acc.contains('{') || acc.contains(';')) && paren_balanced(&acc) {
+                let sig = rust_signature_head(&acc);
+                out.insert(format!("{}::{}", file_label, fn_name), sig);
+                fn_name.clear();
+                acc.clear();
+                collecting = false;
+            }
+        }
+    }
+}
+
+/// Capture the signature up to (but not including) the body-opening `{` or the
+/// trailing `;`. Whitespace is normalized for stable comparison.
+fn rust_signature_head(raw: &str) -> String {
+    // Prefer the first `{` only if it is after a balanced-paren prefix;
+    // otherwise fall back to the first `;`. In practice the simpler "split at
+    // first of {/;" is correct for top-level declarations.
+    let cut = raw
+        .find('{')
+        .or_else(|| raw.find(';'))
+        .unwrap_or(raw.len());
+    one_line_signature(&raw[..cut])
+}
+
+/// P1 — TypeScript / JavaScript top-level `function NAME(...)` or
+/// `const NAME = (...)` / `export const NAME = (...)` arrow forms. Heuristics
+/// are intentionally narrow: class methods, default exports, and IIFEs are
+/// skipped so we do not emit false positives.
+fn parse_ts_signatures(
+    source: &str,
+    file_label: &str,
+    out: &mut std::collections::BTreeMap<String, String>,
+) {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        // Only top-level (no leading indent).
+        let is_indented = line
+            .chars()
+            .next()
+            .map(|c| c.is_whitespace())
+            .unwrap_or(false);
+        if is_indented {
+            i += 1;
+            continue;
+        }
+        let trimmed = line.trim_start();
+        // `function NAME(` — accumulate until paren balance.
+        let fn_prefix_candidates = [
+            "export async function ",
+            "export function ",
+            "async function ",
+            "function ",
+        ];
+        let mut captured_name: Option<String> = None;
+        for prefix in fn_prefix_candidates {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                if let Some(paren) = rest.find('(') {
+                    let name = &rest[..paren];
+                    if !name.is_empty()
+                        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                    {
+                        captured_name = Some(name.to_string());
+                    }
+                }
+                break;
+            }
+        }
+        // `const NAME = (...) =>` or `export const NAME = (...) =>`.
+        if captured_name.is_none() {
+            for prefix in ["export const ", "const ", "export let ", "let "] {
+                if let Some(rest) = trimmed.strip_prefix(prefix) {
+                    if let Some(eq) = rest.find('=') {
+                        let name = rest[..eq].trim();
+                        let after_eq = rest[eq + 1..].trim_start();
+                        if !name.is_empty()
+                            && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                            && (after_eq.starts_with('(') || after_eq.starts_with("async ("))
+                        {
+                            captured_name = Some(name.to_string());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        let name = match captured_name {
+            Some(n) => n,
+            None => {
+                i += 1;
+                continue;
+            }
+        };
+
+        // Accumulate until paren-balanced + contains `=>` or `{`.
+        let mut acc = String::new();
+        acc.push_str(line.trim_end());
+        let mut terminated = false;
+        let mut j = i + 1;
+        if (acc.contains("=>") || acc.contains('{')) && paren_balanced(&acc) {
+            terminated = true;
+        }
+        while !terminated && j < lines.len() {
+            acc.push(' ');
+            acc.push_str(lines[j].trim());
+            if (acc.contains("=>") || acc.contains('{')) && paren_balanced(&acc) {
+                terminated = true;
+                break;
+            }
+            j += 1;
+        }
+        // Capture everything up to the first `{` (function body) or `=>`.
+        let cut = acc
+            .find('{')
+            .or_else(|| acc.find("=>"))
+            .unwrap_or(acc.len());
+        let sig = one_line_signature(&acc[..cut]);
+        out.insert(format!("{}::{}", file_label, name), sig);
+        i = if terminated { j + 1 } else { j };
+    }
+}
+
+/// P1 — `parse_shortcut_signatures` dispatches by file extension. Languages
+/// beyond Python / Rust / TypeScript / JavaScript are stubbed out with an
+/// empty map (the manifest simply records no signatures for those files).
+fn parse_shortcut_signatures_for_file(
+    path: &Path,
+    file_label: &str,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let source = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return out,
+    };
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "py" => parse_python_signatures(&source, file_label, &mut out),
+        "rs" => parse_rust_signatures(&source, file_label, &mut out),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => {
+            parse_ts_signatures(&source, file_label, &mut out)
+        }
+        _ => {
+            // Stub — no parser for this language. Future P1 extensions
+            // (Go, Java, etc.) would add their branch here.
+        }
+    }
+    out
+}
+
+/// P1 — iterate every file referenced in `search_scope.json`
+/// `verification_shortcuts[]` and collect top-level function signatures.
+///
+/// Per the plan: keyed by `"<file>::<fn_name>"` -> signature string.
+/// Returns an empty map if `search_scope.json` is absent or malformed so
+/// `build_manifest` never has to branch on presence.
+fn parse_shortcut_signatures(
+    repo_root: &Path,
+    current_dir: &Path,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let search_scope_path = current_dir.join("search_scope.json");
+    let scope = match read_json(&search_scope_path) {
+        Ok(Some(v)) => v,
+        _ => return out,
+    };
+    let families = match scope.get("task_families").and_then(|v| v.as_object()) {
+        Some(f) => f,
+        None => return out,
+    };
+
+    let mut seen_files: BTreeSet<String> = BTreeSet::new();
+    for (_task, entry) in families {
+        let shortcuts = match entry
+            .get("verification_shortcuts")
+            .and_then(|v| v.as_object())
+        {
+            Some(s) => s,
+            None => continue,
+        };
+        for (key, _value) in shortcuts {
+            // Keys can take the form "path" or "path:line" — strip the suffix.
+            let file_key = key.split(':').next().unwrap_or(key).to_string();
+            if file_key.is_empty() {
+                continue;
+            }
+            if !seen_files.insert(file_key.clone()) {
+                continue;
+            }
+            let abs = repo_root.join(&file_key);
+            if !abs.exists() {
+                continue;
+            }
+            let sigs = parse_shortcut_signatures_for_file(&abs, &file_key);
+            for (k, v) in sigs {
+                out.insert(k, v);
+            }
+        }
+    }
+    out
+}
+
+/// P1 — SHA256 of dependency-declaring file contents. Records one entry per
+/// file that exists; absent files are omitted.
+fn compute_dependencies_snapshot(
+    repo_root: &Path,
+) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let candidates: &[(&str, &str)] = &[
+        ("pyproject", "pyproject.toml"),
+        ("cargo", "Cargo.toml"),
+        ("npm", "package.json"),
+    ];
+    for (key, filename) in candidates {
+        let path = repo_root.join(filename);
+        if !path.exists() {
+            continue;
+        }
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        out.insert((*key).to_string(), sha256_hex(&bytes));
+    }
+    out
+}
+
+/// P1 — compose the full semantic baseline. Safe to call when pack-config
+/// files are absent: each helper degrades to empty.
+fn collect_semantic_baseline(repo_root: &Path, current_dir: &Path) -> SemanticBaseline {
+    SemanticBaseline {
+        family_counts: resolve_family_counts(repo_root, current_dir),
+        declared_counts: extract_declared_counts(current_dir),
+        shortcut_signatures: parse_shortcut_signatures(repo_root, current_dir),
+        dependencies_snapshot: compute_dependencies_snapshot(repo_root),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_manifest(
     generated_at: &str,
@@ -1874,6 +2680,7 @@ fn build_manifest(
     base_sha: Option<&str>,
     changed_files: &[String],
     files_meta: &[FileMeta],
+    baseline: &SemanticBaseline,
 ) -> ManifestBundle {
     let pack_checksum_input = files_meta
         .iter()
@@ -1932,6 +2739,40 @@ fn build_manifest(
         }
     };
 
+    // P1 — semantic baseline serialization. Empty maps/arrays are emitted
+    // rather than omitted so consumers can rely on the keys being present.
+    let family_counts_value = {
+        let mut map = serde_json::Map::new();
+        for (k, v) in &baseline.family_counts {
+            map.insert(k.clone(), json!(*v));
+        }
+        Value::Object(map)
+    };
+    let declared_counts_value = Value::Array(baseline.declared_counts.clone());
+    let shortcut_signatures_value = {
+        let mut map = serde_json::Map::new();
+        for (k, v) in &baseline.shortcut_signatures {
+            map.insert(k.clone(), Value::String(v.clone()));
+        }
+        Value::Object(map)
+    };
+    let dependencies_snapshot_value = {
+        let mut map = serde_json::Map::new();
+        for (k, v) in &baseline.dependencies_snapshot {
+            map.insert(k.clone(), Value::String(v.clone()));
+        }
+        Value::Object(map)
+    };
+
+    // P1 — `head_sha_at_seal` is the new canonical name for the seal-time HEAD.
+    // We keep `head_sha` populated for one release so readers pinned to the
+    // older field continue to work. `post_commit_sha` is null at seal; the
+    // new `post-commit-reconcile` subcommand populates it after a commit.
+    let head_sha_at_seal_value: Value = match head_sha {
+        Some(s) => Value::String(s.to_string()),
+        None => Value::Null,
+    };
+
     let value = json!({
         "schema_version": CURRENT_SCHEMA_VERSION,
         "chorus_version": chorus_version,
@@ -1943,6 +2784,8 @@ fn build_manifest(
         "branch": branch_value,
         "detached": detached,
         "head_sha": head_sha,
+        "head_sha_at_seal": head_sha_at_seal_value,
+        "post_commit_sha": Value::Null,
         "build_reason": reason,
         "base_sha": base_sha,
         "changed_files": changed_files,
@@ -1952,6 +2795,11 @@ fn build_manifest(
         "pack_checksum": pack_checksum,
         "stable_checksum": stable_checksum,
         "files": files,
+        // P1 — semantic baseline fields.
+        "family_counts": family_counts_value,
+        "declared_counts": declared_counts_value,
+        "shortcut_signatures": shortcut_signatures_value,
+        "dependencies_snapshot": dependencies_snapshot_value,
     });
 
     ManifestBundle {
@@ -3559,6 +4407,21 @@ done"#
     .to_string()
 }
 
+/// P1 — shell body for the post-commit-reconcile hook. Runs
+/// `chorus agent-context post-commit-reconcile` only when the just-landed
+/// commit touched `.agent-context/**`. Silent no-op when the chorus CLI is
+/// unavailable (so the hook never blocks a normal `git commit`).
+fn build_post_commit_hook_section() -> String {
+    r#"# Only reconcile when the commit touched pack content; checking the full
+# `.agent-context/` tree keeps this O(1) for the common non-pack commit.
+if git diff --name-only HEAD~1 HEAD 2>/dev/null | grep -q '^\.agent-context/'; then
+  if command -v chorus >/dev/null 2>&1; then
+    chorus agent-context post-commit-reconcile >/dev/null 2>&1 || true
+  fi
+fi"#
+    .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3803,6 +4666,7 @@ mod tests {
     #[test]
     fn build_manifest_records_current_chorus_version() {
         let files_meta: Vec<FileMeta> = Vec::new();
+        let baseline = SemanticBaseline::default();
         let bundle = build_manifest(
             "2026-04-17T00:00:00Z",
             Path::new("/tmp/unused"),
@@ -3814,6 +4678,7 @@ mod tests {
             None,
             &Vec::new(),
             &files_meta,
+            &baseline,
         );
 
         let schema = bundle
@@ -3850,5 +4715,362 @@ mod tests {
             verifier.is_string() || verifier.is_null(),
             "verifier_sha256 must be a hex string or null, got: {verifier}"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // P1 — rich manifest & provenance tests
+    // ------------------------------------------------------------------
+
+    // Initialize a minimal git repo at `root` so helpers that call `git` do not
+    // fail on a raw temp directory.
+    fn init_git(root: &Path) {
+        let _ = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "p1@test"])
+            .current_dir(root)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "P1 Tester"])
+            .current_dir(root)
+            .output();
+    }
+
+    #[test]
+    fn resolve_family_counts_resolves_run_scripts_glob() {
+        let dir = test_dir("p1_family_counts");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        // Author a minimal completeness_contract.json that declares the glob.
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let counts = resolve_family_counts(&dir, &current);
+        assert_eq!(
+            counts.get("scripts/run_*.py").copied(),
+            Some(12),
+            "expected 12 scripts under scripts/run_*.py, got {counts:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_family_counts_empty_when_config_absent() {
+        let dir = test_dir("p1_family_counts_absent");
+        init_git(&dir);
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+
+        let counts = resolve_family_counts(&dir, &current);
+        assert!(
+            counts.is_empty(),
+            "expected empty family_counts when configs absent, got {counts:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn extract_declared_counts_catches_prose_numbers_and_respects_ignore() {
+        let dir = test_dir("p1_declared_counts");
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let body = "\
+# Overview\n\
+\n\
+The repo ships 6 files and 12 scripts.\n\
+\n\
+<!-- count-claim: ignore -->\n\
+Historic note: we once had 42 tests.\n\
+<!-- count-claim: end -->\n\
+\n\
+After cleanup there are 32 tests today.\n\
+";
+        fs::write(current.join("10_SYSTEM_OVERVIEW.md"), body).unwrap();
+
+        let out = extract_declared_counts(&current);
+        // Collect (noun, count) pairs for easier assertions.
+        let pairs: Vec<(String, u64)> = out
+            .iter()
+            .map(|v| {
+                (
+                    v.get("noun").and_then(|x| x.as_str()).unwrap().to_string(),
+                    v.get("count").and_then(|x| x.as_u64()).unwrap(),
+                )
+            })
+            .collect();
+        assert!(
+            pairs.contains(&("files".to_string(), 6)),
+            "expected '6 files' claim in {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&("scripts".to_string(), 12)),
+            "expected '12 scripts' claim in {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&("tests".to_string(), 32)),
+            "expected '32 tests' claim in {pairs:?}"
+        );
+        assert!(
+            !pairs.contains(&("tests".to_string(), 42)),
+            "'42 tests' inside <!-- count-claim: ignore --> must be skipped, got {pairs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_shortcut_signatures_for_python_and_rust_and_ts() {
+        let dir = test_dir("p1_sigs");
+        init_git(&dir);
+        // Python
+        fs::write(
+            dir.join("calc.py"),
+            "def compute_lift(data, *, alpha=0.05):\n    return 1\n\n\
+             async def fetch(url: str) -> str:\n    return url\n",
+        )
+        .unwrap();
+        // Rust
+        fs::write(
+            dir.join("lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n\
+             fn internal() {\n}\n",
+        )
+        .unwrap();
+        // TypeScript
+        fs::write(
+            dir.join("helpers.ts"),
+            "export function shout(msg: string): string {\n  return msg.toUpperCase();\n}\n\n\
+             export const greet = (name: string): string => `hi ${name}`;\n",
+        )
+        .unwrap();
+
+        let py_sigs = parse_shortcut_signatures_for_file(&dir.join("calc.py"), "calc.py");
+        assert!(
+            py_sigs
+                .get("calc.py::compute_lift")
+                .map(|s| s.contains("compute_lift"))
+                .unwrap_or(false),
+            "expected python compute_lift signature, got {py_sigs:?}"
+        );
+        assert!(
+            py_sigs.contains_key("calc.py::fetch"),
+            "expected python fetch signature, got {py_sigs:?}"
+        );
+
+        let rs_sigs = parse_shortcut_signatures_for_file(&dir.join("lib.rs"), "lib.rs");
+        assert!(
+            rs_sigs
+                .get("lib.rs::add")
+                .map(|s| s.contains("-> i32"))
+                .unwrap_or(false),
+            "expected rust add signature with return type, got {rs_sigs:?}"
+        );
+        assert!(
+            rs_sigs.contains_key("lib.rs::internal"),
+            "expected rust internal signature, got {rs_sigs:?}"
+        );
+
+        let ts_sigs = parse_shortcut_signatures_for_file(&dir.join("helpers.ts"), "helpers.ts");
+        assert!(
+            ts_sigs.contains_key("helpers.ts::shout"),
+            "expected ts shout signature, got {ts_sigs:?}"
+        );
+        assert!(
+            ts_sigs.contains_key("helpers.ts::greet"),
+            "expected ts greet arrow signature, got {ts_sigs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_dependencies_snapshot_hashes_pyproject_and_npm() {
+        let dir = test_dir("p1_deps");
+        fs::write(dir.join("pyproject.toml"), "[tool.poetry]\nname=\"demo\"\n").unwrap();
+        fs::write(dir.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+
+        let snap = compute_dependencies_snapshot(&dir);
+        assert!(
+            snap.get("pyproject").map(|s| s.len() == 64).unwrap_or(false),
+            "pyproject hash should be 64-char hex, got {snap:?}"
+        );
+        assert!(
+            snap.get("npm").map(|s| s.len() == 64).unwrap_or(false),
+            "npm hash should be 64-char hex, got {snap:?}"
+        );
+        assert!(
+            !snap.contains_key("cargo"),
+            "cargo must be absent when Cargo.toml missing, got {snap:?}"
+        );
+
+        // Sanity: value changes when the file changes.
+        fs::write(dir.join("pyproject.toml"), "[tool.poetry]\nname=\"demo2\"\n").unwrap();
+        let snap2 = compute_dependencies_snapshot(&dir);
+        assert_ne!(
+            snap.get("pyproject"),
+            snap2.get("pyproject"),
+            "pyproject hash must change when the file content changes"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_manifest_emits_all_p1_fields() {
+        let files_meta: Vec<FileMeta> = Vec::new();
+        let mut baseline = SemanticBaseline::default();
+        baseline
+            .family_counts
+            .insert("scripts/run_*.py".to_string(), 12);
+        baseline.declared_counts.push(json!({
+            "noun": "files",
+            "count": 6,
+            "file": "10_SYSTEM_OVERVIEW.md",
+            "line": 3,
+        }));
+        baseline
+            .shortcut_signatures
+            .insert("calc.py::compute_lift".to_string(), "def compute_lift(data)".to_string());
+        baseline
+            .dependencies_snapshot
+            .insert("pyproject".to_string(), "a".repeat(64));
+
+        let bundle = build_manifest(
+            "2026-04-17T00:00:00Z",
+            Path::new("/tmp/unused"),
+            "fixture-repo",
+            "main",
+            false,
+            Some("abcd1234"),
+            "test-seal",
+            None,
+            &Vec::new(),
+            &files_meta,
+            &baseline,
+        );
+
+        // All four semantic fields must be present with the right shape.
+        assert_eq!(
+            bundle
+                .value
+                .get("family_counts")
+                .and_then(|v| v.get("scripts/run_*.py"))
+                .and_then(|v| v.as_u64()),
+            Some(12),
+            "family_counts missing the expected entry"
+        );
+        let declared = bundle
+            .value
+            .get("declared_counts")
+            .and_then(|v| v.as_array())
+            .expect("declared_counts must be an array");
+        assert_eq!(declared.len(), 1, "declared_counts should contain one entry");
+        assert!(
+            bundle
+                .value
+                .get("shortcut_signatures")
+                .and_then(|v| v.get("calc.py::compute_lift"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("compute_lift"))
+                .unwrap_or(false),
+            "shortcut_signatures missing the expected entry"
+        );
+        assert!(
+            bundle
+                .value
+                .get("dependencies_snapshot")
+                .and_then(|v| v.get("pyproject"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.len() == 64)
+                .unwrap_or(false),
+            "dependencies_snapshot missing pyproject entry"
+        );
+
+        // head_sha_at_seal is the new canonical field; head_sha remains populated.
+        assert_eq!(
+            bundle
+                .value
+                .get("head_sha_at_seal")
+                .and_then(|v| v.as_str()),
+            Some("abcd1234"),
+            "head_sha_at_seal should mirror the seal-time HEAD"
+        );
+        assert_eq!(
+            bundle.value.get("head_sha").and_then(|v| v.as_str()),
+            Some("abcd1234"),
+            "head_sha must stay populated for back-compat"
+        );
+        assert!(
+            bundle.value.get("post_commit_sha").map(|v| v.is_null()).unwrap_or(false),
+            "post_commit_sha must be null at seal time"
+        );
+    }
+
+    #[test]
+    fn post_commit_reconcile_updates_post_commit_sha() {
+        let dir = test_dir("p1_post_commit");
+        init_git(&dir);
+        // Seed a single commit so HEAD resolves.
+        fs::write(dir.join("README.md"), "hi\n").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        // Minimal manifest that we expect the reconcile to stamp.
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let initial = json!({
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "head_sha": "deadbeef",
+            "head_sha_at_seal": "deadbeef",
+            "post_commit_sha": null,
+            "files": [],
+        });
+        fs::write(
+            current.join("manifest.json"),
+            format!("{}\n", serde_json::to_string_pretty(&initial).unwrap()),
+        )
+        .unwrap();
+
+        post_commit_reconcile(Some(dir.to_str().unwrap()), None).expect("reconcile must succeed");
+
+        let raw = fs::read_to_string(current.join("manifest.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let post_sha = manifest
+            .get("post_commit_sha")
+            .and_then(|v| v.as_str())
+            .expect("post_commit_sha must be a string after reconcile");
+        // SHA-1 hex = 40 chars; accept any non-empty string from git rev-parse.
+        assert!(!post_sha.is_empty());
+        // Invariant: seal-time head_sha_at_seal must be preserved.
+        assert_eq!(
+            manifest.get("head_sha_at_seal").and_then(|v| v.as_str()),
+            Some("deadbeef"),
+            "reconcile must never mutate head_sha_at_seal"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -328,6 +328,27 @@ enum ContextPackCommand {
         /// Preview changes without writing
         #[arg(long)]
         dry_run: bool,
+
+        /// P1 — also install a post-commit hook that runs
+        /// `chorus agent-context post-commit-reconcile` when the commit
+        /// touched `.agent-context/**`. Opt-in — off by default so existing
+        /// installs are not disturbed.
+        #[arg(long = "enable-post-commit-reconcile")]
+        enable_post_commit_reconcile: bool,
+    },
+
+    /// P1 — reconcile the manifest's `post_commit_sha` with the current
+    /// git HEAD. Intended to be invoked from a post-commit hook after a
+    /// commit that touched `.agent-context/**`.
+    #[command(name = "post-commit-reconcile")]
+    PostCommitReconcile {
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
     },
 
     /// Restore context pack from snapshot
@@ -907,9 +928,20 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 &remote_sha,
             )?;
         }
-        ContextPackCommand::InstallHooks { cwd, dry_run } => {
+        ContextPackCommand::InstallHooks {
+            cwd,
+            dry_run,
+            enable_post_commit_reconcile,
+        } => {
             let target_cwd = effective_cwd(cwd);
-            agent_context::install_hooks(&target_cwd, dry_run)?;
+            agent_context::install_hooks_with_options(
+                &target_cwd,
+                dry_run,
+                enable_post_commit_reconcile,
+            )?;
+        }
+        ContextPackCommand::PostCommitReconcile { cwd, pack_dir } => {
+            agent_context::post_commit_reconcile(cwd.as_deref(), pack_dir.as_deref())?;
         }
         ContextPackCommand::Rollback { snapshot, pack_dir } => {
             agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;

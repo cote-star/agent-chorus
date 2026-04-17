@@ -385,6 +385,125 @@ function collectFilesMeta(currentDir, relativePaths) {
   return out;
 }
 
+// P1 — semantic baseline helpers (Node parity).  Rust remains the reference
+// implementation; these helpers produce byte-identical JSON fields for the
+// simple cases and leave more complex parsing (full Python AST, Rust/TS
+// tokenizer) as TODO(P1) until a team needs them.
+function p1ResolveFamilyCounts(repoRoot, currentDir) {
+  const patterns = new Set();
+  const harvest = (cfgPath, key) => {
+    if (!fs.existsSync(cfgPath)) return;
+    let cfg;
+    try {
+      cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    } catch (_) {
+      return;
+    }
+    const families = cfg && cfg.task_families;
+    if (!families || typeof families !== 'object') return;
+    for (const name of Object.keys(families)) {
+      const entry = families[name];
+      if (!entry || typeof entry !== 'object') continue;
+      const list = Array.isArray(entry[key]) ? entry[key] : [];
+      for (const p of list) {
+        if (typeof p === 'string') patterns.add(p);
+      }
+    }
+  };
+  harvest(path.join(currentDir, 'completeness_contract.json'), 'required_file_families');
+  harvest(path.join(currentDir, 'reporting_rules.json'), 'groupable_families');
+  const out = {};
+  for (const pattern of Array.from(patterns).sort()) {
+    out[pattern] = resolvePatternMatches(repoRoot, pattern).length;
+  }
+  return out;
+}
+
+const P1_PROSE_NOUNS = [
+  'study docs',
+  'study doc',
+  'scripts',
+  'script',
+  'tests',
+  'test',
+  'files',
+  'file',
+  'API symbols',
+  'API symbol',
+  'brands',
+  'brand',
+];
+
+function p1ExtractDeclaredCounts(currentDir) {
+  const out = [];
+  if (!fs.existsSync(currentDir)) return out;
+  const entries = fs
+    .readdirSync(currentDir, { withFileTypes: true })
+    .filter((e) => e.isFile() && e.name.endsWith('.md'))
+    .map((e) => e.name)
+    .sort();
+  for (const name of entries) {
+    let text;
+    try {
+      text = fs.readFileSync(path.join(currentDir, name), 'utf8');
+    } catch (_) {
+      continue;
+    }
+    let ignore = false;
+    const lines = text.split(/\r?\n/);
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (line.includes('<!-- count-claim: end -->') || line.includes('<!-- count-claim: /ignore -->')) {
+        ignore = false;
+        continue;
+      }
+      if (line.includes('<!-- count-claim: ignore -->')) {
+        ignore = true;
+        continue;
+      }
+      if (ignore) continue;
+      const re = /(\d+)\s+(study docs?|scripts?|tests?|files?|API symbols?|brands?)(?![A-Za-z0-9_])/g;
+      let match;
+      while ((match = re.exec(line)) !== null) {
+        out.push({
+          noun: match[2],
+          count: Number(match[1]),
+          file: name,
+          line: i + 1,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+// TODO(P1): port full Rust/Python/TypeScript signature parsers. The Node
+// parity intentionally records `{}` until then; manifest consumers already
+// handle an empty map (P1 spec: stub other languages gracefully).
+function p1ShortcutSignatures(_repoRoot, _currentDir) {
+  return {};
+}
+
+function p1DependenciesSnapshot(repoRoot) {
+  const out = {};
+  const candidates = [
+    ['pyproject', 'pyproject.toml'],
+    ['cargo', 'Cargo.toml'],
+    ['npm', 'package.json'],
+  ];
+  for (const [key, filename] of candidates) {
+    const p = path.join(repoRoot, filename);
+    if (!fs.existsSync(p)) continue;
+    try {
+      const bytes = fs.readFileSync(p);
+      out[key] = sha256(bytes);
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  return out;
+}
+
 function buildManifest({
   generatedAt,
   repoRoot,
@@ -395,6 +514,7 @@ function buildManifest({
   reason,
   baseSha,
   filesMeta,
+  currentDir,
 }) {
   const packChecksum = sha256(filesMeta.map((m) => `${m.path}:${m.sha256}`).join('\n'));
   const stableChecksum = sha256(
@@ -417,6 +537,18 @@ function buildManifest({
     // fall through — null is a valid value
   }
 
+  // P9 F26: emit `branch: null` when HEAD is detached rather than leaking the
+  // literal string "HEAD" into the manifest. A prior merge dropped this
+  // helper and left `branchValue` undefined; reintroduce it here.
+  const branchValue =
+    detached || !branch || branch === 'HEAD' ? null : String(branch);
+
+  // P1 — semantic baseline.
+  const familyCounts = p1ResolveFamilyCounts(repoRoot, currentDir);
+  const declaredCounts = p1ExtractDeclaredCounts(currentDir);
+  const shortcutSignatures = p1ShortcutSignatures(repoRoot, currentDir);
+  const dependenciesSnapshot = p1DependenciesSnapshot(repoRoot);
+
   return {
     value: {
       schema_version: CURRENT_SCHEMA_VERSION,
@@ -429,6 +561,8 @@ function buildManifest({
       branch: branchValue,
       detached: Boolean(detached),
       head_sha: headSha || null,
+      head_sha_at_seal: headSha || null,
+      post_commit_sha: null,
       build_reason: reason,
       base_sha: baseSha || null,
       changed_files: [],
@@ -438,6 +572,10 @@ function buildManifest({
       pack_checksum: packChecksum,
       stable_checksum: stableChecksum,
       files: filesMeta,
+      family_counts: familyCounts,
+      declared_counts: declaredCounts,
+      shortcut_signatures: shortcutSignatures,
+      dependencies_snapshot: dependenciesSnapshot,
     },
     stable_checksum: stableChecksum,
     pack_checksum: packChecksum,
@@ -780,6 +918,7 @@ function main() {
       reason: opts.reason,
       baseSha: opts.base,
       filesMeta,
+      currentDir,
     });
 
     // P9 F28: warn if any zone path is git-ignored.
