@@ -28,6 +28,12 @@ function parseArgs(argv) {
     // cli/src/agent_context.rs::run_repair for the Rust reference.
     repair: false,
     repairYes: false,
+    // TODO(P3): implement --suggest-patches parity here. The Rust reference is
+    // cli/src/agent_context.rs::suggest_patches, emitting
+    // {changed_files, pack_sections_to_update, diff_excerpt, baseline_drift}.
+    // For now the flag is accepted but acts as a no-op on the Node side; CI
+    // consumers should prefer the Rust binary when the JSON payload is required.
+    suggestPatches: false,
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -56,6 +62,10 @@ function parseArgs(argv) {
         break;
       case '--yes':
         opts.repairYes = true;
+        break;
+      case '--suggest-patches':
+        // TODO(P3): wire through to a Node-side suggest_patches() helper.
+        opts.suggestPatches = true;
         break;
       default:
         break;

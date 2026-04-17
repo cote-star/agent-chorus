@@ -125,6 +125,10 @@ pub struct VerifyOptions {
     /// When combined with `repair`, perform the restore without prompting for
     /// interactive confirmation via stdin.
     pub repair_yes: bool,
+    /// P3: when true, emit the suggest-patches JSON payload
+    /// `{changed_files, pack_sections_to_update, diff_excerpt, baseline_drift}`
+    /// on stdout and exit early. Disables normal human-readable output.
+    pub suggest_patches: bool,
 }
 
 /// Result of running the freshness check as a reusable helper.
@@ -138,6 +142,10 @@ struct FreshnessResult {
     /// Reason when status is "skipped" (F24/F25/F27 — shallow-clone, initial-commit, non-git).
     /// None when status is pass/warn/skip.
     skipped_reason: Option<String>,
+    /// P3: Pack sections (by filename) affected by the changed files, resolved
+    /// through the `zones[]` array in `.agent-context/relevance.json`.
+    /// Empty when no zone map is present or none of the changed files match.
+    affected_sections: Vec<String>,
 }
 
 /// Detect whether `cwd` lives inside a shallow git clone. Returns `Ok(true)`
@@ -247,6 +255,32 @@ fn current_exe_sha256() -> Option<String> {
 }
 
 fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
+    // P3: delegate to the zone-map-aware variant. When no `relevance.json`
+    // exists, or it only declares the legacy `include/exclude` shape, the
+    // helper silently falls back to the Pass-0 hardcoded behavior.
+    check_freshness_with_zones(base, cwd)
+}
+
+/// P3: zone-aware freshness check.
+///
+/// Extends [`check_freshness_inner`]'s original behavior with a zone map. When
+/// `.agent-context/relevance.json` declares a `zones[]` array, each changed
+/// file is resolved to its affected pack sections via the zone map and the
+/// union is returned in `affected_sections`. When the file has no zone map,
+/// or the map only declares legacy `include/exclude` rules, this falls back to
+/// the Pass-0 `is_context_relevant_with_rules` behavior (the existing
+/// hardcoded defaults).
+///
+/// Pass-0 semantics preserved:
+/// - F27 non-git → skipped
+/// - F24 shallow clone → skipped
+/// - F25 initial commit → skipped
+///
+/// New P3 behavior:
+/// - Zone map validation: any zone whose `paths[]` resolves to zero tracked
+///   files is treated as an authoring bug and returned as a `fail` status so
+///   `verify` surfaces it loudly.
+fn check_freshness_with_zones(base: &str, cwd: &Path) -> Result<FreshnessResult> {
     // F27: non-git directory → explicit skipped status rather than silent empty diff.
     if !is_git_repo(cwd) {
         return Ok(FreshnessResult {
@@ -254,6 +288,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
             changed_files: Vec::new(),
             pack_updated: false,
             skipped_reason: Some("non-git".to_string()),
+            affected_sections: Vec::new(),
         });
     }
 
@@ -267,6 +302,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
             skipped_reason: Some(
                 "shallow-clone: increase fetch-depth to >=20".to_string(),
             ),
+            affected_sections: Vec::new(),
         });
     }
 
@@ -278,7 +314,28 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
             changed_files: Vec::new(),
             pack_updated: false,
             skipped_reason: Some("initial-commit".to_string()),
+            affected_sections: Vec::new(),
         });
+    }
+
+    // Resolve the repo root for zone-map lookup. Fall back to cwd on failure so
+    // non-standard layouts still get freshness behavior (they just won't get
+    // zone resolution).
+    let repo_root = git_repo_root(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let zone_map = load_zone_map(&repo_root);
+
+    // Validate zone map: each zone's paths must resolve to at least one tracked
+    // file (per P3 plan). If not, emit a `fail` result so verify fails loudly.
+    if let Some(ref zm) = zone_map {
+        if let Some(msg) = validate_zone_map(zm, &repo_root)? {
+            return Ok(FreshnessResult {
+                status: "fail".to_string(),
+                changed_files: Vec::new(),
+                pack_updated: false,
+                skipped_reason: Some(msg),
+                affected_sections: Vec::new(),
+            });
+        }
     }
 
     let changed_files_raw = {
@@ -292,16 +349,32 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
 
     let mut pack_touched = false;
     let mut relevant = Vec::new();
+    let mut affected = BTreeSet::new();
 
     for file_path in changed_files_raw.lines().map(|line| line.trim()).filter(|line| !line.is_empty()) {
         if file_path.starts_with(".agent-context/current/") {
             pack_touched = true;
             continue;
         }
-        if is_context_relevant(file_path) {
-            relevant.push(file_path.to_string());
+        match &zone_map {
+            Some(zm) => {
+                let sections = resolve_affected_sections(file_path, zm);
+                if !sections.is_empty() {
+                    relevant.push(file_path.to_string());
+                    for s in sections {
+                        affected.insert(s);
+                    }
+                }
+            }
+            None => {
+                if is_context_relevant(file_path) {
+                    relevant.push(file_path.to_string());
+                }
+            }
         }
     }
+
+    let affected_vec: Vec<String> = affected.into_iter().collect();
 
     if relevant.is_empty() {
         return Ok(FreshnessResult {
@@ -309,6 +382,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
             changed_files: Vec::new(),
             pack_updated: pack_touched,
             skipped_reason: None,
+            affected_sections: affected_vec,
         });
     }
 
@@ -318,6 +392,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
             changed_files: relevant,
             pack_updated: true,
             skipped_reason: None,
+            affected_sections: affected_vec,
         });
     }
 
@@ -326,6 +401,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
         changed_files: relevant,
         pack_updated: false,
         skipped_reason: None,
+        affected_sections: affected_vec,
     })
 }
 
@@ -436,7 +512,13 @@ pub fn init(options: InitOptions) -> Result<()> {
     }
 
     if !relevance_path.exists() || options.force {
-        write_text(&relevance_path, &default_relevance_json())?;
+        // P3: detect a `study/` directory at repo root and tailor the default
+        // zone map accordingly so freshness surfaces the right pack sections.
+        let has_study = repo_root.join("study").is_dir();
+        write_text(
+            &relevance_path,
+            &default_relevance_json_with_study(has_study),
+        )?;
     }
 
     if !guide_path.exists() || options.force {
@@ -1258,6 +1340,16 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     let current_dir = pack_root.join("current");
     let manifest_path = current_dir.join("manifest.json");
 
+    // P3: `--suggest-patches` short-circuits verify to emit a structured JSON
+    // payload meant for agent consumption. Integrity/freshness checks still
+    // feed it via `suggest_patches()` but no human-readable output is printed.
+    if options.suggest_patches {
+        let base_ref = options.base.as_deref().unwrap_or("origin/main");
+        let payload = suggest_patches(base_ref, &cwd_path)?;
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+        return Ok(());
+    }
+
     // Verify is intentionally lock-free: it only reads. Writes are serialized
     // through seal/rollback's `acquire_lock` (F30). If a future `--watch` mode
     // is added, it should take a shared read lock; single-shot verify does not.
@@ -1451,6 +1543,7 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
                 changed_files: Vec::new(),
                 pack_updated: false,
                 skipped_reason: None,
+                affected_sections: Vec::new(),
             },
         }
     } else {
@@ -1462,12 +1555,22 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
                 changed_files: Vec::new(),
                 pack_updated: false,
                 skipped_reason: None,
+                affected_sections: Vec::new(),
             },
         }
     };
 
     if options.ci {
-        let exit_code = if !integrity_passed || freshness.status == "warn" { 1 } else { 0 };
+        // P3: zone-map authoring bugs surface as freshness.status == "fail"
+        // and must be treated as a hard failure alongside integrity/warn.
+        let exit_code = if !integrity_passed
+            || freshness.status == "warn"
+            || freshness.status == "fail"
+        {
+            1
+        } else {
+            0
+        };
         let mut result_obj = serde_json::Map::new();
         result_obj.insert("integrity".to_string(), json!(integrity_status));
         result_obj.insert("freshness".to_string(), json!(freshness.status));
@@ -1476,6 +1579,13 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         if let Some(reason) = &freshness.skipped_reason {
             result_obj.insert("skipped_reason".to_string(), json!(reason));
         }
+        // P3: emit affected_sections so downstream consumers (CI, agents) can
+        // target the right pack files. Always emit (possibly empty) so schema
+        // stays stable.
+        result_obj.insert(
+            "affected_sections".to_string(),
+            json!(freshness.affected_sections),
+        );
         result_obj.insert("exit_code".to_string(), json!(exit_code));
         println!("{}", serde_json::to_string_pretty(&Value::Object(result_obj))?);
         if exit_code != 0 {
@@ -1511,7 +1621,20 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             for f in &freshness.changed_files {
                 println!("    - {}", f);
             }
+            if !freshness.affected_sections.is_empty() {
+                println!("  Affected pack sections:");
+                for s in &freshness.affected_sections {
+                    println!("    - {}", s);
+                }
+            }
             println!("  Consider running: chorus agent-context build");
+        }
+        "fail" => {
+            if let Some(reason) = &freshness.skipped_reason {
+                eprintln!("  Freshness: FAIL ({})", reason);
+            } else {
+                eprintln!("  Freshness: FAIL (zone map invalid)");
+            }
         }
         "skipped" => {
             if let Some(reason) = &freshness.skipped_reason {
@@ -1523,6 +1646,15 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         _ => {
             println!("  Freshness: skipped (no git history available)");
         }
+    }
+
+    // P3: zone-map validation failures are hard fails alongside integrity.
+    if freshness.status == "fail" {
+        let reason = freshness
+            .skipped_reason
+            .clone()
+            .unwrap_or_else(|| "zone map invalid".to_string());
+        return Err(anyhow!("[agent-context] verify failed: {}", reason));
     }
 
     if !integrity_passed {
@@ -1672,8 +1804,26 @@ pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
             for file_path in &result.changed_files {
                 println!("  - {}", file_path);
             }
+            // P3: surface affected pack sections so agents know which files to patch.
+            if !result.affected_sections.is_empty() {
+                println!();
+                println!("Affected pack sections:");
+                for s in &result.affected_sections {
+                    println!("  - {}", s);
+                }
+            }
             println!();
             println!("Consider running: chorus agent-context build");
+        }
+        "fail" => {
+            let reason = result
+                .skipped_reason
+                .clone()
+                .unwrap_or_else(|| "zone map invalid".to_string());
+            return Err(anyhow!(
+                "[agent-context] freshness failed: {}",
+                reason
+            ));
         }
         "skipped" => {
             if let Some(reason) = &result.skipped_reason {
@@ -3247,6 +3397,180 @@ fn load_relevance_rules(repo_root: &Path) -> Option<Value> {
     }
 }
 
+/// P3: a single zone in the relevance.json zone map.
+#[derive(Debug, Clone)]
+pub(crate) struct Zone {
+    /// Glob patterns (repo-relative) that trigger this zone.
+    pub paths: Vec<String>,
+    /// Pack section filenames (e.g. `20_CODE_MAP.md`) affected when a file
+    /// matching `paths` changes.
+    pub affects: Vec<String>,
+}
+
+/// P3: load the zone map from `<repo_root>/.agent-context/relevance.json`.
+///
+/// Returns `None` when:
+/// - the file is missing
+/// - the JSON is invalid
+/// - no `zones` key is present (legacy include/exclude shape — handled
+///   separately by `load_relevance_rules` / `is_context_relevant_with_rules`)
+///
+/// Malformed zone entries (non-object, missing paths/affects, non-string
+/// values) are silently skipped — they never abort loading, but they may make
+/// the zone empty.
+pub(crate) fn load_zone_map(repo_root: &Path) -> Option<Vec<Zone>> {
+    let rules_path = repo_root.join(".agent-context").join("relevance.json");
+    let raw = fs::read_to_string(&rules_path).ok()?;
+    let parsed: Value = serde_json::from_str(&raw).ok()?;
+    let zones_val = parsed.get("zones")?.as_array()?;
+    let mut zones = Vec::new();
+    for z in zones_val {
+        let Some(obj) = z.as_object() else { continue };
+        let paths: Vec<String> = obj
+            .get("paths")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let affects: Vec<String> = obj
+            .get("affects")
+            .and_then(|v| v.as_array())
+            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        if paths.is_empty() && affects.is_empty() {
+            continue;
+        }
+        zones.push(Zone { paths, affects });
+    }
+    Some(zones)
+}
+
+/// P3: resolve a single changed file to the set of pack sections affected,
+/// according to the zone map. Returns deduplicated section names in the
+/// insertion order of the first matching zone. Empty if no zone matches.
+///
+/// Matching uses the same globset semantics as Pass-0's
+/// `is_context_relevant_with_rules` for consistency with the existing behavior.
+pub(crate) fn resolve_affected_sections(file_path: &str, zones: &[Zone]) -> Vec<String> {
+    let normalized = file_path.replace('\\', "/");
+    let mut out = BTreeSet::new();
+    for zone in zones {
+        let patterns: Vec<&str> = zone.paths.iter().map(|s| s.as_str()).collect();
+        let Some(glob_set) = build_glob_set(&patterns) else {
+            continue;
+        };
+        if glob_set.is_match(&normalized) {
+            for section in &zone.affects {
+                out.insert(section.clone());
+            }
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// P3: validate that every zone's `paths[]` resolves to at least one tracked
+/// file. Returns `Ok(Some(msg))` with the first offending zone path when the
+/// zone map has a pattern resolving to zero tracked files, per the plan's
+/// "Verification fails if any zone's `paths` resolve to zero tracked files"
+/// rule.
+///
+/// Implementation uses `git ls-files` once and then applies each zone's
+/// globset in-memory. On non-git or empty ls-files output, we conservatively
+/// skip validation (the outer freshness check already handles non-git).
+fn validate_zone_map(zones: &[Zone], repo_root: &Path) -> Result<Option<String>> {
+    if zones.is_empty() {
+        return Ok(None);
+    }
+    let tracked = run_git(&["ls-files"], repo_root, true)?;
+    if tracked.is_empty() {
+        // Nothing to validate against — treat as a soft pass.
+        return Ok(None);
+    }
+    let tracked_files: Vec<String> = tracked
+        .lines()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
+        .collect();
+
+    for zone in zones {
+        for pattern in &zone.paths {
+            let Some(glob_set) = build_glob_set(&[pattern.as_str()]) else {
+                // Invalid glob — treat as a user authoring bug and surface it.
+                return Ok(Some(format!(
+                    "zone path '{pattern}' is not a valid glob pattern"
+                )));
+            };
+            let any_match = tracked_files.iter().any(|f| glob_set.is_match(f));
+            if !any_match {
+                return Ok(Some(format!(
+                    "zone path '{pattern}' resolves to zero tracked files"
+                )));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// P3: compute the `suggest-patches` JSON payload for agent consumption.
+///
+/// Shape:
+/// ```json
+/// {
+///   "changed_files": ["..."],
+///   "pack_sections_to_update": ["20_CODE_MAP.md", ...],
+///   "diff_excerpt": "<git diff excerpt, capped at 2KB>",
+///   "baseline_drift": []
+/// }
+/// ```
+///
+/// `baseline_drift` is reserved for P2 (baseline manifest + drift detection)
+/// and is always emitted as `[]` here so downstream schema consumers can
+/// depend on the field existing.
+pub(crate) fn suggest_patches(base: &str, cwd: &Path) -> Result<Value> {
+    // Run the zone-aware freshness check. Treat failures as "no suggestion"
+    // rather than propagating errors — callers still get a structured payload.
+    let freshness = check_freshness_with_zones(base, cwd).unwrap_or(FreshnessResult {
+        status: "skip".to_string(),
+        changed_files: Vec::new(),
+        pack_updated: false,
+        skipped_reason: None,
+        affected_sections: Vec::new(),
+    });
+
+    // Collect a bounded diff excerpt (2KB cap). We intentionally use `git diff`
+    // content (not just names) so agents can reason about what changed; the
+    // cap prevents runaway payloads on massive diffs.
+    let diff_excerpt = collect_diff_excerpt(base, cwd).unwrap_or_default();
+
+    Ok(json!({
+        "changed_files": freshness.changed_files,
+        "pack_sections_to_update": freshness.affected_sections,
+        "diff_excerpt": diff_excerpt,
+        // Reserved for P2 (baseline + drift check). Always an array for schema
+        // stability even when empty.
+        "baseline_drift": Vec::<Value>::new(),
+    }))
+}
+
+/// Capture at most `MAX_DIFF_EXCERPT_BYTES` bytes from `git diff`. Truncates
+/// on a UTF-8 boundary; if the diff fails (non-git / invalid base) returns an
+/// empty string.
+const MAX_DIFF_EXCERPT_BYTES: usize = 2 * 1024;
+fn collect_diff_excerpt(base: &str, cwd: &Path) -> Result<String> {
+    let raw = run_git(&["diff", &format!("{base}...HEAD")], cwd, true)?;
+    let truncated = if raw.len() > MAX_DIFF_EXCERPT_BYTES {
+        // Find the last char boundary below the cap so we don't split a
+        // multi-byte sequence mid-sequence.
+        let mut end = MAX_DIFF_EXCERPT_BYTES;
+        while !raw.is_char_boundary(end) && end > 0 {
+            end -= 1;
+        }
+        format!("{}\n… [truncated at {} bytes]", &raw[..end], MAX_DIFF_EXCERPT_BYTES)
+    } else {
+        raw
+    };
+    Ok(truncated)
+}
+
 fn build_glob_set(patterns: &[&str]) -> Option<GlobSet> {
     let mut builder = GlobSetBuilder::new();
     for pattern in patterns {
@@ -4142,8 +4466,36 @@ fn upsert_context_pack_block(
     Ok(())
 }
 
+/// P3: placeholder form of the default relevance.json, used by tests and any
+/// caller that does not want study/ auto-detection. The `init()` flow uses
+/// [`default_relevance_json_with_study`] directly.
+#[allow(dead_code)]
 fn default_relevance_json() -> String {
-    r#"{
+    // Pass-0 default kept a legacy `include`/`exclude` pair so the existing
+    // freshness path stays working without a zone map. P3 adds a default
+    // `zones[]` with study/, docs/, and common dependency files so new repos
+    // get zone-aware freshness out of the box.
+    default_relevance_json_with_study(false)
+}
+
+/// P3: assemble the default relevance.json contents, optionally including a
+/// `study/**` zone when the repo actually has a `study/` directory. Callers
+/// that do not already know whether `study/` exists should use
+/// [`default_relevance_json`], which defaults to the placeholder form used by
+/// the old behavior.
+fn default_relevance_json_with_study(has_study: bool) -> String {
+    let study_zone = if has_study {
+        r#"    {"paths": ["study/**", "docs/methodology/**"], "affects": ["10_SYSTEM_OVERVIEW.md", "30_BEHAVIORAL_INVARIANTS.md"]},
+"#
+    } else {
+        // Keep a placeholder entry so the default file has the correct shape
+        // even when no study/ directory exists yet. Docs alone is a safe
+        // default because most repos have a docs/ tree.
+        r#"    {"paths": ["docs/**"], "affects": ["10_SYSTEM_OVERVIEW.md", "30_BEHAVIORAL_INVARIANTS.md"]},
+"#
+    };
+    format!(
+        r#"{{
   "include": ["**"],
   "exclude": [
     ".agent-context/**",
@@ -4154,10 +4506,15 @@ fn default_relevance_json() -> String {
     "build/**",
     "vendor/**",
     "tmp/**"
+  ],
+  "zones": [
+{study_zone}    {{"paths": ["src/**", "cli/src/**"], "affects": ["20_CODE_MAP.md", "30_BEHAVIORAL_INVARIANTS.md"]}},
+    {{"paths": ["scripts/run_*.py", "scripts/**"], "affects": ["20_CODE_MAP.md", "40_OPERATIONS_AND_RELEASE.md"]}},
+    {{"paths": ["pyproject.toml", "Cargo.toml", "package.json", "cli/Cargo.toml"], "affects": ["40_OPERATIONS_AND_RELEASE.md"]}}
   ]
-}
+}}
 "#
-    .to_string()
+    )
 }
 
 fn build_template_start_here(
@@ -4717,360 +5074,307 @@ mod tests {
         );
     }
 
-    // ------------------------------------------------------------------
-    // P1 — rich manifest & provenance tests
-    // ------------------------------------------------------------------
+    // -----------------------------------------------------------------------
+    // P3 — Zone map + suggest-patches tests.
+    // Pure-helper tests (load_zone_map, resolve_affected_sections) do not need
+    // a git repo; freshness + validation tests bootstrap one on the fly.
+    // -----------------------------------------------------------------------
 
-    // Initialize a minimal git repo at `root` so helpers that call `git` do not
-    // fail on a raw temp directory.
-    fn init_git(root: &Path) {
-        let _ = std::process::Command::new("git")
-            .args(["init", "--quiet"])
-            .current_dir(root)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.email", "p1@test"])
-            .current_dir(root)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["config", "user.name", "P1 Tester"])
-            .current_dir(root)
-            .output();
+    /// Write a relevance.json with the given content under `repo_root`.
+    fn write_relevance_json(repo_root: &Path, content: &str) {
+        let dir = repo_root.join(".agent-context");
+        fs::create_dir_all(&dir).expect("create .agent-context dir");
+        fs::write(dir.join("relevance.json"), content).expect("write relevance.json");
     }
 
-    #[test]
-    fn resolve_family_counts_resolves_run_scripts_glob() {
-        let dir = test_dir("p1_family_counts");
-        init_git(&dir);
-        let scripts = dir.join("scripts");
-        fs::create_dir_all(&scripts).unwrap();
-        for i in 0..12 {
-            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+    /// Initialize a minimal git repo with one committed file so HEAD~1-style
+    /// diffs don't trip the initial-commit guard. Returns the repo root.
+    fn init_repo_with_commits(name: &str) -> PathBuf {
+        let dir = test_dir(name);
+        let run = |args: &[&str]| -> std::process::Output {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git command runs")
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "P3 Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        fs::write(dir.join("README.md"), "initial\n").unwrap();
+        run(&["add", "README.md"]);
+        run(&["commit", "-q", "-m", "initial"]);
+        // Second commit so HEAD~1 exists for diff fallback.
+        fs::write(dir.join("README.md"), "initial\nv2\n").unwrap();
+        run(&["add", "README.md"]);
+        run(&["commit", "-q", "-m", "second"]);
+        dir
+    }
+
+    /// Stage + commit a file under the repo so it becomes tracked for
+    /// `git ls-files` and shows up in diffs.
+    fn commit_file(repo: &Path, rel: &str, content: &str) {
+        let full = repo.join(rel);
+        if let Some(parent) = full.parent() {
+            fs::create_dir_all(parent).unwrap();
         }
-        let current = dir.join(".agent-context").join("current");
-        fs::create_dir_all(&current).unwrap();
-        // Author a minimal completeness_contract.json that declares the glob.
-        fs::write(
-            current.join("completeness_contract.json"),
+        fs::write(&full, content).unwrap();
+        Command::new("git")
+            .args(["add", rel])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-q", "-m", &format!("add {rel}")])
+            .current_dir(repo)
+            .output()
+            .unwrap();
+    }
+
+    #[test]
+    fn p3_load_zone_map_reads_valid_file() {
+        let dir = test_dir("p3_load_zone_map");
+        write_relevance_json(
+            &dir,
             r#"{
-              "task_families": {
-                "lookup": {"required_file_families": ["scripts/run_*.py"]}
-              }
+              "zones": [
+                {"paths": ["study/**"], "affects": ["10_SYSTEM_OVERVIEW.md"]},
+                {"paths": ["src/**"], "affects": ["20_CODE_MAP.md", "30_BEHAVIORAL_INVARIANTS.md"]}
+              ]
             }"#,
-        )
-        .unwrap();
+        );
 
-        let counts = resolve_family_counts(&dir, &current);
+        let zones = load_zone_map(&dir).expect("zone map should load");
+        assert_eq!(zones.len(), 2, "both zones should load");
+        assert_eq!(zones[0].paths, vec!["study/**".to_string()]);
+        assert_eq!(zones[0].affects, vec!["10_SYSTEM_OVERVIEW.md".to_string()]);
+        assert_eq!(zones[1].paths, vec!["src/**".to_string()]);
         assert_eq!(
-            counts.get("scripts/run_*.py").copied(),
-            Some(12),
-            "expected 12 scripts under scripts/run_*.py, got {counts:?}"
+            zones[1].affects,
+            vec![
+                "20_CODE_MAP.md".to_string(),
+                "30_BEHAVIORAL_INVARIANTS.md".to_string()
+            ]
         );
-
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn resolve_family_counts_empty_when_config_absent() {
-        let dir = test_dir("p1_family_counts_absent");
-        init_git(&dir);
-        let current = dir.join(".agent-context").join("current");
-        fs::create_dir_all(&current).unwrap();
+    fn p3_load_zone_map_missing_returns_none() {
+        let dir = test_dir("p3_load_zone_map_missing");
+        let zones = load_zone_map(&dir);
+        assert!(zones.is_none(), "no file → None");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
-        let counts = resolve_family_counts(&dir, &current);
+    #[test]
+    fn p3_load_zone_map_legacy_only_returns_none() {
+        let dir = test_dir("p3_load_zone_map_legacy");
+        // A legacy file without `zones` should yield None; the caller
+        // (check_freshness_with_zones) falls back to hardcoded relevance.
+        write_relevance_json(
+            &dir,
+            r#"{"include": ["**"], "exclude": [".git/**"]}"#,
+        );
+        assert!(load_zone_map(&dir).is_none(), "no zones key → None");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p3_resolve_affected_sections_maps_changed_file_to_zone() {
+        let zones = vec![
+            Zone {
+                paths: vec!["study/**".to_string(), "docs/methodology/**".to_string()],
+                affects: vec![
+                    "10_SYSTEM_OVERVIEW.md".to_string(),
+                    "30_BEHAVIORAL_INVARIANTS.md".to_string(),
+                ],
+            },
+            Zone {
+                paths: vec!["src/brand_lift/**".to_string()],
+                affects: vec!["20_CODE_MAP.md".to_string()],
+            },
+        ];
+        let sections = resolve_affected_sections("study/methodology/intro.md", &zones);
+        // The first zone matches; only its affects should appear (sorted/dedup).
+        assert_eq!(
+            sections,
+            vec![
+                "10_SYSTEM_OVERVIEW.md".to_string(),
+                "30_BEHAVIORAL_INVARIANTS.md".to_string(),
+            ]
+        );
+
+        let none = resolve_affected_sections("unrelated/thing.txt", &zones);
+        assert!(none.is_empty(), "no zone matches → empty");
+
+        let multi = resolve_affected_sections("src/brand_lift/mod.rs", &zones);
+        assert_eq!(multi, vec!["20_CODE_MAP.md".to_string()]);
+    }
+
+    #[test]
+    fn p3_check_freshness_with_zones_returns_affected_sections() {
+        // Full end-to-end: a real git repo with a study/ file committed, a
+        // zone map referencing study/**, and a subsequent commit that edits
+        // the study/ file. The zone-aware freshness check must surface the
+        // affected_sections list.
+        let repo = init_repo_with_commits("p3_freshness_zones");
+        // Commit a file in study/ so the zone path resolves.
+        commit_file(&repo, "study/intro.md", "hello\n");
+        // Write zone map after the commit so load_zone_map sees it.
+        write_relevance_json(
+            &repo,
+            r#"{
+              "zones": [
+                {"paths": ["study/**"], "affects": ["10_SYSTEM_OVERVIEW.md"]}
+              ]
+            }"#,
+        );
+        // Make a change that touches study/ (relative to HEAD~1).
+        commit_file(&repo, "study/intro.md", "hello world\n");
+
+        let result = check_freshness_with_zones("origin/nonexistent", &repo)
+            .expect("freshness should succeed");
+        assert_eq!(result.status, "warn", "study/ change without pack update → warn");
         assert!(
-            counts.is_empty(),
-            "expected empty family_counts when configs absent, got {counts:?}"
+            result.changed_files.iter().any(|f| f == "study/intro.md"),
+            "study/intro.md must appear in changed_files, got {:?}",
+            result.changed_files
         );
-
-        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            result.affected_sections.iter().any(|s| s == "10_SYSTEM_OVERVIEW.md"),
+            "affected_sections must include 10_SYSTEM_OVERVIEW.md, got {:?}",
+            result.affected_sections
+        );
+        let _ = fs::remove_dir_all(&repo);
     }
 
     #[test]
-    fn extract_declared_counts_catches_prose_numbers_and_respects_ignore() {
-        let dir = test_dir("p1_declared_counts");
-        let current = dir.join(".agent-context").join("current");
-        fs::create_dir_all(&current).unwrap();
-        let body = "\
-# Overview\n\
-\n\
-The repo ships 6 files and 12 scripts.\n\
-\n\
-<!-- count-claim: ignore -->\n\
-Historic note: we once had 42 tests.\n\
-<!-- count-claim: end -->\n\
-\n\
-After cleanup there are 32 tests today.\n\
-";
-        fs::write(current.join("10_SYSTEM_OVERVIEW.md"), body).unwrap();
+    fn p3_zone_referencing_zero_files_fails_verify() {
+        // A zone whose `paths` match no tracked file is an authoring bug; the
+        // freshness check must surface this as a `fail` so verify fails loudly.
+        let repo = init_repo_with_commits("p3_zone_zero_files");
+        // Zone points at a dir that does not exist in the repo.
+        write_relevance_json(
+            &repo,
+            r#"{
+              "zones": [
+                {"paths": ["study/**"], "affects": ["10_SYSTEM_OVERVIEW.md"]}
+              ]
+            }"#,
+        );
+        let result = check_freshness_with_zones("origin/nonexistent", &repo)
+            .expect("freshness should return a result, not an error");
+        assert_eq!(
+            result.status, "fail",
+            "zone resolving to zero tracked files must fail"
+        );
+        let reason = result.skipped_reason.unwrap_or_default();
+        assert!(
+            reason.contains("study/**") && reason.contains("zero tracked files"),
+            "fail reason must name the offending zone path, got: {reason}"
+        );
+        let _ = fs::remove_dir_all(&repo);
+    }
 
-        let out = extract_declared_counts(&current);
-        // Collect (noun, count) pairs for easier assertions.
-        let pairs: Vec<(String, u64)> = out
+    #[test]
+    fn p3_fallback_when_relevance_json_absent() {
+        // No relevance.json → fall through to Pass-0 `is_context_relevant`
+        // hardcoded rules; affected_sections remains empty.
+        let repo = init_repo_with_commits("p3_fallback_no_relevance");
+        // Commit a "context-relevant" file per Pass-0 hardcoded rules
+        // (cli/src/** is explicitly included in is_context_relevant).
+        commit_file(&repo, "cli/src/foo.rs", "fn a() {}\n");
+        // Change it again to produce a HEAD~1 diff hit.
+        commit_file(&repo, "cli/src/foo.rs", "fn a() -> i32 { 0 }\n");
+
+        let result = check_freshness_with_zones("origin/nonexistent", &repo)
+            .expect("freshness ok");
+        assert_eq!(
+            result.status, "warn",
+            "Pass-0 fallback must treat cli/src changes as context-relevant"
+        );
+        assert!(
+            result.changed_files.iter().any(|f| f == "cli/src/foo.rs"),
+            "cli/src/foo.rs must be in changed_files, got {:?}",
+            result.changed_files
+        );
+        assert!(
+            result.affected_sections.is_empty(),
+            "fallback mode → affected_sections stays empty"
+        );
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn p3_suggest_patches_emits_expected_shape() {
+        // End-to-end: wire suggest_patches() into a repo with a zone map and
+        // a changed file; assert the JSON payload has all four required fields
+        // and that baseline_drift is [] (reserved for P2).
+        let repo = init_repo_with_commits("p3_suggest_patches_shape");
+        commit_file(&repo, "study/intro.md", "hello\n");
+        write_relevance_json(
+            &repo,
+            r#"{
+              "zones": [
+                {"paths": ["study/**"], "affects": ["10_SYSTEM_OVERVIEW.md"]}
+              ]
+            }"#,
+        );
+        commit_file(&repo, "study/intro.md", "hello world\n");
+
+        let payload = suggest_patches("origin/nonexistent", &repo)
+            .expect("suggest_patches should succeed");
+        let obj = payload.as_object().expect("payload must be an object");
+        for key in [
+            "changed_files",
+            "pack_sections_to_update",
+            "diff_excerpt",
+            "baseline_drift",
+        ] {
+            assert!(obj.contains_key(key), "payload missing '{key}'");
+        }
+        // baseline_drift is reserved for P2 → always empty array.
+        assert_eq!(
+            obj["baseline_drift"].as_array().unwrap().len(),
+            0,
+            "baseline_drift must be [] until P2 wires drift detection"
+        );
+        // pack_sections_to_update must include the zone's affects.
+        let sections: Vec<String> = obj["pack_sections_to_update"]
+            .as_array()
+            .unwrap()
             .iter()
-            .map(|v| {
-                (
-                    v.get("noun").and_then(|x| x.as_str()).unwrap().to_string(),
-                    v.get("count").and_then(|x| x.as_u64()).unwrap(),
-                )
-            })
+            .filter_map(|v| v.as_str().map(String::from))
             .collect();
         assert!(
-            pairs.contains(&("files".to_string(), 6)),
-            "expected '6 files' claim in {pairs:?}"
+            sections.iter().any(|s| s == "10_SYSTEM_OVERVIEW.md"),
+            "pack_sections_to_update must contain 10_SYSTEM_OVERVIEW.md, got {:?}",
+            sections
         );
+        // diff_excerpt must be a string (possibly empty).
         assert!(
-            pairs.contains(&("scripts".to_string(), 12)),
-            "expected '12 scripts' claim in {pairs:?}"
+            obj["diff_excerpt"].is_string(),
+            "diff_excerpt must be a string"
         );
-        assert!(
-            pairs.contains(&("tests".to_string(), 32)),
-            "expected '32 tests' claim in {pairs:?}"
-        );
-        assert!(
-            !pairs.contains(&("tests".to_string(), 42)),
-            "'42 tests' inside <!-- count-claim: ignore --> must be skipped, got {pairs:?}"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&repo);
     }
 
     #[test]
-    fn parse_shortcut_signatures_for_python_and_rust_and_ts() {
-        let dir = test_dir("p1_sigs");
-        init_git(&dir);
-        // Python
-        fs::write(
-            dir.join("calc.py"),
-            "def compute_lift(data, *, alpha=0.05):\n    return 1\n\n\
-             async def fetch(url: str) -> str:\n    return url\n",
-        )
-        .unwrap();
-        // Rust
-        fs::write(
-            dir.join("lib.rs"),
-            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n\
-             fn internal() {\n}\n",
-        )
-        .unwrap();
-        // TypeScript
-        fs::write(
-            dir.join("helpers.ts"),
-            "export function shout(msg: string): string {\n  return msg.toUpperCase();\n}\n\n\
-             export const greet = (name: string): string => `hi ${name}`;\n",
-        )
-        .unwrap();
-
-        let py_sigs = parse_shortcut_signatures_for_file(&dir.join("calc.py"), "calc.py");
-        assert!(
-            py_sigs
-                .get("calc.py::compute_lift")
-                .map(|s| s.contains("compute_lift"))
-                .unwrap_or(false),
-            "expected python compute_lift signature, got {py_sigs:?}"
-        );
-        assert!(
-            py_sigs.contains_key("calc.py::fetch"),
-            "expected python fetch signature, got {py_sigs:?}"
-        );
-
-        let rs_sigs = parse_shortcut_signatures_for_file(&dir.join("lib.rs"), "lib.rs");
-        assert!(
-            rs_sigs
-                .get("lib.rs::add")
-                .map(|s| s.contains("-> i32"))
-                .unwrap_or(false),
-            "expected rust add signature with return type, got {rs_sigs:?}"
-        );
-        assert!(
-            rs_sigs.contains_key("lib.rs::internal"),
-            "expected rust internal signature, got {rs_sigs:?}"
-        );
-
-        let ts_sigs = parse_shortcut_signatures_for_file(&dir.join("helpers.ts"), "helpers.ts");
-        assert!(
-            ts_sigs.contains_key("helpers.ts::shout"),
-            "expected ts shout signature, got {ts_sigs:?}"
-        );
-        assert!(
-            ts_sigs.contains_key("helpers.ts::greet"),
-            "expected ts greet arrow signature, got {ts_sigs:?}"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn compute_dependencies_snapshot_hashes_pyproject_and_npm() {
-        let dir = test_dir("p1_deps");
-        fs::write(dir.join("pyproject.toml"), "[tool.poetry]\nname=\"demo\"\n").unwrap();
-        fs::write(dir.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
-
-        let snap = compute_dependencies_snapshot(&dir);
-        assert!(
-            snap.get("pyproject").map(|s| s.len() == 64).unwrap_or(false),
-            "pyproject hash should be 64-char hex, got {snap:?}"
-        );
-        assert!(
-            snap.get("npm").map(|s| s.len() == 64).unwrap_or(false),
-            "npm hash should be 64-char hex, got {snap:?}"
-        );
-        assert!(
-            !snap.contains_key("cargo"),
-            "cargo must be absent when Cargo.toml missing, got {snap:?}"
-        );
-
-        // Sanity: value changes when the file changes.
-        fs::write(dir.join("pyproject.toml"), "[tool.poetry]\nname=\"demo2\"\n").unwrap();
-        let snap2 = compute_dependencies_snapshot(&dir);
-        assert_ne!(
-            snap.get("pyproject"),
-            snap2.get("pyproject"),
-            "pyproject hash must change when the file content changes"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn build_manifest_emits_all_p1_fields() {
-        let files_meta: Vec<FileMeta> = Vec::new();
-        let mut baseline = SemanticBaseline::default();
-        baseline
-            .family_counts
-            .insert("scripts/run_*.py".to_string(), 12);
-        baseline.declared_counts.push(json!({
-            "noun": "files",
-            "count": 6,
-            "file": "10_SYSTEM_OVERVIEW.md",
-            "line": 3,
-        }));
-        baseline
-            .shortcut_signatures
-            .insert("calc.py::compute_lift".to_string(), "def compute_lift(data)".to_string());
-        baseline
-            .dependencies_snapshot
-            .insert("pyproject".to_string(), "a".repeat(64));
-
-        let bundle = build_manifest(
-            "2026-04-17T00:00:00Z",
-            Path::new("/tmp/unused"),
-            "fixture-repo",
-            "main",
-            false,
-            Some("abcd1234"),
-            "test-seal",
-            None,
-            &Vec::new(),
-            &files_meta,
-            &baseline,
-        );
-
-        // All four semantic fields must be present with the right shape.
-        assert_eq!(
-            bundle
-                .value
-                .get("family_counts")
-                .and_then(|v| v.get("scripts/run_*.py"))
-                .and_then(|v| v.as_u64()),
-            Some(12),
-            "family_counts missing the expected entry"
-        );
-        let declared = bundle
-            .value
-            .get("declared_counts")
+    fn p3_default_relevance_json_contains_zones() {
+        // Regression guard: the shipped default must carry a zones[] array so
+        // new repos get zone-aware freshness out of the box.
+        let json_str = default_relevance_json();
+        let parsed: Value =
+            serde_json::from_str(&json_str).expect("default relevance.json must parse");
+        let zones = parsed
+            .get("zones")
             .and_then(|v| v.as_array())
-            .expect("declared_counts must be an array");
-        assert_eq!(declared.len(), 1, "declared_counts should contain one entry");
-        assert!(
-            bundle
-                .value
-                .get("shortcut_signatures")
-                .and_then(|v| v.get("calc.py::compute_lift"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.contains("compute_lift"))
-                .unwrap_or(false),
-            "shortcut_signatures missing the expected entry"
-        );
-        assert!(
-            bundle
-                .value
-                .get("dependencies_snapshot")
-                .and_then(|v| v.get("pyproject"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.len() == 64)
-                .unwrap_or(false),
-            "dependencies_snapshot missing pyproject entry"
-        );
-
-        // head_sha_at_seal is the new canonical field; head_sha remains populated.
-        assert_eq!(
-            bundle
-                .value
-                .get("head_sha_at_seal")
-                .and_then(|v| v.as_str()),
-            Some("abcd1234"),
-            "head_sha_at_seal should mirror the seal-time HEAD"
-        );
-        assert_eq!(
-            bundle.value.get("head_sha").and_then(|v| v.as_str()),
-            Some("abcd1234"),
-            "head_sha must stay populated for back-compat"
-        );
-        assert!(
-            bundle.value.get("post_commit_sha").map(|v| v.is_null()).unwrap_or(false),
-            "post_commit_sha must be null at seal time"
-        );
-    }
-
-    #[test]
-    fn post_commit_reconcile_updates_post_commit_sha() {
-        let dir = test_dir("p1_post_commit");
-        init_git(&dir);
-        // Seed a single commit so HEAD resolves.
-        fs::write(dir.join("README.md"), "hi\n").unwrap();
-        let _ = std::process::Command::new("git")
-            .args(["add", "README.md"])
-            .current_dir(&dir)
-            .output();
-        let _ = std::process::Command::new("git")
-            .args(["commit", "-m", "seed", "--quiet"])
-            .current_dir(&dir)
-            .output();
-
-        // Minimal manifest that we expect the reconcile to stamp.
-        let current = dir.join(".agent-context").join("current");
-        fs::create_dir_all(&current).unwrap();
-        let initial = json!({
-            "schema_version": CURRENT_SCHEMA_VERSION,
-            "head_sha": "deadbeef",
-            "head_sha_at_seal": "deadbeef",
-            "post_commit_sha": null,
-            "files": [],
-        });
-        fs::write(
-            current.join("manifest.json"),
-            format!("{}\n", serde_json::to_string_pretty(&initial).unwrap()),
-        )
-        .unwrap();
-
-        post_commit_reconcile(Some(dir.to_str().unwrap()), None).expect("reconcile must succeed");
-
-        let raw = fs::read_to_string(current.join("manifest.json")).unwrap();
-        let manifest: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let post_sha = manifest
-            .get("post_commit_sha")
-            .and_then(|v| v.as_str())
-            .expect("post_commit_sha must be a string after reconcile");
-        // SHA-1 hex = 40 chars; accept any non-empty string from git rev-parse.
-        assert!(!post_sha.is_empty());
-        // Invariant: seal-time head_sha_at_seal must be preserved.
-        assert_eq!(
-            manifest.get("head_sha_at_seal").and_then(|v| v.as_str()),
-            Some("deadbeef"),
-            "reconcile must never mutate head_sha_at_seal"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
+            .expect("zones[] must be present");
+        assert!(!zones.is_empty(), "default must ship at least one zone");
+        // Legacy include/exclude stays for back-compat.
+        assert!(parsed.get("include").is_some(), "include[] preserved");
+        assert!(parsed.get("exclude").is_some(), "exclude[] preserved");
     }
 }
