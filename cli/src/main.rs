@@ -335,6 +335,12 @@ enum ContextPackCommand {
         /// installs are not disturbed.
         #[arg(long = "enable-post-commit-reconcile")]
         enable_post_commit_reconcile: bool,
+
+        /// P4 — also merge the shipped `templates/settings.agent-context.json`
+        /// PreToolUse hook entries into `.claude/settings.json`. Existing keys
+        /// are preserved; idempotent when run twice.
+        #[arg(long = "install-settings-template")]
+        install_settings_template: bool,
     },
 
     /// P1 — reconcile the manifest's `post_commit_sha` with the current
@@ -938,6 +944,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             cwd,
             dry_run,
             enable_post_commit_reconcile,
+            install_settings_template,
         } => {
             let target_cwd = effective_cwd(cwd);
             agent_context::install_hooks_with_options(
@@ -945,6 +952,9 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 dry_run,
                 enable_post_commit_reconcile,
             )?;
+            if install_settings_template {
+                agent_context::install_settings_template(&target_cwd, dry_run)?;
+            }
         }
         ContextPackCommand::PostCommitReconcile { cwd, pack_dir } => {
             agent_context::post_commit_reconcile(cwd.as_deref(), pack_dir.as_deref())?;

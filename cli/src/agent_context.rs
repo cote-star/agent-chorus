@@ -1258,6 +1258,177 @@ pub fn install_hooks_with_options(
     Ok(())
 }
 
+/// P4 — shipped PreToolUse hook template. Kept inline so `install-hooks
+/// --install-settings-template` can be used without the shipped
+/// `templates/` directory on disk (published binaries, `npx` invocations
+/// where the template tree is not unpacked alongside the CLI).
+///
+/// Keep in sync with `templates/settings.agent-context.json`.
+const SETTINGS_TEMPLATE_JSON: &str = include_str!("../../templates/settings.agent-context.json");
+
+/// P4 — merge `templates/settings.agent-context.json` into
+/// `<cwd>/.claude/settings.json`, preserving existing keys and existing
+/// `hooks.PreToolUse` entries. Missing-file → creates the file. Existing
+/// file → deep-merge the template's `hooks.PreToolUse` entries, skipping
+/// any entry whose `matcher` already has a command identical to one we
+/// would insert. Writes are atomic so a crash mid-write never leaves
+/// `settings.json` half-rewritten.
+///
+/// Idempotency: running twice produces identical content because the
+/// matcher+command pair is the de-dup key.
+pub fn install_settings_template(cwd: &str, dry_run: bool) -> Result<()> {
+    let cwd_path = PathBuf::from(cwd);
+    let claude_dir = cwd_path.join(".claude");
+    let settings_path = claude_dir.join("settings.json");
+
+    // Parse the shipped template once. A broken template is a programmer
+    // bug, not a user error — fail fast and loudly.
+    let template: Value = serde_json::from_str(SETTINGS_TEMPLATE_JSON)
+        .context("Failed to parse embedded settings.agent-context.json template")?;
+
+    let existing: Value = if settings_path.exists() {
+        let raw = fs::read_to_string(&settings_path)
+            .with_context(|| format!("Failed to read {}", settings_path.display()))?;
+        if raw.trim().is_empty() {
+            Value::Object(serde_json::Map::new())
+        } else {
+            serde_json::from_str(&raw)
+                .with_context(|| format!("Failed to parse {}", settings_path.display()))?
+        }
+    } else {
+        Value::Object(serde_json::Map::new())
+    };
+
+    let merged = merge_settings_template(&existing, &template);
+    let merged_text = format!("{}\n", serde_json::to_string_pretty(&merged)?);
+
+    let existing_text = if settings_path.exists() {
+        fs::read_to_string(&settings_path).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let unchanged = existing_text == merged_text;
+
+    if dry_run {
+        println!(
+            "[agent-context] planned: {} ({})",
+            rel_path(&settings_path, &cwd_path),
+            if unchanged { "unchanged" } else { "merge PreToolUse hooks" }
+        );
+        return Ok(());
+    }
+
+    if unchanged {
+        println!(
+            "[agent-context] unchanged: {}",
+            rel_path(&settings_path, &cwd_path)
+        );
+        return Ok(());
+    }
+
+    ensure_dir(&claude_dir)?;
+    write_text_atomic(&settings_path, &merged_text)?;
+    println!(
+        "[agent-context] updated: {} (PreToolUse hooks merged)",
+        rel_path(&settings_path, &cwd_path)
+    );
+    Ok(())
+}
+
+/// P4 — pure helper so merge behavior is unit-testable without touching
+/// the filesystem. Combines two settings.json values with the following
+/// rules:
+///
+/// 1. Non-`hooks` keys from `existing` survive unchanged.
+/// 2. For `hooks.PreToolUse`, each template entry is appended unless the
+///    existing config already contains an entry with the same `matcher`
+///    AND a command string that matches the template's command. This
+///    preserves user-authored matchers while keeping the merge idempotent.
+/// 3. For any other `hooks.*` array in the template, entries are appended
+///    only when their serialized form is not already present.
+pub(crate) fn merge_settings_template(existing: &Value, template: &Value) -> Value {
+    let mut out = match existing {
+        Value::Object(map) => map.clone(),
+        _ => serde_json::Map::new(),
+    };
+
+    let template_hooks = match template.get("hooks").and_then(|v| v.as_object()) {
+        Some(h) => h,
+        None => return Value::Object(out),
+    };
+
+    let existing_hooks = out
+        .get("hooks")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    let mut merged_hooks = existing_hooks.clone();
+
+    for (hook_name, template_entries) in template_hooks {
+        let template_arr = match template_entries.as_array() {
+            Some(arr) => arr,
+            None => continue,
+        };
+        let mut combined: Vec<Value> = merged_hooks
+            .get(hook_name)
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default();
+
+        for entry in template_arr {
+            if !hooks_entry_already_present(&combined, entry) {
+                combined.push(entry.clone());
+            }
+        }
+
+        merged_hooks.insert(hook_name.clone(), Value::Array(combined));
+    }
+
+    out.insert("hooks".to_string(), Value::Object(merged_hooks));
+    Value::Object(out)
+}
+
+/// P4 — idempotency check for a single hook entry. An entry is "already
+/// present" when some existing entry shares the same `matcher` value AND
+/// one of its inner `hooks[].command` strings equals one of the template
+/// entry's commands. This lets users add their own commands to a matcher
+/// we ship without tripping duplicate detection, while still keeping our
+/// own commands from being appended twice.
+fn hooks_entry_already_present(existing_arr: &[Value], candidate: &Value) -> bool {
+    let candidate_matcher = candidate.get("matcher").and_then(|v| v.as_str());
+    let candidate_commands: Vec<&str> = candidate
+        .get("hooks")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|h| h.get("command").and_then(|c| c.as_str()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    for existing in existing_arr {
+        let existing_matcher = existing.get("matcher").and_then(|v| v.as_str());
+        if existing_matcher != candidate_matcher {
+            continue;
+        }
+        let existing_commands: Vec<&str> = existing
+            .get("hooks")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|h| h.get("command").and_then(|c| c.as_str()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for cmd in &candidate_commands {
+            if existing_commands.contains(cmd) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// P1 — `chorus agent-context post-commit-reconcile`. Reads the current
 /// manifest, stamps `post_commit_sha` with the current git HEAD, and writes
 /// the manifest atomically back. No-op (Ok) when the manifest is absent —
@@ -1560,6 +1731,20 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         }
     };
 
+    // P4: read `acceptance_tests.md` (optional) and surface every test's
+    // status. When a test declares `invalidated_by: [fn_a, fn_b, ...]`, check
+    // whether P2's `SIGNATURE_DRIFT` has flagged any of those functions. Each
+    // matched function shifts that test from `ready` to `needs_revalidation`.
+    //
+    // Graceful-degradation contract:
+    // - If the acceptance_tests file is missing, emit an empty list and move on.
+    // - If P2 drift machinery is not yet integrated, `collect_signature_drift`
+    //   returns an empty set and every test stays `ready` regardless of its
+    //   `invalidated_by` entries. The field is still reported so agents can
+    //   inspect it without waiting for P2 wiring.
+    let drifted_functions = collect_signature_drift(&current_dir);
+    let acceptance_tests = evaluate_acceptance_tests(&current_dir, &drifted_functions);
+
     if options.ci {
         // P3: zone-map authoring bugs surface as freshness.status == "fail"
         // and must be treated as a hard failure alongside integrity/warn.
@@ -1586,6 +1771,10 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             "affected_sections".to_string(),
             json!(freshness.affected_sections),
         );
+        // P4: emit acceptance_tests (possibly empty) so downstream consumers
+        // see `needs_revalidation` entries when P2 drift machinery flags a
+        // function listed in an `invalidated_by` field.
+        result_obj.insert("acceptance_tests".to_string(), json!(acceptance_tests));
         result_obj.insert("exit_code".to_string(), json!(exit_code));
         println!("{}", serde_json::to_string_pretty(&Value::Object(result_obj))?);
         if exit_code != 0 {
@@ -1645,6 +1834,48 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         }
         _ => {
             println!("  Freshness: skipped (no git history available)");
+        }
+    }
+
+    // P4: surface acceptance_tests status in human-readable mode so operators
+    // notice revalidation needs without having to read the CI JSON.
+    if !acceptance_tests.is_empty() {
+        let needs_reval: Vec<&Value> = acceptance_tests
+            .iter()
+            .filter(|t| {
+                t.get("status")
+                    .and_then(|s| s.as_str())
+                    .map(|s| s == "needs_revalidation")
+                    .unwrap_or(false)
+            })
+            .collect();
+        if needs_reval.is_empty() {
+            println!(
+                "  Acceptance tests: {} test(s) ready",
+                acceptance_tests.len()
+            );
+        } else {
+            println!(
+                "  Acceptance tests: {} of {} test(s) need revalidation:",
+                needs_reval.len(),
+                acceptance_tests.len()
+            );
+            for test in needs_reval {
+                let id = test
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<unnamed>");
+                let trigger: Vec<&str> = test
+                    .get("invalidated_by_matched")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                if trigger.is_empty() {
+                    println!("    - {}", id);
+                } else {
+                    println!("    - {} (drift: {})", id, trigger.join(", "));
+                }
+            }
         }
     }
 
@@ -3549,6 +3780,134 @@ pub(crate) fn suggest_patches(base: &str, cwd: &Path) -> Result<Value> {
         // stability even when empty.
         "baseline_drift": Vec::<Value>::new(),
     }))
+}
+
+/// P4 — evaluate `acceptance_tests.md` in the sealed pack and return one
+/// `Value` per test with its `id`, `status`, and (when present) the full
+/// `invalidated_by` list plus the subset that matched P2's drift signal.
+///
+/// Parsing contract: the file is expected to declare tests as YAML-style
+/// front-matter blocks or simple markdown bullets with structured hints.
+/// To avoid a YAML dependency and to keep this readable when P2 hasn't yet
+/// integrated, we parse a lightweight schema:
+///
+///   ### test: <id>
+///   - invalidated_by: fn_a, fn_b
+///
+/// Any block without a matching `### test:` header is skipped. Missing
+/// file, unreadable file, or zero tests → returns an empty Vec.
+///
+/// NOTE (P2 integration): until P2 lands the `SIGNATURE_DRIFT` detector,
+/// `drifted_functions` will always be empty and every test stays `ready`.
+/// That's intentional — P4 ships the invalidated_by data pipeline now so
+/// downstream agents can rely on the field existing; actual drift-triggered
+/// status transitions come online the moment P2 is wired.
+fn evaluate_acceptance_tests(
+    current_dir: &Path,
+    drifted_functions: &std::collections::BTreeSet<String>,
+) -> Vec<Value> {
+    let path = current_dir.join("acceptance_tests.md");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut out: Vec<Value> = Vec::new();
+    let mut current_id: Option<String> = None;
+    let mut current_invalidated: Vec<String> = Vec::new();
+
+    let flush = |id: Option<String>,
+                 invalidated: Vec<String>,
+                 drifted: &std::collections::BTreeSet<String>,
+                 out: &mut Vec<Value>| {
+        if let Some(id) = id {
+            let matched: Vec<String> = invalidated
+                .iter()
+                .filter(|fn_name| drifted.contains(*fn_name))
+                .cloned()
+                .collect();
+            let status = if matched.is_empty() {
+                "ready"
+            } else {
+                "needs_revalidation"
+            };
+            out.push(json!({
+                "id": id,
+                "status": status,
+                "invalidated_by": invalidated,
+                "invalidated_by_matched": matched,
+            }));
+        }
+    };
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed
+            .strip_prefix("### test:")
+            .or_else(|| trimmed.strip_prefix("### Test:"))
+            .or_else(|| trimmed.strip_prefix("###test:"))
+        {
+            flush(
+                current_id.take(),
+                std::mem::take(&mut current_invalidated),
+                drifted_functions,
+                &mut out,
+            );
+            current_id = Some(rest.trim().to_string());
+            continue;
+        }
+        if current_id.is_some() {
+            // Accept "- invalidated_by: a, b" or "invalidated_by: [a, b]".
+            let lower = trimmed.trim_start_matches(['-', ' ', '*']).to_string();
+            if let Some(rest) = lower
+                .strip_prefix("invalidated_by:")
+                .or_else(|| lower.strip_prefix("invalidated_by :"))
+            {
+                // Strip optional `[...]` wrapper.
+                let cleaned = rest.trim().trim_start_matches('[').trim_end_matches(']');
+                for part in cleaned.split(',') {
+                    let name = part.trim().trim_matches(|c: char| c == '"' || c == '\'');
+                    if !name.is_empty() {
+                        current_invalidated.push(name.to_string());
+                    }
+                }
+            }
+        }
+    }
+    flush(
+        current_id.take(),
+        current_invalidated,
+        drifted_functions,
+        &mut out,
+    );
+    out
+}
+
+/// P4 — collect the set of function names flagged as signature-drifted by
+/// P2. Today we read them from an optional `signature_drift.json` under
+/// `.agent-context/current/` because P2 may land after P4 does. When P2 is
+/// integrated and stamps drift into the manifest or an alternate file, this
+/// helper is the single place to update.
+///
+/// Graceful-degradation contract:
+/// - No file present → empty set (every acceptance test stays `ready`).
+/// - Unreadable or unparseable file → empty set.
+/// - File present with a `drifted_functions` array → each entry joins the set.
+fn collect_signature_drift(current_dir: &Path) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let path = current_dir.join("signature_drift.json");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return out;
+    };
+    let Ok(value): Result<Value, _> = serde_json::from_str(&raw) else {
+        return out;
+    };
+    if let Some(arr) = value.get("drifted_functions").and_then(|v| v.as_array()) {
+        for entry in arr {
+            if let Some(name) = entry.as_str() {
+                out.insert(name.to_string());
+            }
+        }
+    }
+    out
 }
 
 /// Capture at most `MAX_DIFF_EXCERPT_BYTES` bytes from `git diff`. Truncates
@@ -5729,6 +6088,247 @@ After cleanup there are 32 tests today.\n\
             "expected ts greet arrow signature, got {ts_sigs:?}"
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // P4 — pre-edit awareness tests.
+    //   * install_settings_template merge behavior (new file, idempotent, merge)
+    //   * acceptance_tests invalidated_by → status = needs_revalidation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn p4_install_settings_template_creates_new_file() {
+        let dir = test_dir("p4_install_new");
+        install_settings_template(dir.to_str().unwrap(), false)
+            .expect("install must succeed when no settings.json exists");
+
+        let path = dir.join(".claude/settings.json");
+        assert!(path.exists(), "settings.json must be created");
+        let raw = fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(&raw).expect("must be valid JSON");
+        let pre_tool_use = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .expect("hooks.PreToolUse must be present");
+        assert!(
+            pre_tool_use.len() >= 2,
+            "shipped template should install both Edit|Write and Bash matchers, got {} entries",
+            pre_tool_use.len()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_install_settings_template_is_idempotent() {
+        let dir = test_dir("p4_install_idempotent");
+        install_settings_template(dir.to_str().unwrap(), false).unwrap();
+        let first = fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
+
+        install_settings_template(dir.to_str().unwrap(), false).unwrap();
+        let second = fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
+        assert_eq!(
+            first, second,
+            "running install-settings-template twice must produce identical bytes"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_install_settings_template_preserves_existing_keys() {
+        let dir = test_dir("p4_install_merge");
+        let claude_dir = dir.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let existing = json!({
+            "permissions": {"allow": ["Bash(ls:*)"]},
+            "env": {"DEBUG": "false"},
+            "hooks": {
+                "PostToolUse": [
+                    {"matcher": "Edit", "hooks": [{"type": "command", "command": "echo hi"}]}
+                ]
+            }
+        });
+        fs::write(
+            claude_dir.join("settings.json"),
+            format!("{}\n", serde_json::to_string_pretty(&existing).unwrap()),
+        )
+        .unwrap();
+
+        install_settings_template(dir.to_str().unwrap(), false)
+            .expect("merge must succeed when settings.json exists");
+
+        let raw = fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+        let parsed: Value = serde_json::from_str(&raw).unwrap();
+
+        // Existing non-hooks keys preserved verbatim.
+        assert_eq!(
+            parsed
+                .get("permissions")
+                .and_then(|p| p.get("allow"))
+                .and_then(|a| a.as_array())
+                .map(|a| a.len()),
+            Some(1),
+            "permissions.allow must be preserved, got {parsed}"
+        );
+        assert_eq!(
+            parsed.get("env").and_then(|e| e.get("DEBUG")).and_then(|v| v.as_str()),
+            Some("false"),
+            "env.DEBUG must be preserved"
+        );
+        // Existing hooks.PostToolUse stays intact.
+        assert!(
+            parsed
+                .get("hooks")
+                .and_then(|h| h.get("PostToolUse"))
+                .and_then(|v| v.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false),
+            "existing hooks.PostToolUse must survive the merge"
+        );
+        // PreToolUse entries added by the template are now present.
+        let pre = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .expect("hooks.PreToolUse must be inserted");
+        assert!(
+            pre.iter().any(|e| e.get("matcher").and_then(|v| v.as_str()) == Some("Edit|Write")),
+            "Edit|Write matcher must be present after merge, got {pre:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_merge_settings_template_dedupes_existing_command() {
+        // A user who already added the chorus PreToolUse hook (e.g. by hand)
+        // should see no duplicate on subsequent install.
+        let template: Value = serde_json::from_str(SETTINGS_TEMPLATE_JSON).unwrap();
+        let existing = template.clone();
+        let merged = merge_settings_template(&existing, &template);
+        let pre = merged
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .expect("PreToolUse must be present");
+        let template_pre_len = template
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap();
+        assert_eq!(
+            pre.len(),
+            template_pre_len,
+            "merging the template with itself must not double entries"
+        );
+    }
+
+    #[test]
+    fn p4_acceptance_tests_needs_revalidation_on_drift() {
+        // acceptance_tests.md declares two tests; one lists `compute_lift`
+        // in its invalidated_by field. When signature_drift.json names
+        // `compute_lift`, the corresponding test must flip to
+        // `needs_revalidation`; the other test must stay `ready`.
+        let dir = test_dir("p4_acceptance_drift");
+        let current = dir.join(".agent-context/current");
+        fs::create_dir_all(&current).unwrap();
+
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "# Acceptance Tests\n\n\
+             ### test: verify_lift_calculation\n\
+             - invalidated_by: compute_lift, format_result\n\n\
+             ### test: verify_summary_shape\n\
+             - invalidated_by: render_summary\n",
+        )
+        .unwrap();
+
+        // P2 drift signal — only compute_lift drifted.
+        fs::write(
+            current.join("signature_drift.json"),
+            r#"{"drifted_functions": ["compute_lift"]}"#,
+        )
+        .unwrap();
+
+        let drifted = collect_signature_drift(&current);
+        assert!(drifted.contains("compute_lift"));
+
+        let tests = evaluate_acceptance_tests(&current, &drifted);
+        assert_eq!(tests.len(), 2, "both tests must be surfaced, got {tests:?}");
+
+        let lift = tests
+            .iter()
+            .find(|t| t["id"] == "verify_lift_calculation")
+            .expect("lift test must be present");
+        assert_eq!(
+            lift["status"].as_str(),
+            Some("needs_revalidation"),
+            "drift in compute_lift must flip verify_lift_calculation to needs_revalidation"
+        );
+        let matched: Vec<&str> = lift["invalidated_by_matched"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(matched, vec!["compute_lift"]);
+
+        let summary = tests
+            .iter()
+            .find(|t| t["id"] == "verify_summary_shape")
+            .expect("summary test must be present");
+        assert_eq!(
+            summary["status"].as_str(),
+            Some("ready"),
+            "no overlap with drifted set → stays ready"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_acceptance_tests_graceful_degrade_when_p2_absent() {
+        // No signature_drift.json on disk → every test stays `ready`
+        // regardless of its invalidated_by entries. This is the graceful
+        // degradation contract documented inline on evaluate_acceptance_tests.
+        let dir = test_dir("p4_acceptance_no_p2");
+        let current = dir.join(".agent-context/current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "### test: t1\n- invalidated_by: fn_a, fn_b\n",
+        )
+        .unwrap();
+
+        let drifted = collect_signature_drift(&current);
+        assert!(
+            drifted.is_empty(),
+            "absence of signature_drift.json must yield an empty set, got {drifted:?}"
+        );
+
+        let tests = evaluate_acceptance_tests(&current, &drifted);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(
+            tests[0]["status"].as_str(),
+            Some("ready"),
+            "without P2 drift signal, tests stay ready even when invalidated_by is populated"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_acceptance_tests_missing_file_returns_empty() {
+        let dir = test_dir("p4_acceptance_missing");
+        let current = dir.join(".agent-context/current");
+        fs::create_dir_all(&current).unwrap();
+        let drifted = std::collections::BTreeSet::new();
+        let tests = evaluate_acceptance_tests(&current, &drifted);
+        assert!(tests.is_empty(), "missing file → empty list");
         let _ = fs::remove_dir_all(&dir);
     }
 }
