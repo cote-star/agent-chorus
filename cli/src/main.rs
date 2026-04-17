@@ -429,6 +429,34 @@ enum ContextPackCommand {
         follow_symlinks: bool,
     },
 
+    /// P7 — zone-grouped diff from the seal-time baseline to current HEAD.
+    ///
+    /// Intended for the orchestrator of a parallel-subagent session: after
+    /// subagents modify code, run this to learn which pack sections are
+    /// impacted, then dispatch a single reconciler subagent to patch and
+    /// re-seal. Requires a sealed pack (`manifest.json` with
+    /// `head_sha_at_seal` or `post_commit_sha`).
+    Diff {
+        /// Emit diff since the seal-time baseline recorded in
+        /// `manifest.json`. This flag is the only mode currently supported;
+        /// reserved in the spec so future diff modes can slot in cleanly.
+        #[arg(long = "since-seal")]
+        since_seal: bool,
+
+        /// Output format: `json` (default, machine-readable) or `text`
+        /// (human-readable summary of zones + actions).
+        #[arg(long, default_value = "json")]
+        format: DiffFormat,
+
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+    },
+
     /// Validate and seal an agent-authored context pack
     Seal {
         /// Seal reason (metadata only)
@@ -484,6 +512,15 @@ impl AgentType {
             AgentType::Cursor => "cursor",
         }
     }
+}
+
+/// P7 — output format for `agent-context diff --since-seal`. JSON is the
+/// machine-readable contract; text is a compact human-facing summary so an
+/// operator can eyeball the zones without piping through `jq`.
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum, Debug)]
+enum DiffFormat {
+    Json,
+    Text,
 }
 
 fn main() {
@@ -1004,6 +1041,34 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 force_snapshot,
                 follow_symlinks,
             })?;
+        }
+        ContextPackCommand::Diff {
+            since_seal,
+            format,
+            pack_dir,
+            cwd,
+        } => {
+            // --since-seal is currently the only supported diff mode. We
+            // accept it as an explicit flag so future modes (e.g. --since-tag)
+            // slot in cleanly without breaking the CLI contract.
+            if !since_seal {
+                return Err(anyhow::anyhow!(
+                    "[agent-context] diff requires --since-seal; no other mode is implemented yet"
+                ));
+            }
+            let target_cwd = effective_cwd(cwd);
+            let result = agent_context::diff_since_seal(
+                std::path::Path::new(&target_cwd),
+                pack_dir.as_deref(),
+            )?;
+            match format {
+                DiffFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result.value)?);
+                }
+                DiffFormat::Text => {
+                    agent_context::render_diff_since_seal_text(&result.value);
+                }
+            }
         }
     }
     Ok(())

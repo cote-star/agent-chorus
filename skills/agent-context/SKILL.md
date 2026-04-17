@@ -220,3 +220,30 @@ A context pack is ready when:
 - Do not rewrite the entire pack on updates — patch only affected sections
 - Do not include secrets, credentials, or sensitive configuration in the context pack
 - Do not add the context pack to `.gitignore` — it is meant to be committed and shared
+
+---
+
+## Parallel subagent pattern
+
+When an orchestrator spawns parallel subagents that each modify code in different zones (`src/`, `study/`, `scripts/`, etc.), do **not** ask each subagent to reconcile the context pack. That approach merge-conflicts on pack files and produces N competing, inconsistent patches.
+
+Use this flow instead:
+
+1. **Spawn** subagents in parallel. Each one touches its own code zone and returns a brief change summary. None of them should touch `.agent-context/`.
+2. **Collect** the changes. After all subagents return, run:
+
+    ```bash
+    chorus agent-context diff --since-seal --format json
+    ```
+
+    This emits a zone-grouped JSON payload: for each authored zone in `relevance.json`, the `changed_files` that match plus the `affects` pack sections (e.g. `20_CODE_MAP.md`, `30_BEHAVIORAL_INVARIANTS.md`). It also includes `acceptance_tests_invalidated` — the acceptance tests whose `invalidated_by` functions drifted — and `recommended_reconciliation_actions`, a bullet list the next agent can follow.
+
+3. **Dispatch a single reconciler subagent** with the JSON payload. Its job is to:
+   - patch each `affects` section (only the lines the zone implies)
+   - revalidate any `acceptance_tests_invalidated`
+   - run `chorus agent-context seal --force` once, at the end
+   - commit `.agent-context/` as a separate commit per the Update flow
+
+4. **Verify in CI.** `chorus agent-context verify --ci` surfaces the same payload under `diff_since_seal` and fails when `acceptance_tests_invalidated` is non-empty AND the pack wasn't updated to revalidate. If CI fails on this gate, the reconciler subagent was either skipped or incomplete.
+
+One reconciler subagent = one consistent pack patch. N parallel reconcilers = conflicts and stale prose.

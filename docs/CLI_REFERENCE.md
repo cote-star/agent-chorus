@@ -278,6 +278,11 @@ chorus agent-context rollback
 
 # Non-blocking warning check for stale pack updates
 chorus agent-context check-freshness --base origin/main
+
+# P7: zone-grouped diff from seal-time baseline → current HEAD
+#     (subagent reconciliation protocol)
+chorus agent-context diff --since-seal
+chorus agent-context diff --since-seal --format text
 ```
 
 You can also bootstrap agent-context from setup:
@@ -330,6 +335,76 @@ chorus agent-context verify --ci --base origin/develop
 | `exit_code` | `number` | `0` if both checks pass, non-zero otherwise |
 
 A CI workflow template is available at `templates/ci-agent-context.yml`.
+
+The `--ci` JSON payload also carries the P7 subagent-reconciliation shape under
+`diff_since_seal` and the flat `acceptance_tests_invalidated` list. CI fails
+(`exit_code = 1`) when `acceptance_tests_invalidated` is non-empty AND the pack
+wasn't updated, so stale ground truth cannot pass the gate.
+
+## Context Pack Diff (Subagent Reconciliation)
+
+P7. Zone-grouped diff from the seal-time baseline to current HEAD. Intended for
+the orchestrator of a parallel-subagent session: after subagents modify code,
+run this to learn which pack sections are impacted, then dispatch a single
+reconciler subagent to patch and re-seal.
+
+```bash
+# Machine-readable JSON (default)
+chorus agent-context diff --since-seal
+
+# Human-readable summary of zones + actions
+chorus agent-context diff --since-seal --format text
+
+# Explicit pack dir / cwd
+chorus agent-context diff --since-seal --pack-dir .agent-context --cwd /repo
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--since-seal` | Required. Diff from `manifest.post_commit_sha` (preferred) or `head_sha_at_seal`. | — |
+| `--format` | `json` (default) or `text`. | `json` |
+| `--pack-dir` | Override pack directory. | `.agent-context` |
+| `--cwd` | Working directory. | current directory |
+
+**JSON output:**
+
+```json
+{
+  "baseline_sha": "abc1234…",
+  "pack_updated": false,
+  "zones": [
+    {
+      "paths": ["src/**"],
+      "affects": ["20_CODE_MAP.md"],
+      "changed_files": ["src/lib.rs", "src/new_module.rs"],
+      "signature_drifts": [],
+      "count_deltas": [],
+      "deleted_files": []
+    }
+  ],
+  "acceptance_tests_invalidated": [],
+  "recommended_reconciliation_actions": [
+    "Review 20_CODE_MAP.md: 2 file(s) changed in zone",
+    "Re-seal the pack (`chorus agent-context seal --force`) after patching sections"
+  ]
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `baseline_sha` | `string` or `null` | The seal-time commit (`post_commit_sha` if present, else `head_sha_at_seal`). |
+| `pack_updated` | `boolean` | Whether `.agent-context/current/` was touched since the baseline. |
+| `zones[]` | array | One entry per authored zone in `relevance.json` that had a matching changed file. |
+| `zones[].signature_drifts` | array | Reserved for P2 baseline-drift integration — empty today. |
+| `zones[].count_deltas` | array | Reserved for P2 — empty today. |
+| `zones[].deleted_files` | array | Reserved for P2 — empty today. |
+| `acceptance_tests_invalidated[]` | array | Acceptance tests whose `invalidated_by` functions drifted (requires P4 schema in `acceptance_tests.md`). |
+| `recommended_reconciliation_actions[]` | `string[]` | Natural-language bullets the reconciler subagent can follow. |
+
+See the "Parallel subagent pattern" section in `skills/agent-context/SKILL.md`
+for the orchestrator workflow.
 
 ## Common Recipes
 
