@@ -504,6 +504,138 @@ function p1DependenciesSnapshot(repoRoot) {
   return out;
 }
 
+// ---- P5: count SSOT via seal-time template expansion ----------------------
+// Node parity: mirrors the Rust helpers in cli/src/agent_context.rs. Slug
+// derivation, handlebar expansion, and numeric-claim scanning must stay
+// byte-identical so Rust and Node tracks produce the same sealed bytes.
+
+const P5_PROSE_NOUNS_ORDERED = [
+  'study docs',
+  'study doc',
+  'scripts',
+  'script',
+  'tests',
+  'test',
+  'files',
+  'file',
+  'API symbols',
+  'API symbol',
+  'brands',
+  'brand',
+];
+
+function p5SlugForCountKey(pattern) {
+  let buf = '';
+  for (const ch of pattern) {
+    if (ch === '*' || ch === '?') continue;
+    if (/[A-Za-z0-9_]/.test(ch)) {
+      buf += ch;
+    } else {
+      buf += '_';
+    }
+  }
+  return buf.replace(/_+/g, '_').replace(/^_+|_+$/g, '');
+}
+
+function p5ExpandCountHandlebars(content, slugCounts) {
+  // Replace {{ counts.<slug> }} (whitespace tolerated) with the integer
+  // value. Unknown slugs fall through untouched so the authoring mistake is
+  // visible in the sealed pack and in the drift check.
+  return content.replace(/\{\{\s*counts\.([A-Za-z0-9_]+)\s*\}\}/g, (match, slug) => {
+    if (Object.prototype.hasOwnProperty.call(slugCounts, slug)) {
+      return String(slugCounts[slug]);
+    }
+    return match;
+  });
+}
+
+function p5DeriveCountMaps(familyCounts) {
+  const slugMap = {};
+  for (const [glob, count] of Object.entries(familyCounts)) {
+    const slug = p5SlugForCountKey(glob);
+    if (!slug) continue;
+    slugMap[slug] = (slugMap[slug] || 0) + count;
+  }
+  const nounMap = {};
+  for (const noun of P5_PROSE_NOUNS_ORDERED) {
+    const nounLower = noun.toLowerCase();
+    const parts = nounLower.split(/\s+/).filter(Boolean);
+    let accum = 0;
+    let matched = false;
+    for (const [glob, count] of Object.entries(familyCounts)) {
+      const slug = p5SlugForCountKey(glob).toLowerCase();
+      const tokens = slug.split('_').filter(Boolean);
+      const hit = parts.some((np) => {
+        const singular = np.replace(/s$/, '');
+        return tokens.some((t) => t === np || t === singular);
+      });
+      if (hit) {
+        accum += count;
+        matched = true;
+      }
+    }
+    if (matched) nounMap[noun] = accum;
+  }
+  return { slugMap, nounMap };
+}
+
+function p5ExtractNumericClaims(content, nounCounts, fileLabel) {
+  const out = [];
+  let ignore = false;
+  const lines = content.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.includes('<!-- count-claim: end -->') || line.includes('<!-- count-claim: /ignore -->')) {
+      ignore = false;
+      continue;
+    }
+    if (line.includes('<!-- count-claim: ignore -->')) {
+      ignore = true;
+      continue;
+    }
+    if (ignore) continue;
+    const re = /(\d+)\s+(study docs?|scripts?|tests?|files?|API symbols?|brands?)(?![A-Za-z0-9_])/g;
+    let match;
+    while ((match = re.exec(line)) !== null) {
+      const claimed = Number(match[1]);
+      const noun = match[2];
+      const singular = noun.replace(/s$/, '');
+      let auth = nounCounts[noun];
+      if (auth === undefined) auth = nounCounts[singular];
+      if (auth === undefined) auth = nounCounts[`${noun}s`];
+      if (auth === undefined) continue;
+      if (claimed !== auth) {
+        out.push({
+          file: fileLabel,
+          line: i + 1,
+          claimed_count: claimed,
+          authoritative_count: auth,
+          noun,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+function p5ApplyCountTemplates(currentDir, requiredFiles, slugCounts, nounCounts) {
+  const reports = [];
+  for (const rel of requiredFiles) {
+    if (!rel.endsWith('.md')) continue;
+    const abs = path.join(currentDir, rel);
+    let original;
+    try {
+      original = fs.readFileSync(abs, 'utf8');
+    } catch (_) {
+      continue;
+    }
+    const expanded = p5ExpandCountHandlebars(original, slugCounts);
+    const mismatches = p5ExtractNumericClaims(expanded, nounCounts, rel);
+    reports.push({ file: rel, abs, original, expanded, mismatches });
+  }
+  return reports;
+}
+
 function buildManifest({
   generatedAt,
   repoRoot,
@@ -905,6 +1037,39 @@ function main() {
     // Update 00_START_HERE.md snapshot metadata BEFORE collecting file checksums
     // so the manifest reflects the updated content.
     updateStartHereSnapshot(currentDir, branch, headSha, generatedAt);
+
+    // P5 — expand `{{counts.<slug>}}` handlebars and detect stale prose
+    // numeric claims before collectFilesMeta hashes the files. The expanded
+    // bytes are what get sealed into the manifest, so prose and manifest
+    // agree by construction. Mirrors the Rust track in cli/src/agent_context.rs.
+    const p5FamilyCounts = p1ResolveFamilyCounts(repoRoot, currentDir);
+    const { slugMap: p5SlugCounts, nounMap: p5NounCounts } = p5DeriveCountMaps(p5FamilyCounts);
+    const p5Reports = p5ApplyCountTemplates(currentDir, requiredFiles, p5SlugCounts, p5NounCounts);
+    const p5Mismatches = [];
+    for (const report of p5Reports) {
+      if (report.original !== report.expanded) {
+        safeWriteTextAtomic(report.abs, report.expanded);
+      }
+      for (const m of report.mismatches) p5Mismatches.push(m);
+    }
+    if (p5Mismatches.length > 0) {
+      const lines = p5Mismatches.map(
+        (m) => `  - ${m.file}:${m.line}: claimed ${m.claimed_count} ${m.noun}, authoritative ${m.authoritative_count}`
+      );
+      const msg =
+        '[context-pack] seal failed: prose numeric claims disagree with authoritative family_counts:\n' +
+        lines.join('\n');
+      if (opts.force) {
+        process.stderr.write(`${msg}\n`);
+        process.stderr.write(
+          '[context-pack] WARN: --force downgraded count-claim failures to warnings\n'
+        );
+      } else {
+        throw new Error(
+          `${msg}\n  Fix: update prose to {{counts.<slug>}} or surround with <!-- count-claim: ignore --> / <!-- count-claim: end -->. Use --force to override.`
+        );
+      }
+    }
 
     const filesMeta = collectFilesMeta(currentDir, requiredFiles);
 
