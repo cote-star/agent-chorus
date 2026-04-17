@@ -1,5 +1,43 @@
 # Release Notes
 
+## Unreleased — agent-context P6
+
+### Added — hook intelligence + separate-commit enforcement (P6)
+
+- Pre-push hook now detects pack-only pushes (every path in the push range
+  starts with `.agent-context/`) and skips the freshness cycle with a
+  `pack-only push, skipping freshness check` message. Closes the noise loop
+  where code pushes warn "pack is stale", the agent updates the pack, and
+  the follow-up push re-warns about its own commit.
+- Each `chorus agent-context verify` / `check-freshness` warning now writes
+  `.agent-context/current/.last_freshness.json` with `{changed_files,
+  affected_sections, timestamp}`. On a subsequent pack-only push the hook
+  reads this state, checks whether the push touches the section files the
+  prior warning named, and prints
+  `warning appears addressed: sections [X, Y] updated`.
+- New opt-in flag `chorus agent-context verify --ci --enforce-separate-commits`.
+  When set, verify inspects `base..HEAD` and fails if any commit mixes
+  `.agent-context/**` with non-pack paths. Off by default; the gate is
+  intended for teams that have adopted the "pack edits land as their own
+  commit" convention. See `docs/CLI_REFERENCE.md` for the JSON schema
+  additions (`separate_commits`, `mixed_commits`).
+
+### Known limitations (agent-context)
+
+- **Markdown merge conflicts (#11):** Parallel PRs that both edit the same
+  pack markdown file (e.g. `20_CODE_MAP.md`) can conflict on merge. The
+  tooling cannot auto-resolve these. Mitigation: keep pack files organized
+  around stable H2 section headings so edits cluster inside bounded sections
+  and conflicts stay localized. Re-seal after the human conflict resolution.
+- **Squash-merge collapses pack commits (#12):** When a PR uses squash
+  merge, the separate pack commit is folded into the squash parent. This is
+  a git workflow decision outside the tooling's authority. Mitigation:
+  teams that squash should land pack updates as their own PR (the team
+  convention documented in `skills/agent-context/SKILL.md`). Teams that
+  merge-commit or rebase-and-merge can keep pack updates in the same PR;
+  `--enforce-separate-commits` is available for those teams to hard-require
+  separate commits.
+
 ## v0.11.0 — 2026-04-13
 
 ### Added — `--tool-calls` flag on `chorus read`

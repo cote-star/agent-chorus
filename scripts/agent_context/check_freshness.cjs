@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
+const fs = require('fs');
 const { execFileSync } = require('child_process');
 const path = require('path');
 const relevance = require('./relevance.cjs');
@@ -144,9 +145,10 @@ function main() {
     process.stdout.write(`  - ${filePath}\n`);
   }
   // P3: surface affected pack sections so agents know which files to patch.
-  if (affectedSet.size > 0) {
+  const affectedSorted = [...affectedSet].sort();
+  if (affectedSorted.length > 0) {
     process.stdout.write('\nAffected pack sections:\n');
-    for (const s of [...affectedSet].sort()) {
+    for (const s of affectedSorted) {
       process.stdout.write(`  - ${s}\n`);
     }
   }
@@ -154,6 +156,25 @@ function main() {
   process.stdout.write(
     'Consider: update pack content with your agent, then run chorus agent-context seal\n'
   );
+
+  // P6: persist the warning so a later pack-only push can detect
+  // "warning appears addressed". Mirrors the Rust-side
+  // `write_last_freshness_state` in cli/src/agent_context.rs.
+  try {
+    const repoRoot = runGit(['rev-parse', '--show-toplevel'], options.cwd, true) || options.cwd;
+    const currentDir = path.join(repoRoot, '.agent-context', 'current');
+    if (fs.existsSync(currentDir)) {
+      const statePath = path.join(currentDir, '.last_freshness.json');
+      const payload = {
+        changed_files: relevant,
+        affected_sections: affectedSorted,
+        timestamp: Math.floor(Date.now() / 1000),
+      };
+      fs.writeFileSync(statePath, JSON.stringify(payload, null, 2), 'utf8');
+    }
+  } catch (_err) {
+    // Best-effort: state-file failure must not break freshness reporting.
+  }
 }
 
 main();

@@ -220,3 +220,47 @@ A context pack is ready when:
 - Do not rewrite the entire pack on updates — patch only affected sections
 - Do not include secrets, credentials, or sensitive configuration in the context pack
 - Do not add the context pack to `.gitignore` — it is meant to be committed and shared
+
+## Known limitations
+
+Two issues are documented here rather than fixed by tooling. Agents and human
+authors should follow the conventions below so they don't become blockers.
+
+### Markdown merge conflicts (#11)
+
+Two PRs that both edit the same pack markdown file — say, both adding a row
+to the `20_CODE_MAP.md` authority table — will conflict on merge. The
+tooling cannot auto-resolve these; markdown has no canonical AST and the
+pack intentionally lives in human-readable files.
+
+**Mitigation: stable H2 section headings.** Keep each markdown file
+organized around a fixed set of H2 (`## ...`) section headings, and only
+edit inside a section. When two PRs touch *different* sections of the same
+file, most three-way merges will complete cleanly because the conflict
+surface is bounded by the heading boundaries. When they touch the *same*
+section, the human resolving the conflict can reason section-by-section
+rather than line-by-line.
+
+After resolving a conflict by hand, re-run `chorus agent-context seal` so
+the manifest checksum matches the merged bytes.
+
+### Squash-merge collapses pack commits (#12)
+
+The Update (Agent PR) flow above asks you to land pack edits as a separate
+commit so reviewers can assess them independently. If your team uses
+**squash merge**, every commit in the PR is folded into a single squash
+commit on `main`, and that separation disappears. This is a git workflow
+decision, not something the pack tooling can override.
+
+**Mitigation: treat pack updates as a separate PR.** On squash-merge teams,
+land the code change in one PR and the pack update in a follow-up PR. The
+pack PR is small and localized, so reviewers can verify the pack-to-code
+mapping without wading through the code diff. Teams that use
+**merge-commit** or **rebase-and-merge** can keep the pack update in the
+same PR as the code change — the separate commits survive the merge.
+
+For teams that want this convention enforced at CI time, enable
+`chorus agent-context verify --ci --enforce-separate-commits`. It inspects
+every commit in `base..HEAD` and fails the check when any one of them
+mixes pack and non-pack paths. The gate is off by default — only turn it
+on after the team has agreed on the convention.

@@ -129,6 +129,11 @@ pub struct VerifyOptions {
     /// `{changed_files, pack_sections_to_update, diff_excerpt, baseline_drift}`
     /// on stdout and exit early. Disables normal human-readable output.
     pub suggest_patches: bool,
+    /// P6: opt-in CI gate that fails if any commit in the PR range touches
+    /// both `.agent-context/**` and non-pack paths. Intended for teams that
+    /// want the "pack edits land as their own commit" convention enforced
+    /// at merge time. Off by default.
+    pub enforce_separate_commits: bool,
 }
 
 /// Result of running the freshness check as a reusable helper.
@@ -403,6 +408,89 @@ fn check_freshness_with_zones(base: &str, cwd: &Path) -> Result<FreshnessResult>
         skipped_reason: None,
         affected_sections: affected_vec,
     })
+}
+
+/// P6: inspect every commit in `base..HEAD` and return human-readable error
+/// lines for commits that touch both `.agent-context/**` and non-pack paths.
+/// Empty return means the range passes the separate-commit convention.
+///
+/// This is intentionally conservative: it only flags commits that *mix*
+/// pack and non-pack changes. Pure-pack or pure-code commits are fine, as
+/// are ranges where pack and code commits are interleaved but separated.
+fn check_separate_commits(base: &str, cwd: &Path) -> Result<Vec<String>> {
+    // If git history isn't usable (non-git, shallow clone, initial commit)
+    // this check has nothing to say — return empty rather than fail loudly,
+    // since the surrounding verify flow already reports those cases.
+    if !is_git_repo(cwd) {
+        return Ok(Vec::new());
+    }
+    if is_shallow_repo(cwd).unwrap_or(false) {
+        return Ok(Vec::new());
+    }
+
+    let range = format!("{base}..HEAD");
+    let log = run_git(&["log", "--format=%H", &range], cwd, true)?;
+    if log.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut errors = Vec::new();
+    for sha in log.lines().map(str::trim).filter(|s| !s.is_empty()) {
+        let files = run_git(
+            &["diff-tree", "--name-only", "--no-commit-id", "-r", sha],
+            cwd,
+            true,
+        )?;
+        let mut touches_pack = false;
+        let mut touches_non_pack = false;
+        for path in files.lines().map(str::trim).filter(|s| !s.is_empty()) {
+            if path.starts_with(".agent-context/") {
+                touches_pack = true;
+            } else {
+                touches_non_pack = true;
+            }
+            if touches_pack && touches_non_pack {
+                break;
+            }
+        }
+        if touches_pack && touches_non_pack {
+            errors.push(format!("commit {sha} mixes pack + non-pack changes"));
+        }
+    }
+
+    Ok(errors)
+}
+
+/// P6: persist the most recent freshness warning to
+/// `.agent-context/current/.last_freshness.json` so the pre-push hook can
+/// later detect a pack-only follow-up push and report "warning appears
+/// addressed". Silent no-op when the pack directory is missing — this runs
+/// from check-freshness paths that may fire before init has scaffolded
+/// `current/` (e.g. a warn surfaced during a seal dry run).
+fn write_last_freshness_state(repo_root: &Path, result: &FreshnessResult) {
+    if result.status != "warn" {
+        return;
+    }
+    let pack_root = resolve_pack_root(repo_root, None);
+    let current_dir = pack_root.join("current");
+    if !current_dir.exists() {
+        return;
+    }
+    let state_path = current_dir.join(".last_freshness.json");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let payload = json!({
+        "changed_files": result.changed_files,
+        "affected_sections": result.affected_sections,
+        "timestamp": timestamp,
+    });
+    // Best-effort: serialization failure or write failure must not break
+    // freshness reporting. The hook tolerates a missing state file.
+    if let Ok(serialized) = serde_json::to_string_pretty(&payload) {
+        let _ = fs::write(&state_path, serialized);
+    }
 }
 
 pub fn build(options: BuildOptions) -> Result<()> {
@@ -1560,12 +1648,35 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         }
     };
 
+    // P6: persist the freshness warning so the pre-push hook can later detect
+    // a pack-only follow-up push. Runs from both --ci and human-readable paths
+    // so CI-only consumers still populate the state file.
+    if freshness.status == "warn" {
+        write_last_freshness_state(&repo_root, &freshness);
+    }
+
+    // P6: opt-in separate-commit enforcement. Only active under `--ci` so it
+    // cannot surprise a developer running verify locally on a branch mid-work.
+    let mut mixed_commits: Vec<String> = Vec::new();
+    if options.ci && options.enforce_separate_commits {
+        match check_separate_commits(base_ref, &cwd_path) {
+            Ok(errs) => mixed_commits = errs,
+            Err(err) => eprintln!(
+                "[agent-context] WARN: --enforce-separate-commits could not run: {err}"
+            ),
+        }
+    }
+
     if options.ci {
         // P3: zone-map authoring bugs surface as freshness.status == "fail"
         // and must be treated as a hard failure alongside integrity/warn.
+        // P6: a non-empty mixed_commits list means the PR violates the
+        // separate-commit convention when that gate is enabled.
+        let separate_commits_failed = !mixed_commits.is_empty();
         let exit_code = if !integrity_passed
             || freshness.status == "warn"
             || freshness.status == "fail"
+            || separate_commits_failed
         {
             1
         } else {
@@ -1586,6 +1697,21 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             "affected_sections".to_string(),
             json!(freshness.affected_sections),
         );
+        // P6: surface the separate-commit result. Only populated when the
+        // gate is enabled; emitted as an empty array otherwise so consumers
+        // can rely on the field's presence.
+        if options.enforce_separate_commits {
+            result_obj.insert(
+                "separate_commits".to_string(),
+                json!(if separate_commits_failed { "fail" } else { "pass" }),
+            );
+            result_obj.insert("mixed_commits".to_string(), json!(mixed_commits));
+            if separate_commits_failed {
+                for err in &mixed_commits {
+                    eprintln!("[agent-context] {err}");
+                }
+            }
+        }
         result_obj.insert("exit_code".to_string(), json!(exit_code));
         println!("{}", serde_json::to_string_pretty(&Value::Object(result_obj))?);
         if exit_code != 0 {
@@ -1787,6 +1913,12 @@ fn run_repair(repo_root: &Path, pack_root: &Path, yes: bool) -> Result<()> {
 pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
     let cwd_path = PathBuf::from(cwd);
     let result = check_freshness_inner(base, &cwd_path)?;
+
+    // P6: record the warning so a later pack-only push can recognize it.
+    if result.status == "warn" {
+        let repo_root = git_repo_root(&cwd_path).unwrap_or_else(|_| cwd_path.clone());
+        write_last_freshness_state(&repo_root, &result);
+    }
 
     match result.status.as_str() {
         "pass" => {
@@ -4728,6 +4860,81 @@ fn build_pre_push_hook_section() -> String {
     r#"remote_name="${1:-origin}"
 remote_url="${2:-unknown}"
 
+# P6: when the push range only touches `.agent-context/`, skip the freshness
+# cycle entirely. This avoids the noise loop where a code push warns "pack is
+# stale", the agent updates the pack and pushes, and the hook re-warns about
+# the pack's own commit.
+#
+# The state file `.agent-context/current/.last_freshness.json` records the
+# most recent warning (changed_files + affected_sections + timestamp). On a
+# pack-only follow-up push, the hook reads that state and, if the new pack
+# paths plausibly cover the affected_sections, prints
+# "warning appears addressed: sections [...]".
+pack_only_skip() {
+  local base="$1"
+  local head="$2"
+
+  if [[ -z "$base" || -z "$head" || "$base" == "0000000000000000000000000000000000000000" ]]; then
+    return 1
+  fi
+
+  local changed
+  changed="$(git diff --name-only "${base}..${head}" 2>/dev/null || true)"
+  if [[ -z "$changed" ]]; then
+    return 1
+  fi
+
+  # Return non-zero (NOT pack-only) if any path does not start with
+  # `.agent-context/`. The inverted grep is important: we must see no
+  # non-pack line for this to be a pack-only push.
+  if printf '%s\n' "$changed" | grep -vE '^\.agent-context/' >/dev/null 2>&1; then
+    return 1
+  fi
+
+  echo "[context-pack] pack-only push, skipping freshness check"
+
+  local state_file=".agent-context/current/.last_freshness.json"
+  if [[ -f "$state_file" ]]; then
+    # Extract affected_sections from the last warning. Prefer jq; fall back to
+    # python3 so the check still works on minimal CI images.
+    local sections=""
+    if command -v jq >/dev/null 2>&1; then
+      sections="$(jq -r '.affected_sections[]?' "$state_file" 2>/dev/null | tr '\n' ' ')"
+    elif command -v python3 >/dev/null 2>&1; then
+      sections="$(python3 -c "import json,sys
+try:
+    d=json.load(open('$state_file'))
+    for s in d.get('affected_sections', []):
+        print(s)
+except Exception:
+    pass" 2>/dev/null | tr '\n' ' ')"
+    fi
+
+    if [[ -n "${sections// /}" ]]; then
+      # A pack-only push that touches the same section files the prior warning
+      # named is treated as "probably addresses the warning". This is
+      # best-effort reporting, not a hard guarantee.
+      local covered=""
+      local missing=""
+      for section in $sections; do
+        if printf '%s\n' "$changed" | grep -F ".agent-context/current/${section}" >/dev/null 2>&1; then
+          covered="${covered}${section} "
+        else
+          missing="${missing}${section} "
+        fi
+      done
+      if [[ -n "${covered// /}" ]]; then
+        echo "[context-pack] warning appears addressed: sections [${covered% }] updated"
+      fi
+      if [[ -n "${missing// /}" ]]; then
+        echo "[context-pack] note: sections still referenced by last warning: [${missing% }]"
+      fi
+    fi
+  fi
+
+  return 0
+}
+
 run_context_sync() {
   local local_ref="$1"
   local local_sha="$2"
@@ -4758,6 +4965,9 @@ run_context_sync() {
 while read -r local_ref local_sha remote_ref remote_sha; do
   if [[ "$local_ref" == "refs/heads/main" || "$remote_ref" == "refs/heads/main" ]]; then
     echo "[context-pack] validating main push for ${remote_name} (${remote_url})"
+    if pack_only_skip "$remote_sha" "$local_sha"; then
+      continue
+    fi
     run_context_sync "$local_ref" "$local_sha" "$remote_ref" "$remote_sha"
   fi
 done"#
@@ -5729,6 +5939,232 @@ After cleanup there are 32 tests today.\n\
             "expected ts greet arrow signature, got {ts_sigs:?}"
         );
 
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // P6: hook intelligence + separate-commit enforcement
+    // -----------------------------------------------------------------------
+
+    /// The generated pre-push hook must include the P6 pack-only skip
+    /// shortcut so users who inspect the hook can see the behavior. We
+    /// pin on the sentinel strings the hook's callers expect rather than
+    /// the whole body, so surrounding hook content can evolve.
+    #[test]
+    fn p6_hook_section_contains_pack_only_skip_logic() {
+        let hook = build_pre_push_hook_section();
+        assert!(
+            hook.contains("pack_only_skip"),
+            "hook must define pack_only_skip helper, got:\n{hook}"
+        );
+        assert!(
+            hook.contains("pack-only push, skipping freshness check"),
+            "hook must announce the skip when triggered, got:\n{hook}"
+        );
+        assert!(
+            hook.contains(".agent-context/current/.last_freshness.json"),
+            "hook must read the last-freshness state file, got:\n{hook}"
+        );
+        assert!(
+            hook.contains("warning appears addressed"),
+            "hook must report when prior warning is addressed, got:\n{hook}"
+        );
+    }
+
+    /// `write_last_freshness_state` creates the state file with the three
+    /// documented keys when the pack directory exists, and silently
+    /// no-ops when it does not. Covers the "warn → state file" path.
+    #[test]
+    fn p6_write_last_freshness_state_emits_payload() {
+        let dir = test_dir("p6_write_state");
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).expect("create pack dir");
+
+        let result = FreshnessResult {
+            status: "warn".to_string(),
+            changed_files: vec!["src/foo.rs".to_string(), "src/bar.rs".to_string()],
+            pack_updated: false,
+            skipped_reason: None,
+            affected_sections: vec![
+                "20_CODE_MAP.md".to_string(),
+                "30_BEHAVIORAL_INVARIANTS.md".to_string(),
+            ],
+        };
+        write_last_freshness_state(&dir, &result);
+
+        let state_path = current.join(".last_freshness.json");
+        assert!(state_path.exists(), "state file must be created");
+        let body = fs::read_to_string(&state_path).expect("read state file");
+        let parsed: Value = serde_json::from_str(&body).expect("state file must be valid json");
+        let changed = parsed
+            .get("changed_files")
+            .and_then(|v| v.as_array())
+            .expect("changed_files array");
+        assert_eq!(changed.len(), 2);
+        let sections = parsed
+            .get("affected_sections")
+            .and_then(|v| v.as_array())
+            .expect("affected_sections array");
+        assert_eq!(sections.len(), 2);
+        assert!(
+            parsed.get("timestamp").and_then(|v| v.as_u64()).is_some(),
+            "timestamp must be a number"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Non-warn results must not overwrite an existing state file; only a
+    /// warn is authoritative. The public API reflects this by guarding the
+    /// write behind `result.status == "warn"`.
+    #[test]
+    fn p6_write_last_freshness_state_skips_non_warn() {
+        let dir = test_dir("p6_write_state_noop");
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).expect("create pack dir");
+
+        let result = FreshnessResult {
+            status: "pass".to_string(),
+            changed_files: vec![],
+            pack_updated: false,
+            skipped_reason: None,
+            affected_sections: vec![],
+        };
+        write_last_freshness_state(&dir, &result);
+
+        let state_path = current.join(".last_freshness.json");
+        assert!(
+            !state_path.exists(),
+            "non-warn result must not write the state file"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// When the pack directory does not exist yet, `write_last_freshness_state`
+    /// must silently no-op rather than panic. This guards the pre-init case
+    /// where a freshness helper fires before the pack has been scaffolded.
+    #[test]
+    fn p6_write_last_freshness_state_no_pack_dir_is_noop() {
+        let dir = test_dir("p6_write_state_no_pack");
+        let result = FreshnessResult {
+            status: "warn".to_string(),
+            changed_files: vec!["src/foo.rs".to_string()],
+            pack_updated: false,
+            skipped_reason: None,
+            affected_sections: vec!["20_CODE_MAP.md".to_string()],
+        };
+        // Should not panic.
+        write_last_freshness_state(&dir, &result);
+        assert!(
+            !dir.join(".agent-context/current/.last_freshness.json").exists(),
+            "state file must not be written when pack dir is absent"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A PR range with only pure-code and only pure-pack commits passes the
+    /// separate-commit gate. A commit that mixes the two is reported with the
+    /// `commit <sha> mixes pack + non-pack changes` message.
+    #[test]
+    fn p6_check_separate_commits_reports_mixed_commit() {
+        let repo = init_repo_with_commits("p6_separate_commits_mixed");
+        // Capture the pre-range tip — we'll diff against it as `base`.
+        let base = run_git(&["rev-parse", "HEAD"], &repo, true)
+            .expect("base sha")
+            .trim()
+            .to_string();
+
+        // Pure-code commit (passes).
+        commit_file(&repo, "src/pure_code.rs", "fn a() {}\n");
+
+        // Pure-pack commit (passes).
+        fs::create_dir_all(repo.join(".agent-context/current")).unwrap();
+        commit_file(
+            &repo,
+            ".agent-context/current/20_CODE_MAP.md",
+            "# pack content\n",
+        );
+
+        // Mixed commit: touches both a pack file and a non-pack file in a
+        // single commit. This is the case the gate must flag.
+        fs::write(repo.join("src/pure_code.rs"), "fn a() -> i32 { 0 }\n").unwrap();
+        fs::write(
+            repo.join(".agent-context/current/20_CODE_MAP.md"),
+            "# pack content v2\n",
+        )
+        .unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git")
+        };
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "mix: pack and code in one commit"]);
+        let mixed_sha = run_git(&["rev-parse", "HEAD"], &repo, true)
+            .expect("mixed sha")
+            .trim()
+            .to_string();
+
+        let errors = check_separate_commits(&base, &repo).expect("separate-commit check runs");
+        assert_eq!(errors.len(), 1, "only one commit should fail the gate: {errors:?}");
+        let msg = &errors[0];
+        assert!(
+            msg.contains(&mixed_sha),
+            "error message must name the offending sha ({mixed_sha}), got {msg:?}"
+        );
+        assert!(
+            msg.contains("mixes pack + non-pack changes"),
+            "error message must use the documented phrase, got {msg:?}"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    /// A range where no commit mixes pack + non-pack returns an empty error
+    /// list so the CI gate stays silent.
+    #[test]
+    fn p6_check_separate_commits_clean_range_passes() {
+        let repo = init_repo_with_commits("p6_separate_commits_clean");
+        let base = run_git(&["rev-parse", "HEAD"], &repo, true)
+            .expect("base sha")
+            .trim()
+            .to_string();
+
+        // Alternating but separate commits — each is either pure code or
+        // pure pack, so the gate must not flag them.
+        commit_file(&repo, "src/code_a.rs", "fn a() {}\n");
+        fs::create_dir_all(repo.join(".agent-context/current")).unwrap();
+        commit_file(
+            &repo,
+            ".agent-context/current/20_CODE_MAP.md",
+            "# pack content\n",
+        );
+        commit_file(&repo, "src/code_b.rs", "fn b() {}\n");
+
+        let errors = check_separate_commits(&base, &repo).expect("separate-commit check runs");
+        assert!(
+            errors.is_empty(),
+            "clean range must produce no errors, got {errors:?}"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    /// `check_separate_commits` is a no-op when the directory is not a git
+    /// repo. The surrounding verify flow already reports that case, so this
+    /// check simply must not error out.
+    #[test]
+    fn p6_check_separate_commits_non_git_is_empty() {
+        let dir = test_dir("p6_separate_commits_non_git");
+        let errors = check_separate_commits("origin/main", &dir)
+            .expect("must not fail on non-git directory");
+        assert!(
+            errors.is_empty(),
+            "non-git directory must return empty error list, got {errors:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }

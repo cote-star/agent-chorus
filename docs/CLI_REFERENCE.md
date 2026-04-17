@@ -308,6 +308,7 @@ chorus agent-context verify --ci --base origin/develop
 | `--ci` | Combined integrity + freshness check with JSON output | off |
 | `--base` | Git ref to diff against for freshness detection | `origin/main` |
 | `--json` | Force JSON output (implied by `--ci`) | off |
+| `--enforce-separate-commits` | (P6) Under `--ci`, fail when any commit in `base..HEAD` touches both `.agent-context/**` and non-pack paths | off |
 
 **JSON output (`--ci`):**
 
@@ -329,7 +330,39 @@ chorus agent-context verify --ci --base origin/develop
 | `pack_updated` | `boolean` | Whether `.agent-context/current/` was also modified |
 | `exit_code` | `number` | `0` if both checks pass, non-zero otherwise |
 
+When `--enforce-separate-commits` is set, the JSON output adds:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `separate_commits` | `"pass"` / `"fail"` | Whether every commit keeps pack and non-pack changes separate |
+| `mixed_commits` | `string[]` | Human-readable lines (`commit <sha> mixes pack + non-pack changes`) for each offender |
+
+A mixed commit causes `exit_code: 1` even when integrity and freshness pass.
+The gate is off by default because many teams land pack updates in the same
+commit as the code change that motivated them; only enable it when your team
+has agreed on the "pack edits land as their own commit" convention (see the
+"Known limitations" section in `RELEASE_NOTES.md`). The Node entrypoint
+(`scripts/agent_context/verify.cjs`) accepts the flag for parity but exits 1
+with a message pointing to the Rust binary until the Node port lands.
+
 A CI workflow template is available at `templates/ci-agent-context.yml`.
+
+**Pre-push hook behavior (P6):**
+
+When the pre-push hook installed by `chorus agent-context install-hooks`
+detects a push whose entire diff range lives under `.agent-context/`, it
+prints `pack-only push, skipping freshness check` and exits 0 without
+running `sync-main`. This suppresses the noise loop where a code push warns
+"pack is stale", the agent updates the pack, and a second push reopens the
+same warning.
+
+Each time `verify` or `check-freshness` reports a warn, the tooling writes
+`.agent-context/current/.last_freshness.json` with
+`{changed_files, affected_sections, timestamp}`. On the next pack-only
+push, the hook reads that state file and — if the push touches the section
+files the prior warning named — prints
+`warning appears addressed: sections [X, Y] updated`. This is advisory,
+not a hard guarantee; the surrounding verify flow remains the authority.
 
 ## Common Recipes
 
