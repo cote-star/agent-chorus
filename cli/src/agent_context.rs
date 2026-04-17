@@ -1908,6 +1908,13 @@ fn build_manifest(
         })
         .collect::<Vec<_>>();
 
+    // F26: detached HEAD → branch is null + detached: true rather than the literal "HEAD".
+    let branch_value: Value = if detached || branch.is_empty() || branch == "HEAD" {
+        Value::Null
+    } else {
+        Value::String(branch.to_string())
+    };
+
     // P11 / F36: forensic tooling-version fields.
     // `chorus_version` pins the sealing tool; `verifier_sha256` is the hash
     // of the binary that sealed it (when available). `skill_version` is
@@ -3801,6 +3808,7 @@ mod tests {
             Path::new("/tmp/unused"),
             "fixture-repo",
             "main",
+            false,
             Some("abcd1234"),
             "test-seal",
             None,
