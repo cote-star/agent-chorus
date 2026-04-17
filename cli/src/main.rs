@@ -358,6 +358,15 @@ enum ContextPackCommand {
         /// Base ref for freshness check (default: origin/main)
         #[arg(long)]
         base: Option<String>,
+
+        /// Recover from a corrupt manifest by restoring the most recent intact
+        /// snapshot. Prompts for confirmation unless --yes is given.
+        #[arg(long)]
+        repair: bool,
+
+        /// Skip the interactive confirmation prompt when running --repair.
+        #[arg(long = "yes")]
+        repair_yes: bool,
     },
 
     /// Warn when context-relevant files changed without pack update
@@ -893,13 +902,15 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
         ContextPackCommand::Rollback { snapshot, pack_dir } => {
             agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
         }
-        ContextPackCommand::Verify { pack_dir, cwd, ci, base } => {
+        ContextPackCommand::Verify { pack_dir, cwd, ci, base, repair, repair_yes } => {
             let target_cwd = effective_cwd(cwd);
             agent_context::verify(agent_context::VerifyOptions {
                 pack_dir,
                 cwd: target_cwd,
                 ci,
                 base,
+                repair,
+                repair_yes,
             })?;
         }
         ContextPackCommand::CheckFreshness { base, cwd } => {

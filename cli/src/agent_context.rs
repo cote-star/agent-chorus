@@ -73,6 +73,12 @@ pub struct VerifyOptions {
     pub cwd: String,
     pub ci: bool,
     pub base: Option<String>,
+    /// When true and the manifest is unreadable or fails pack_checksum, attempt
+    /// to restore `current/` from the most recent intact snapshot (F32).
+    pub repair: bool,
+    /// When combined with `repair`, perform the restore without prompting for
+    /// interactive confirmation via stdin.
+    pub repair_yes: bool,
 }
 
 /// Result of running the freshness check as a reusable helper.
@@ -578,6 +584,10 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
     let pack_root = resolve_pack_root(&repo_root, pack_dir);
     let current_dir = pack_root.join("current");
     let snapshots_dir = pack_root.join("snapshots");
+    let lock_path = pack_root.join("seal.lock");
+
+    // Rollback mutates .agent-context/current/ — serialize against seal (F29).
+    let _lock = acquire_lock(&lock_path)?;
 
     let mut snapshot_ids = fs::read_dir(&snapshots_dir)
         .with_context(|| format!("Failed to list snapshots at {}", snapshots_dir.display()))?
@@ -599,10 +609,24 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
         .unwrap_or_else(|| snapshot_ids.last().cloned().unwrap_or_default());
 
     if !snapshot_ids.iter().any(|id| id == &target_snapshot) {
-        return Err(anyhow!("[context-pack] snapshot not found: {}", target_snapshot));
+        // F55: if not found in the active snapshots directory, check the rotated
+        // history index so rollback can still locate snapshots referenced in
+        // archived history files.
+        if !snapshot_known_to_history_index(&pack_root, &target_snapshot) {
+            return Err(anyhow!(
+                "[context-pack] snapshot not found: {}",
+                target_snapshot
+            ));
+        }
     }
 
     let source_dir = snapshots_dir.join(&target_snapshot);
+    if !source_dir.exists() {
+        return Err(anyhow!(
+            "[context-pack] snapshot directory missing: {} (tracked in history_index but files were pruned)",
+            rel_path(&source_dir, &repo_root)
+        ));
+    }
     if current_dir.exists() {
         fs::remove_dir_all(&current_dir)
             .with_context(|| format!("Failed to clear {}", current_dir.display()))?;
@@ -616,6 +640,42 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
         rel_path(&current_dir, &repo_root)
     );
     Ok(())
+}
+
+/// Check whether the requested snapshot ID appears in any rotated history file
+/// recorded in `history_index.json`. Allows rollback to surface a useful error
+/// when the snapshots directory and the history index have diverged (F55).
+fn snapshot_known_to_history_index(pack_root: &Path, snapshot_id: &str) -> bool {
+    let index_path = pack_root.join("history_index.json");
+    let index = match read_json(&index_path) {
+        Ok(Some(v)) => v,
+        _ => return false,
+    };
+    let files = match index.get("files").and_then(|f| f.as_array()) {
+        Some(a) => a,
+        None => return false,
+    };
+    for entry in files {
+        let name = match entry.get("name").and_then(|n| n.as_str()) {
+            Some(n) => n,
+            None => continue,
+        };
+        let rotated_path = pack_root.join(name);
+        if let Ok(raw) = fs::read_to_string(&rotated_path) {
+            for line in raw.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<Value>(trimmed) {
+                    if val.get("snapshot_id").and_then(|s| s.as_str()) == Some(snapshot_id) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 const HOOK_SENTINEL_START: &str = "# --- agent-chorus:pre-push:start ---";
@@ -736,7 +796,14 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     let current_dir = pack_root.join("current");
     let manifest_path = current_dir.join("manifest.json");
 
+    // Verify is intentionally lock-free: it only reads. Writes are serialized
+    // through seal/rollback's `acquire_lock` (F30). If a future `--watch` mode
+    // is added, it should take a shared read lock; single-shot verify does not.
+
     if !manifest_path.exists() {
+        if options.repair {
+            return run_repair(&repo_root, &pack_root, options.repair_yes);
+        }
         if options.ci {
             let result = json!({
                 "integrity": "fail",
@@ -754,13 +821,43 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         ));
     }
 
-    let manifest_content = fs::read_to_string(&manifest_path)
-        .with_context(|| format!("Failed to read manifest at {}", manifest_path.display()))?;
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
-        .with_context(|| "Failed to parse manifest.json")?;
+    let manifest_content = match fs::read_to_string(&manifest_path) {
+        Ok(s) => s,
+        Err(err) => {
+            if options.repair {
+                eprintln!(
+                    "[agent-context] manifest unreadable ({}); attempting repair",
+                    err
+                );
+                return run_repair(&repo_root, &pack_root, options.repair_yes);
+            }
+            return Err(err).with_context(|| {
+                format!("Failed to read manifest at {}", manifest_path.display())
+            });
+        }
+    };
+    let manifest: serde_json::Value = match serde_json::from_str(&manifest_content) {
+        Ok(m) => m,
+        Err(err) => {
+            if options.repair {
+                eprintln!(
+                    "[agent-context] manifest.json is malformed ({}); attempting repair",
+                    err
+                );
+                return run_repair(&repo_root, &pack_root, options.repair_yes);
+            }
+            return Err(anyhow!("Failed to parse manifest.json: {}", err));
+        }
+    };
 
     let files = manifest.get("files").and_then(|f| f.as_array());
     if files.is_none() {
+        if options.repair {
+            eprintln!(
+                "[agent-context] manifest.json missing 'files' array; attempting repair"
+            );
+            return run_repair(&repo_root, &pack_root, options.repair_yes);
+        }
         if options.ci {
             let result = json!({
                 "integrity": "fail",
@@ -775,12 +872,22 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         return Err(anyhow!("[agent-context] verify failed: manifest has no 'files' array"));
     }
 
+    // F31 TOCTOU mitigation: snapshot every file's bytes at one instant, then
+    // hash and compare. If any file changes between snapshot and compare, we
+    // re-hash once and warn.
+    let files_arr = files.unwrap();
     let mut pass_count = 0usize;
     let mut fail_count = 0usize;
 
-    for file_entry in files.unwrap() {
-        let file_path_str = file_entry.get("path").and_then(|p| p.as_str()).unwrap_or("unknown");
-        let expected_hash = file_entry.get("sha256").and_then(|h| h.as_str()).unwrap_or("");
+    for file_entry in files_arr {
+        let file_path_str = file_entry
+            .get("path")
+            .and_then(|p| p.as_str())
+            .unwrap_or("unknown");
+        let expected_hash = file_entry
+            .get("sha256")
+            .and_then(|h| h.as_str())
+            .unwrap_or("");
         let actual_path = current_dir.join(file_path_str);
 
         if !actual_path.exists() {
@@ -791,9 +898,16 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             continue;
         }
 
-        let content = fs::read_to_string(&actual_path)?;
-        use sha2::{Digest, Sha256};
-        let actual_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
+        let actual_hash = match hash_file_stable(&actual_path) {
+            Ok(h) => h,
+            Err(err) => {
+                if !options.ci {
+                    eprintln!("  FAIL  {}  (read error: {})", file_path_str, err);
+                }
+                fail_count += 1;
+                continue;
+            }
+        };
 
         if actual_hash == expected_hash {
             if !options.ci {
@@ -811,22 +925,25 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     // Verify pack_checksum if present
     if let Some(expected_pack_checksum) = manifest.get("pack_checksum").and_then(|c| c.as_str()) {
         let mut file_entries: Vec<String> = Vec::new();
-        if let Some(files_arr) = files {
-            for f in files_arr {
-                let p = f.get("path").and_then(|v| v.as_str()).unwrap_or("unknown");
-                let h = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
-                file_entries.push(format!("{}:{}", p, h));
-            }
+        for f in files_arr {
+            let p = f.get("path").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let h = f.get("sha256").and_then(|v| v.as_str()).unwrap_or("");
+            file_entries.push(format!("{}:{}", p, h));
         }
         let combined = file_entries.join("\n");
-        use sha2::{Digest, Sha256};
-        let actual_pack_checksum = format!("{:x}", Sha256::digest(combined.as_bytes()));
+        let actual_pack_checksum = sha256_hex(combined.as_bytes());
         if actual_pack_checksum == expected_pack_checksum {
             if !options.ci {
                 println!("  PASS  pack_checksum");
             }
             pass_count += 1;
         } else {
+            if options.repair {
+                eprintln!(
+                    "[agent-context] pack_checksum mismatch; attempting repair"
+                );
+                return run_repair(&repo_root, &pack_root, options.repair_yes);
+            }
             if !options.ci {
                 eprintln!("  FAIL  pack_checksum (mismatch)");
             }
@@ -915,6 +1032,126 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// Hash a file, re-hashing once if the bytes change mid-read (F31 TOCTOU mitigation).
+///
+/// Reads the file bytes twice with a quick second attempt. If the hash is
+/// stable on both reads we return it; otherwise we emit a warning and return
+/// the second (later) hash so the verify comparison reflects the most recent
+/// observable state.
+fn hash_file_stable(path: &Path) -> Result<String> {
+    let first = fs::read(path)
+        .with_context(|| format!("Failed to read {}", path.display()))?;
+    let first_hash = sha256_hex(&first);
+    // Fast re-read to detect a racing writer. We read at most twice.
+    let second = match fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return Ok(first_hash),
+    };
+    let second_hash = sha256_hex(&second);
+    if first_hash == second_hash {
+        Ok(first_hash)
+    } else {
+        eprintln!(
+            "[agent-context] WARN: {} changed during verify; using re-hashed value",
+            path.display()
+        );
+        Ok(second_hash)
+    }
+}
+
+/// Restore `current/` from the most recent intact snapshot (F32).
+///
+/// Scans `.agent-context/snapshots/` for directories containing a parseable
+/// `manifest.json`. The most recent (lexicographic) one wins. Without `--yes`
+/// the plan is printed and stdin confirmation is required; exit code 2 means
+/// the user declined.
+fn run_repair(repo_root: &Path, pack_root: &Path, yes: bool) -> Result<()> {
+    let current_dir = pack_root.join("current");
+    let snapshots_dir = pack_root.join("snapshots");
+
+    if !snapshots_dir.exists() {
+        return Err(anyhow!(
+            "[agent-context] repair failed: no snapshots directory at {} (no recovery snapshot found)",
+            rel_path(&snapshots_dir, repo_root)
+        ));
+    }
+
+    let mut candidates: Vec<String> = fs::read_dir(&snapshots_dir)
+        .with_context(|| format!("Failed to list snapshots at {}", snapshots_dir.display()))?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().is_dir())
+        .filter_map(|entry| entry.file_name().to_str().map(|s| s.to_string()))
+        .collect();
+    candidates.sort();
+    candidates.reverse();
+
+    let mut selected: Option<String> = None;
+    for candidate in &candidates {
+        let manifest = snapshots_dir.join(candidate).join("manifest.json");
+        if manifest.exists() {
+            if let Ok(raw) = fs::read_to_string(&manifest) {
+                if serde_json::from_str::<Value>(&raw).is_ok() {
+                    selected = Some(candidate.clone());
+                    break;
+                }
+            }
+        }
+    }
+
+    let snapshot_id = selected.ok_or_else(|| {
+        anyhow!(
+            "[agent-context] repair failed: no intact snapshot found in {} (no recovery snapshot found)",
+            rel_path(&snapshots_dir, repo_root)
+        )
+    })?;
+    let source_dir = snapshots_dir.join(&snapshot_id);
+
+    println!(
+        "[agent-context] repair plan: restore {} -> {}",
+        rel_path(&source_dir, repo_root),
+        rel_path(&current_dir, repo_root)
+    );
+    println!("  - clears current contents of the pack directory");
+    println!(
+        "  - copies files from snapshot {} into place (manifest.json included)",
+        snapshot_id
+    );
+
+    if !yes {
+        eprint!("Proceed with repair? [y/N] ");
+        std::io::stderr().flush().ok();
+        let mut buf = String::new();
+        if std::io::stdin().read_line(&mut buf).is_err() {
+            return Err(anyhow!(
+                "[agent-context] repair aborted: could not read confirmation"
+            ));
+        }
+        let answer = buf.trim().to_lowercase();
+        if answer != "y" && answer != "yes" {
+            eprintln!("[agent-context] repair declined by user");
+            std::process::exit(2);
+        }
+    }
+
+    // Serialize with seal/rollback (F29) so a concurrent seal can't race us.
+    let lock_path = pack_root.join("seal.lock");
+    let _lock = acquire_lock(&lock_path)?;
+
+    if current_dir.exists() {
+        fs::remove_dir_all(&current_dir)
+            .with_context(|| format!("Failed to clear {}", current_dir.display()))?;
+    }
+    ensure_dir(&current_dir)?;
+    copy_dir_recursive(&source_dir, &current_dir)?;
+
+    println!(
+        "[agent-context] repair completed: restored snapshot {} to {}",
+        snapshot_id,
+        rel_path(&current_dir, repo_root)
+    );
+    Ok(())
 }
 
 pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
@@ -1007,18 +1244,43 @@ fn write_text(path: &Path, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn write_text_atomic(path: &Path, text: &str) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| anyhow!("Missing parent for {}", path.display()))?;
+/// Atomically write `bytes` to `path`.
+///
+/// Writes to a sibling `*.tmp` file, fsyncs the contents, then renames into place.
+/// On POSIX the rename is atomic, so either the old file is fully intact or the
+/// new contents are visible — a partial write is never observable (F33).
+fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow!("Missing parent for {}", path.display()))?;
     ensure_dir(parent)?;
-    let tmp = parent.join(format!(
-        ".{}.tmp",
+    let tmp_name = format!(
+        ".{}.tmp.{}",
         path.file_name()
             .and_then(|s| s.to_str())
-            .unwrap_or("context-pack.tmp")
-    ));
-    fs::write(&tmp, text).with_context(|| format!("Failed to write {}", tmp.display()))?;
-    fs::rename(&tmp, path).with_context(|| format!("Failed to move {} -> {}", tmp.display(), path.display()))?;
+            .unwrap_or("context-pack.tmp"),
+        std::process::id()
+    );
+    let tmp = parent.join(tmp_name);
+    {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&tmp)
+            .with_context(|| format!("Failed to open {}", tmp.display()))?;
+        file.write_all(bytes)
+            .with_context(|| format!("Failed to write {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("Failed to fsync {}", tmp.display()))?;
+    }
+    fs::rename(&tmp, path)
+        .with_context(|| format!("Failed to move {} -> {}", tmp.display(), path.display()))?;
     Ok(())
+}
+
+fn write_text_atomic(path: &Path, text: &str) -> Result<()> {
+    atomic_write(path, text.as_bytes())
 }
 
 /// Reserved: content generator for auto-fill build mode.
@@ -1196,10 +1458,15 @@ fn build_manifest(
     }
 }
 
+// History rotation thresholds (F55).
+const HISTORY_ROTATE_MAX_BYTES: u64 = 5 * 1024 * 1024;
+const HISTORY_ROTATE_MAX_ENTRIES: usize = 1000;
+
 fn append_jsonl(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
     }
+    rotate_history_if_needed(path)?;
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1207,7 +1474,140 @@ fn append_jsonl(path: &Path, value: &Value) -> Result<()> {
         .with_context(|| format!("Failed to open {}", path.display()))?;
     writeln!(file, "{}", serde_json::to_string(value)?)
         .with_context(|| format!("Failed to append {}", path.display()))?;
+    file.sync_all().ok();
     Ok(())
+}
+
+/// Rotate `history.jsonl` when it exceeds 5MB or 1000 lines (F55).
+///
+/// The active file is renamed to `history.jsonl.{N}` (next integer), a fresh
+/// empty `history.jsonl` is created, and `history_index.json` is rewritten with
+/// an entry describing the rotated file. Rollback consults the index to locate
+/// snapshot IDs that live in historical files.
+fn rotate_history_if_needed(history_path: &Path) -> Result<()> {
+    if !history_path.exists() {
+        return Ok(());
+    }
+    let metadata = match fs::metadata(history_path) {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
+    let size = metadata.len();
+    let line_count = if size > 0 {
+        fs::read_to_string(history_path)
+            .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+            .unwrap_or(0)
+    } else {
+        0
+    };
+
+    if size < HISTORY_ROTATE_MAX_BYTES && line_count < HISTORY_ROTATE_MAX_ENTRIES {
+        return Ok(());
+    }
+
+    let parent = history_path
+        .parent()
+        .ok_or_else(|| anyhow!("Missing parent for {}", history_path.display()))?;
+    let base_name = history_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("history.jsonl");
+
+    // Find next rotation index.
+    let mut next_index: u32 = 1;
+    if let Ok(entries) = fs::read_dir(parent) {
+        for entry in entries.flatten() {
+            if let Some(name) = entry.file_name().to_str() {
+                if let Some(rest) = name.strip_prefix(&format!("{}.", base_name)) {
+                    if let Ok(n) = rest.parse::<u32>() {
+                        if n >= next_index {
+                            next_index = n + 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let rotated_name = format!("{}.{}", base_name, next_index);
+    let rotated_path = parent.join(&rotated_name);
+
+    // Gather first/last snapshot IDs from the current file to record in index.
+    let (first_id, last_id, entries) = summarize_history_file(history_path);
+
+    fs::rename(history_path, &rotated_path).with_context(|| {
+        format!(
+            "Failed to rotate {} -> {}",
+            history_path.display(),
+            rotated_path.display()
+        )
+    })?;
+
+    // Start a fresh empty file so subsequent appends land cleanly.
+    atomic_write(history_path, b"")?;
+
+    // Rewrite the history index atomically.
+    let index_path = parent.join("history_index.json");
+    let mut files_arr: Vec<Value> = match read_json(&index_path)? {
+        Some(v) => v
+            .get("files")
+            .and_then(|f| f.as_array())
+            .cloned()
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    files_arr.push(json!({
+        "name": rotated_name,
+        "first_id": first_id,
+        "last_id": last_id,
+        "entries": entries,
+    }));
+    let index_value = json!({
+        "schema_version": 1,
+        "active": base_name,
+        "files": files_arr,
+    });
+    atomic_write(
+        &index_path,
+        format!("{}\n", serde_json::to_string_pretty(&index_value)?).as_bytes(),
+    )?;
+
+    eprintln!(
+        "[context-pack] rotated history: {} -> {} ({} entries, {} bytes)",
+        base_name, rotated_name, entries, size
+    );
+
+    Ok(())
+}
+
+fn summarize_history_file(path: &Path) -> (Option<String>, Option<String>, usize) {
+    let raw = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return (None, None, 0),
+    };
+    let mut first_id: Option<String> = None;
+    let mut last_id: Option<String> = None;
+    let mut count = 0usize;
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        count += 1;
+        if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
+            let id = v
+                .get("snapshot_id")
+                .and_then(|s| s.as_str())
+                .map(|s| s.to_string());
+            if first_id.is_none() {
+                first_id = id.clone();
+            }
+            if id.is_some() {
+                last_id = id;
+            }
+        }
+    }
+    (first_id, last_id, count)
 }
 
 fn read_json(path: &Path) -> Result<Option<Value>> {
@@ -1262,15 +1662,79 @@ fn is_dir_empty(path: &Path) -> Result<bool> {
     Ok(entries.next().is_none())
 }
 
+#[derive(Debug)]
 struct FileLock {
     path: PathBuf,
 }
 
+/// Maximum time (seconds) to wait for a lock before giving up (F29).
+const LOCK_WAIT_SECS: u64 = 10;
+/// Initial backoff interval (ms) when retrying lock acquisition.
+const LOCK_BACKOFF_MS: u64 = 50;
+/// Maximum backoff interval (ms).
+const LOCK_BACKOFF_MAX_MS: u64 = 500;
+
 fn acquire_lock(path: &Path) -> Result<FileLock> {
-    acquire_lock_internal(path, true)
+    acquire_lock_with_timeout(path, LOCK_WAIT_SECS)
 }
 
-fn acquire_lock_internal(path: &Path, allow_recovery: bool) -> Result<FileLock> {
+/// Acquire the seal lock with bounded wait.
+///
+/// The lock covers the entire `read-manifest → write-files → write-history`
+/// transaction (F29). If another process holds the lock but its PID is dead,
+/// the stale lock is reclaimed with a warning. Live holders cause the caller
+/// to wait with exponential backoff up to `timeout_secs`, then fail with a
+/// clear message.
+fn acquire_lock_with_timeout(path: &Path, timeout_secs: u64) -> Result<FileLock> {
+    if let Some(parent) = path.parent() {
+        ensure_dir(parent)?;
+    }
+    let start = SystemTime::now();
+    let mut backoff_ms = LOCK_BACKOFF_MS;
+    loop {
+        match try_create_lock(path) {
+            Ok(lock) => return Ok(lock),
+            Err(LockAttempt::HeldByDeadPid(pid)) => {
+                eprintln!(
+                    "[context-pack] WARNING: cleaned stale lock (pid {} no longer running)",
+                    pid
+                );
+                let _ = fs::remove_file(path);
+                // Loop will retry immediately.
+            }
+            Err(LockAttempt::Held) => {
+                let elapsed = SystemTime::now()
+                    .duration_since(start)
+                    .unwrap_or_default()
+                    .as_secs();
+                if elapsed >= timeout_secs {
+                    return Err(anyhow!(
+                        "[context-pack] another seal is in progress (lock: {}); waited {}s",
+                        path.display(),
+                        timeout_secs
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(backoff_ms));
+                backoff_ms = (backoff_ms * 2).min(LOCK_BACKOFF_MAX_MS);
+            }
+            Err(LockAttempt::Io(err)) => {
+                return Err(anyhow!(
+                    "[context-pack] failed to acquire lock ({}): {}",
+                    path.display(),
+                    err
+                ));
+            }
+        }
+    }
+}
+
+enum LockAttempt {
+    HeldByDeadPid(u32),
+    Held,
+    Io(std::io::Error),
+}
+
+fn try_create_lock(path: &Path) -> std::result::Result<FileLock, LockAttempt> {
     match fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1278,40 +1742,34 @@ fn acquire_lock_internal(path: &Path, allow_recovery: bool) -> Result<FileLock> 
     {
         Ok(mut file) => {
             let pid = std::process::id();
-            writeln!(file, "{}", pid)
-                .with_context(|| format!("Failed to write lock {}", path.display()))?;
+            if let Err(err) = writeln!(file, "{}", pid) {
+                let _ = fs::remove_file(path);
+                return Err(LockAttempt::Io(err));
+            }
+            let _ = file.sync_all();
             Ok(FileLock {
                 path: path.to_path_buf(),
             })
         }
-        Err(error) if allow_recovery && error.kind() == std::io::ErrorKind::AlreadyExists => {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             if let Ok(content) = fs::read_to_string(path) {
                 if let Ok(pid) = content.trim().parse::<u32>() {
                     let is_running = Command::new("kill")
                         .arg("-0")
                         .arg(pid.to_string())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
                         .status()
                         .map(|s| s.success())
                         .unwrap_or(false);
-
                     if !is_running {
-                        eprintln!("[context-pack] WARNING: cleaned stale lock (pid {} no longer running)", pid);
-                        let _ = fs::remove_file(path);
-                        return acquire_lock_internal(path, false);
+                        return Err(LockAttempt::HeldByDeadPid(pid));
                     }
                 }
             }
-            Err(anyhow!(
-                "[context-pack] another seal is in progress (lock: {}): {}",
-                path.display(),
-                error
-            ))
+            Err(LockAttempt::Held)
         }
-        Err(error) => Err(anyhow!(
-            "[context-pack] another seal is in progress (lock: {}): {}",
-            path.display(),
-            error
-        )),
+        Err(error) => Err(LockAttempt::Io(error)),
     }
 }
 
@@ -2696,6 +3154,234 @@ mod tests {
         assert!(
             !dir.join("00_START_HERE.md").exists(),
             "should not create the file"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P10: atomic writes (F33) ---
+
+    #[test]
+    fn atomic_write_replaces_atomically_and_no_partial_file() {
+        let dir = test_dir("atomic_write_basic");
+        let target = dir.join("manifest.json");
+
+        atomic_write(&target, b"{\"v\":1}").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{\"v\":1}");
+
+        // Subsequent write replaces cleanly; tmp sibling is not left behind.
+        atomic_write(&target, b"{\"v\":2}").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{\"v\":2}");
+        for entry in fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            assert!(
+                !name.contains(".tmp."),
+                "tmp sibling should be renamed away: {}",
+                name
+            );
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_write_orphan_tmp_leaves_original_intact() {
+        // Simulate a crashed partial write: the tmp file exists with partial bytes,
+        // but the rename never happened. The real file must remain intact.
+        let dir = test_dir("atomic_write_partial");
+        let target = dir.join("manifest.json");
+        atomic_write(&target, b"{\"v\":1}").unwrap();
+
+        // Emulate the first phase of atomic_write without the rename step.
+        let tmp = dir.join(format!(".manifest.json.tmp.{}", std::process::id() + 1));
+        fs::write(&tmp, b"{\"v\":2, partial").unwrap();
+
+        // The real manifest is unchanged.
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{\"v\":1}");
+
+        // A subsequent successful atomic_write still works and doesn't trip on
+        // the orphan tmp file from a prior crash.
+        atomic_write(&target, b"{\"v\":3}").unwrap();
+        assert_eq!(fs::read_to_string(&target).unwrap(), "{\"v\":3}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P10: lock handling (F29) ---
+
+    #[test]
+    fn lock_steals_from_dead_pid_with_warning() {
+        let dir = test_dir("lock_dead_pid");
+        let lock_path = dir.join("seal.lock");
+
+        // PID 1 on macOS/Linux (launchd/init) is always running; we want a PID
+        // that is not. A PID larger than any valid one works on every OS.
+        fs::write(&lock_path, "4294967294\n").unwrap();
+        assert!(lock_path.exists());
+
+        // With a dead PID we should steal (not wait). If the PID ever happens
+        // to exist the test would wait up to the timeout — use 2s to keep the
+        // suite fast.
+        let lock = acquire_lock_with_timeout(&lock_path, 2).unwrap();
+        drop(lock);
+        assert!(!lock_path.exists(), "lock dropped should remove the file");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn lock_times_out_when_live_holder_does_not_release() {
+        let dir = test_dir("lock_live_holder");
+        let lock_path = dir.join("seal.lock");
+
+        // Write our own PID (definitely running): the acquire path should not
+        // steal it, and should time out.
+        fs::write(&lock_path, format!("{}\n", std::process::id())).unwrap();
+
+        let start = std::time::Instant::now();
+        let err = acquire_lock_with_timeout(&lock_path, 1).unwrap_err();
+        let elapsed = start.elapsed().as_millis();
+        assert!(
+            elapsed >= 900,
+            "should have waited roughly the timeout, got {}ms",
+            elapsed
+        );
+        let msg = format!("{}", err);
+        assert!(msg.contains("another seal is in progress"), "msg: {}", msg);
+        assert!(msg.contains("waited 1s"), "msg: {}", msg);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P10: history rotation (F55) ---
+
+    #[test]
+    fn history_rotates_when_entry_threshold_exceeded() {
+        let dir = test_dir("history_rotation");
+        let pack_root = dir.clone();
+        let history = pack_root.join("history.jsonl");
+
+        // Write 1001 entries to cross the F55 threshold.
+        {
+            let mut file = fs::OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(&history)
+                .unwrap();
+            for i in 0..1001 {
+                writeln!(
+                    file,
+                    "{{\"snapshot_id\":\"s{:04}\",\"generated_at\":\"2026-01-01T00:00:00Z\"}}",
+                    i
+                )
+                .unwrap();
+            }
+        }
+
+        // Trigger rotation by appending one more entry via append_jsonl.
+        append_jsonl(&history, &json!({ "snapshot_id": "s1002" })).unwrap();
+
+        // Rotated file should exist with the first 1001 entries; active file
+        // should have exactly the 1002-nd.
+        let rotated = pack_root.join("history.jsonl.1");
+        assert!(rotated.exists(), "history.jsonl.1 should exist");
+        let rotated_lines = fs::read_to_string(&rotated)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
+        assert_eq!(rotated_lines, 1001);
+
+        let active = fs::read_to_string(&history).unwrap();
+        let active_lines: Vec<&str> =
+            active.lines().filter(|l| !l.trim().is_empty()).collect();
+        assert_eq!(active_lines.len(), 1, "active file should have the new entry");
+
+        // history_index.json should be readable + reference the rotated file.
+        let index_path = pack_root.join("history_index.json");
+        assert!(index_path.exists(), "history_index.json should be written");
+        let idx: Value =
+            serde_json::from_str(&fs::read_to_string(&index_path).unwrap()).unwrap();
+        let files = idx.get("files").and_then(|f| f.as_array()).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            files[0].get("name").and_then(|n| n.as_str()).unwrap(),
+            "history.jsonl.1"
+        );
+        assert_eq!(files[0].get("entries").and_then(|e| e.as_u64()).unwrap(), 1001);
+        assert_eq!(
+            files[0].get("first_id").and_then(|s| s.as_str()).unwrap(),
+            "s0000"
+        );
+        assert_eq!(
+            files[0].get("last_id").and_then(|s| s.as_str()).unwrap(),
+            "s1000"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P10: verify --repair (F32) ---
+
+    #[test]
+    fn repair_restores_from_latest_intact_snapshot() {
+        let dir = test_dir("repair_restore");
+        let pack_root = dir.join(".agent-context");
+        let current = pack_root.join("current");
+        let snapshots = pack_root.join("snapshots");
+        fs::create_dir_all(&current).unwrap();
+        fs::create_dir_all(&snapshots).unwrap();
+
+        // Good snapshot with a valid manifest.json.
+        let snap_a = snapshots.join("20260101T000000Z_aaaaaaaaaaaa");
+        fs::create_dir_all(&snap_a).unwrap();
+        fs::write(snap_a.join("manifest.json"), "{\"files\":[]}").unwrap();
+        fs::write(snap_a.join("00_START_HERE.md"), "snap-a").unwrap();
+
+        // Newer snapshot with a corrupt manifest: repair must skip it.
+        let snap_b = snapshots.join("20260201T000000Z_bbbbbbbbbbbb");
+        fs::create_dir_all(&snap_b).unwrap();
+        fs::write(snap_b.join("manifest.json"), "not json!").unwrap();
+        fs::write(snap_b.join("00_START_HERE.md"), "snap-b").unwrap();
+
+        // Newest-good snapshot.
+        let snap_c = snapshots.join("20260301T000000Z_cccccccccccc");
+        fs::create_dir_all(&snap_c).unwrap();
+        fs::write(snap_c.join("manifest.json"), "{\"files\":[]}").unwrap();
+        fs::write(snap_c.join("00_START_HERE.md"), "snap-c").unwrap();
+
+        // Current dir has a corrupt manifest we want to repair past.
+        fs::write(current.join("manifest.json"), "{{ broken").unwrap();
+
+        // Run repair with yes=true and the repo_root set to the test dir so
+        // rel_path stays clean.
+        run_repair(&dir, &pack_root, true).unwrap();
+
+        let restored =
+            fs::read_to_string(current.join("00_START_HERE.md")).unwrap();
+        assert_eq!(restored, "snap-c", "should restore from newest intact snapshot");
+        // Manifest should be valid JSON again.
+        let manifest_raw =
+            fs::read_to_string(current.join("manifest.json")).unwrap();
+        serde_json::from_str::<Value>(&manifest_raw).unwrap();
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn repair_errors_when_no_intact_snapshot_exists() {
+        let dir = test_dir("repair_none");
+        let pack_root = dir.join(".agent-context");
+        fs::create_dir_all(pack_root.join("current")).unwrap();
+        fs::create_dir_all(pack_root.join("snapshots")).unwrap();
+
+        let err = run_repair(&dir, &pack_root, true).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("no recovery snapshot found"),
+            "unexpected error: {}",
+            msg
         );
 
         let _ = fs::remove_dir_all(&dir);

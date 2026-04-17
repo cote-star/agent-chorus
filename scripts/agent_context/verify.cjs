@@ -22,6 +22,12 @@ function parseArgs(argv) {
     ci: false,
     base: 'origin/main',
     cwd: process.cwd(),
+    // TODO(P10): implement --repair / --yes parity here. For now the flag is
+    // accepted + surfaced so parity fixture runs don't explode on the Node side;
+    // it returns a clear "not yet implemented" message. See
+    // cli/src/agent_context.rs::run_repair for the Rust reference.
+    repair: false,
+    repairYes: false,
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -44,6 +50,12 @@ function parseArgs(argv) {
       case '--cwd':
         if (next) opts.cwd = path.resolve(next);
         if (inlineValue == null) i += 1;
+        break;
+      case '--repair':
+        opts.repair = true;
+        break;
+      case '--yes':
+        opts.repairYes = true;
         break;
       default:
         break;
@@ -205,6 +217,16 @@ if (require.main === module) {
   const resolvedPackDir = path.isAbsolute(opts.packDir)
     ? opts.packDir
     : path.resolve(opts.cwd, opts.packDir);
+
+  if (opts.repair) {
+    // TODO(P10): port run_repair from cli/src/agent_context.rs. Until then,
+    // surface a clear exit rather than silently ignoring the flag.
+    console.error(
+      '[agent-context] verify --repair is not yet implemented in the Node entrypoint; ' +
+        'use `chorus agent-context verify --repair` (Rust CLI) for now.'
+    );
+    process.exit(1);
+  }
 
   if (opts.ci) {
     // CI mode: JSON output combining integrity + freshness
