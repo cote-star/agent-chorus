@@ -5377,4 +5377,358 @@ mod tests {
         assert!(parsed.get("include").is_some(), "include[] preserved");
         assert!(parsed.get("exclude").is_some(), "exclude[] preserved");
     }
+
+
+    // --- P1 tests (restored post-integration) ---
+
+    fn init_git(root: &Path) {
+        let _ = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(root)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.email", "p1@test"])
+            .current_dir(root)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["config", "user.name", "P1 Tester"])
+            .current_dir(root)
+            .output();
+    }
+
+    #[test]
+    fn extract_declared_counts_catches_prose_numbers_and_respects_ignore() {
+        let dir = test_dir("p1_declared_counts");
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let body = "\
+# Overview\n\
+\n\
+The repo ships 6 files and 12 scripts.\n\
+\n\
+<!-- count-claim: ignore -->\n\
+Historic note: we once had 42 tests.\n\
+<!-- count-claim: end -->\n\
+\n\
+After cleanup there are 32 tests today.\n\
+";
+        fs::write(current.join("10_SYSTEM_OVERVIEW.md"), body).unwrap();
+
+        let out = extract_declared_counts(&current);
+        // Collect (noun, count) pairs for easier assertions.
+        let pairs: Vec<(String, u64)> = out
+            .iter()
+            .map(|v| {
+                (
+                    v.get("noun").and_then(|x| x.as_str()).unwrap().to_string(),
+                    v.get("count").and_then(|x| x.as_u64()).unwrap(),
+                )
+            })
+            .collect();
+        assert!(
+            pairs.contains(&("files".to_string(), 6)),
+            "expected '6 files' claim in {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&("scripts".to_string(), 12)),
+            "expected '12 scripts' claim in {pairs:?}"
+        );
+        assert!(
+            pairs.contains(&("tests".to_string(), 32)),
+            "expected '32 tests' claim in {pairs:?}"
+        );
+        assert!(
+            !pairs.contains(&("tests".to_string(), 42)),
+            "'42 tests' inside <!-- count-claim: ignore --> must be skipped, got {pairs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_family_counts_empty_when_config_absent() {
+        let dir = test_dir("p1_family_counts_absent");
+        init_git(&dir);
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+
+        let counts = resolve_family_counts(&dir, &current);
+        assert!(
+            counts.is_empty(),
+            "expected empty family_counts when configs absent, got {counts:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn post_commit_reconcile_updates_post_commit_sha() {
+        let dir = test_dir("p1_post_commit");
+        init_git(&dir);
+        // Seed a single commit so HEAD resolves.
+        fs::write(dir.join("README.md"), "hi\n").unwrap();
+        let _ = std::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        // Minimal manifest that we expect the reconcile to stamp.
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let initial = json!({
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "head_sha": "deadbeef",
+            "head_sha_at_seal": "deadbeef",
+            "post_commit_sha": null,
+            "files": [],
+        });
+        fs::write(
+            current.join("manifest.json"),
+            format!("{}\n", serde_json::to_string_pretty(&initial).unwrap()),
+        )
+        .unwrap();
+
+        post_commit_reconcile(Some(dir.to_str().unwrap()), None).expect("reconcile must succeed");
+
+        let raw = fs::read_to_string(current.join("manifest.json")).unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let post_sha = manifest
+            .get("post_commit_sha")
+            .and_then(|v| v.as_str())
+            .expect("post_commit_sha must be a string after reconcile");
+        // SHA-1 hex = 40 chars; accept any non-empty string from git rev-parse.
+        assert!(!post_sha.is_empty());
+        // Invariant: seal-time head_sha_at_seal must be preserved.
+        assert_eq!(
+            manifest.get("head_sha_at_seal").and_then(|v| v.as_str()),
+            Some("deadbeef"),
+            "reconcile must never mutate head_sha_at_seal"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn compute_dependencies_snapshot_hashes_pyproject_and_npm() {
+        let dir = test_dir("p1_deps");
+        fs::write(dir.join("pyproject.toml"), "[tool.poetry]\nname=\"demo\"\n").unwrap();
+        fs::write(dir.join("package.json"), "{\"name\":\"demo\"}\n").unwrap();
+
+        let snap = compute_dependencies_snapshot(&dir);
+        assert!(
+            snap.get("pyproject").map(|s| s.len() == 64).unwrap_or(false),
+            "pyproject hash should be 64-char hex, got {snap:?}"
+        );
+        assert!(
+            snap.get("npm").map(|s| s.len() == 64).unwrap_or(false),
+            "npm hash should be 64-char hex, got {snap:?}"
+        );
+        assert!(
+            !snap.contains_key("cargo"),
+            "cargo must be absent when Cargo.toml missing, got {snap:?}"
+        );
+
+        // Sanity: value changes when the file changes.
+        fs::write(dir.join("pyproject.toml"), "[tool.poetry]\nname=\"demo2\"\n").unwrap();
+        let snap2 = compute_dependencies_snapshot(&dir);
+        assert_ne!(
+            snap.get("pyproject"),
+            snap2.get("pyproject"),
+            "pyproject hash must change when the file content changes"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn build_manifest_emits_all_p1_fields() {
+        let files_meta: Vec<FileMeta> = Vec::new();
+        let mut baseline = SemanticBaseline::default();
+        baseline
+            .family_counts
+            .insert("scripts/run_*.py".to_string(), 12);
+        baseline.declared_counts.push(json!({
+            "noun": "files",
+            "count": 6,
+            "file": "10_SYSTEM_OVERVIEW.md",
+            "line": 3,
+        }));
+        baseline
+            .shortcut_signatures
+            .insert("calc.py::compute_lift".to_string(), "def compute_lift(data)".to_string());
+        baseline
+            .dependencies_snapshot
+            .insert("pyproject".to_string(), "a".repeat(64));
+
+        let bundle = build_manifest(
+            "2026-04-17T00:00:00Z",
+            Path::new("/tmp/unused"),
+            "fixture-repo",
+            "main",
+            false,
+            Some("abcd1234"),
+            "test-seal",
+            None,
+            &Vec::new(),
+            &files_meta,
+            &baseline,
+        );
+
+        // All four semantic fields must be present with the right shape.
+        assert_eq!(
+            bundle
+                .value
+                .get("family_counts")
+                .and_then(|v| v.get("scripts/run_*.py"))
+                .and_then(|v| v.as_u64()),
+            Some(12),
+            "family_counts missing the expected entry"
+        );
+        let declared = bundle
+            .value
+            .get("declared_counts")
+            .and_then(|v| v.as_array())
+            .expect("declared_counts must be an array");
+        assert_eq!(declared.len(), 1, "declared_counts should contain one entry");
+        assert!(
+            bundle
+                .value
+                .get("shortcut_signatures")
+                .and_then(|v| v.get("calc.py::compute_lift"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("compute_lift"))
+                .unwrap_or(false),
+            "shortcut_signatures missing the expected entry"
+        );
+        assert!(
+            bundle
+                .value
+                .get("dependencies_snapshot")
+                .and_then(|v| v.get("pyproject"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.len() == 64)
+                .unwrap_or(false),
+            "dependencies_snapshot missing pyproject entry"
+        );
+
+        // head_sha_at_seal is the new canonical field; head_sha remains populated.
+        assert_eq!(
+            bundle
+                .value
+                .get("head_sha_at_seal")
+                .and_then(|v| v.as_str()),
+            Some("abcd1234"),
+            "head_sha_at_seal should mirror the seal-time HEAD"
+        );
+        assert_eq!(
+            bundle.value.get("head_sha").and_then(|v| v.as_str()),
+            Some("abcd1234"),
+            "head_sha must stay populated for back-compat"
+        );
+        assert!(
+            bundle.value.get("post_commit_sha").map(|v| v.is_null()).unwrap_or(false),
+            "post_commit_sha must be null at seal time"
+        );
+    }
+
+    #[test]
+    fn resolve_family_counts_resolves_run_scripts_glob() {
+        let dir = test_dir("p1_family_counts");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        // Author a minimal completeness_contract.json that declares the glob.
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let counts = resolve_family_counts(&dir, &current);
+        assert_eq!(
+            counts.get("scripts/run_*.py").copied(),
+            Some(12),
+            "expected 12 scripts under scripts/run_*.py, got {counts:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_shortcut_signatures_for_python_and_rust_and_ts() {
+        let dir = test_dir("p1_sigs");
+        init_git(&dir);
+        // Python
+        fs::write(
+            dir.join("calc.py"),
+            "def compute_lift(data, *, alpha=0.05):\n    return 1\n\n\
+             async def fetch(url: str) -> str:\n    return url\n",
+        )
+        .unwrap();
+        // Rust
+        fs::write(
+            dir.join("lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n\
+             fn internal() {\n}\n",
+        )
+        .unwrap();
+        // TypeScript
+        fs::write(
+            dir.join("helpers.ts"),
+            "export function shout(msg: string): string {\n  return msg.toUpperCase();\n}\n\n\
+             export const greet = (name: string): string => `hi ${name}`;\n",
+        )
+        .unwrap();
+
+        let py_sigs = parse_shortcut_signatures_for_file(&dir.join("calc.py"), "calc.py");
+        assert!(
+            py_sigs
+                .get("calc.py::compute_lift")
+                .map(|s| s.contains("compute_lift"))
+                .unwrap_or(false),
+            "expected python compute_lift signature, got {py_sigs:?}"
+        );
+        assert!(
+            py_sigs.contains_key("calc.py::fetch"),
+            "expected python fetch signature, got {py_sigs:?}"
+        );
+
+        let rs_sigs = parse_shortcut_signatures_for_file(&dir.join("lib.rs"), "lib.rs");
+        assert!(
+            rs_sigs
+                .get("lib.rs::add")
+                .map(|s| s.contains("-> i32"))
+                .unwrap_or(false),
+            "expected rust add signature with return type, got {rs_sigs:?}"
+        );
+        assert!(
+            rs_sigs.contains_key("lib.rs::internal"),
+            "expected rust internal signature, got {rs_sigs:?}"
+        );
+
+        let ts_sigs = parse_shortcut_signatures_for_file(&dir.join("helpers.ts"), "helpers.ts");
+        assert!(
+            ts_sigs.contains_key("helpers.ts::shout"),
+            "expected ts shout signature, got {ts_sigs:?}"
+        );
+        assert!(
+            ts_sigs.contains_key("helpers.ts::greet"),
+            "expected ts greet arrow signature, got {ts_sigs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }
