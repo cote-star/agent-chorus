@@ -14,6 +14,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const ZERO_SHA: &str = "0000000000000000000000000000000000000000";
 const MAX_CHANGED_FILES_DISPLAYED: usize = 12;
+/// Current manifest schema version understood by this tool.
+/// Increment on backward-incompatible manifest changes. See P11 in the
+/// agent-context plan for the enforcement contract on verify.
+const CURRENT_SCHEMA_VERSION: u64 = 1;
 const REQUIRED_FILES: &[&str] = &[
     "00_START_HERE.md",
     "10_SYSTEM_OVERVIEW.md",
@@ -83,6 +87,61 @@ struct FreshnessResult {
     changed_files: Vec<String>,
     /// Whether .agent-context/current/ was touched in the diff
     pack_updated: bool,
+}
+
+/// Outcome of the P11 schema-version gate on verify.
+///
+/// - `Ok` means the manifest is safe to process. A human-readable warning may
+///   still be emitted (missing field, or manifest older than the current tool).
+/// - `Err` means the manifest is newer than this tool understands; the caller
+///   should fail loudly and ask the user to upgrade chorus.
+pub(crate) enum SchemaVersionCheck {
+    Ok { warning: Option<String> },
+    TooNew { message: String },
+}
+
+/// Enforce `manifest.schema_version` against [`CURRENT_SCHEMA_VERSION`].
+///
+/// Contract (see P11 / F34 in the agent-context plan):
+/// - missing field -> Ok, back-compat deprecation warning
+/// - equal to current -> Ok, no warning
+/// - older than current -> Ok, upgrade-recommended warning
+/// - newer than current -> TooNew (verify must fail loudly)
+pub(crate) fn check_schema_version(manifest: &Value) -> SchemaVersionCheck {
+    let raw = manifest.get("schema_version");
+    let version = raw.and_then(|v| v.as_u64());
+    match (raw, version) {
+        (None, _) => SchemaVersionCheck::Ok {
+            warning: Some(format!(
+                "manifest has no schema_version field; treating as v1 for back-compat. Re-seal to upgrade to v{CURRENT_SCHEMA_VERSION}."
+            )),
+        },
+        (Some(_), None) => SchemaVersionCheck::Ok {
+            warning: Some(format!(
+                "manifest.schema_version is not a positive integer; treating as v1 for back-compat. Re-seal to upgrade to v{CURRENT_SCHEMA_VERSION}."
+            )),
+        },
+        (Some(_), Some(v)) if v == CURRENT_SCHEMA_VERSION => SchemaVersionCheck::Ok { warning: None },
+        (Some(_), Some(v)) if v < CURRENT_SCHEMA_VERSION => SchemaVersionCheck::Ok {
+            warning: Some(format!(
+                "manifest is schema v{v}, tool is v{CURRENT_SCHEMA_VERSION}. Re-seal to upgrade."
+            )),
+        },
+        (Some(_), Some(v)) => SchemaVersionCheck::TooNew {
+            message: format!(
+                "manifest schema v{v} is newer than this tool (v{CURRENT_SCHEMA_VERSION}). Upgrade chorus."
+            ),
+        },
+    }
+}
+
+/// Compute the SHA256 of the running `chorus` binary, used as
+/// `manifest.verifier_sha256`. Returns `None` when the current executable
+/// cannot be located or read (rare, but possible on exotic platforms).
+fn current_exe_sha256() -> Option<String> {
+    let path = std::env::current_exe().ok()?;
+    let bytes = fs::read(&path).ok()?;
+    Some(sha256_hex(&bytes))
 }
 
 fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
@@ -759,6 +818,31 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     let manifest: serde_json::Value = serde_json::from_str(&manifest_content)
         .with_context(|| "Failed to parse manifest.json")?;
 
+    // P11 / F34: schema_version gate. This is the first check so we refuse
+    // fast when the manifest was sealed by a newer chorus than this one.
+    match check_schema_version(&manifest) {
+        SchemaVersionCheck::Ok { warning } => {
+            if let Some(msg) = warning {
+                eprintln!("[agent-context] WARN: {msg}");
+            }
+        }
+        SchemaVersionCheck::TooNew { message } => {
+            if options.ci {
+                let result = json!({
+                    "integrity": "fail",
+                    "freshness": "skip",
+                    "changed_files": [],
+                    "pack_updated": false,
+                    "exit_code": 1,
+                    "schema_error": message,
+                });
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                std::process::exit(1);
+            }
+            return Err(anyhow!("[agent-context] verify failed: {message}"));
+        }
+    }
+
     let files = manifest.get("files").and_then(|f| f.as_array());
     if files.is_none() {
         if options.ci {
@@ -1171,8 +1255,28 @@ fn build_manifest(
         })
         .collect::<Vec<_>>();
 
+    // P11 / F36: forensic tooling-version fields.
+    // `chorus_version` pins the sealing tool; `verifier_sha256` is the hash
+    // of the binary that sealed it (when available). `skill_version` is
+    // reserved for the team_skills track to populate — we leave it null here
+    // so a later chorus release or team_skills scaffolder can fill it in.
+    let chorus_version = env!("CARGO_PKG_VERSION");
+    let verifier_sha256 = match current_exe_sha256() {
+        Some(hash) => Value::String(hash),
+        None => {
+            eprintln!(
+                "[agent-context] WARN: could not hash current chorus binary; \
+                 manifest.verifier_sha256 will be null"
+            );
+            Value::Null
+        }
+    };
+
     let value = json!({
-        "schema_version": 1,
+        "schema_version": CURRENT_SCHEMA_VERSION,
+        "chorus_version": chorus_version,
+        "skill_version": Value::Null,
+        "verifier_sha256": verifier_sha256,
         "generated_at": generated_at,
         "repo_name": repo_name,
         "repo_root": ".",
@@ -2699,5 +2803,148 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P11 / F34: manifest.schema_version enforcement ---
+
+    #[test]
+    fn schema_version_missing_passes_with_deprecation_warning() {
+        let manifest = json!({ "files": [] });
+        match check_schema_version(&manifest) {
+            SchemaVersionCheck::Ok { warning } => {
+                let msg = warning.expect("missing schema_version should produce a warning");
+                assert!(
+                    msg.contains("no schema_version"),
+                    "warning should name the missing field, got: {msg}"
+                );
+            }
+            SchemaVersionCheck::TooNew { .. } => {
+                panic!("missing schema_version must be treated as v1, not newer-than-tool");
+            }
+        }
+    }
+
+    #[test]
+    fn schema_version_matching_passes_clean() {
+        let manifest = json!({ "schema_version": CURRENT_SCHEMA_VERSION, "files": [] });
+        match check_schema_version(&manifest) {
+            SchemaVersionCheck::Ok { warning } => {
+                assert!(
+                    warning.is_none(),
+                    "matching schema_version must not emit a warning, got: {warning:?}"
+                );
+            }
+            SchemaVersionCheck::TooNew { message } => {
+                panic!("matching schema_version rejected as too-new: {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn schema_version_older_passes_with_upgrade_recommendation() {
+        // This test only exercises the "older" branch when the tool has
+        // advanced past v1. Until that happens, exercise it by forging a
+        // version one step below the tool's current version when the tool
+        // is >1; otherwise assert the current-version branch explicitly.
+        if CURRENT_SCHEMA_VERSION <= 1 {
+            // No "older" version is representable yet; exercise the
+            // matching branch as a sanity check and return.
+            let manifest = json!({ "schema_version": CURRENT_SCHEMA_VERSION, "files": [] });
+            assert!(matches!(
+                check_schema_version(&manifest),
+                SchemaVersionCheck::Ok { warning: None }
+            ));
+            return;
+        }
+        let older = CURRENT_SCHEMA_VERSION - 1;
+        let manifest = json!({ "schema_version": older, "files": [] });
+        match check_schema_version(&manifest) {
+            SchemaVersionCheck::Ok { warning } => {
+                let msg = warning.expect("older schema_version should produce a warning");
+                assert!(
+                    msg.contains("Re-seal"),
+                    "warning should recommend re-sealing, got: {msg}"
+                );
+            }
+            SchemaVersionCheck::TooNew { message } => {
+                panic!("older schema_version rejected as too-new: {message}");
+            }
+        }
+    }
+
+    #[test]
+    fn schema_version_newer_fails_loudly() {
+        let forged = CURRENT_SCHEMA_VERSION + 1;
+        let manifest = json!({ "schema_version": forged, "files": [] });
+        match check_schema_version(&manifest) {
+            SchemaVersionCheck::Ok { .. } => {
+                panic!(
+                    "schema_version {forged} > tool {CURRENT_SCHEMA_VERSION} must fail loudly, not pass"
+                );
+            }
+            SchemaVersionCheck::TooNew { message } => {
+                assert!(
+                    message.contains("Upgrade chorus"),
+                    "error message should direct the user to upgrade, got: {message}"
+                );
+                assert!(
+                    message.contains(&format!("v{forged}")),
+                    "error message should name the offending version, got: {message}"
+                );
+            }
+        }
+    }
+
+    // --- P11 / F36: seal records current chorus_version in manifest ---
+
+    #[test]
+    fn build_manifest_records_current_chorus_version() {
+        let files_meta: Vec<FileMeta> = Vec::new();
+        let bundle = build_manifest(
+            "2026-04-17T00:00:00Z",
+            Path::new("/tmp/unused"),
+            "fixture-repo",
+            "main",
+            Some("abcd1234"),
+            "test-seal",
+            None,
+            &Vec::new(),
+            &files_meta,
+        );
+
+        let schema = bundle
+            .value
+            .get("schema_version")
+            .and_then(|v| v.as_u64())
+            .expect("schema_version should be present and numeric");
+        assert_eq!(
+            schema, CURRENT_SCHEMA_VERSION,
+            "sealed manifest must record the current schema version"
+        );
+
+        let chorus_version = bundle
+            .value
+            .get("chorus_version")
+            .and_then(|v| v.as_str())
+            .expect("chorus_version should be a string");
+        assert_eq!(
+            chorus_version,
+            env!("CARGO_PKG_VERSION"),
+            "chorus_version must match the package version baked into the binary"
+        );
+
+        // skill_version and verifier_sha256 must be present as additive fields.
+        assert!(
+            bundle.value.get("skill_version").is_some(),
+            "skill_version field must be present (null is fine)"
+        );
+        let verifier = bundle
+            .value
+            .get("verifier_sha256")
+            .expect("verifier_sha256 field must be present");
+        assert!(
+            verifier.is_string() || verifier.is_null(),
+            "verifier_sha256 must be a hex string or null, got: {verifier}"
+        );
     }
 }

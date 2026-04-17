@@ -90,6 +90,9 @@ function verifyIntegrity(packDir, quiet) {
   }
 
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  // TODO(P11): enforce manifest.schema_version here to match the Rust verifier
+  // (cli/src/agent_context.rs `check_schema_version`). Deferred so this Pass-0
+  // change stays additive for the Node track.
   const files = manifest.files;
   if (!Array.isArray(files)) {
     throw new Error('[agent-context] verify failed: manifest has no \'files\' array');

@@ -6,6 +6,23 @@ const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
+// P11 / F34: manifest schema version emitted by this seal script. Must stay
+// in lockstep with CURRENT_SCHEMA_VERSION in cli/src/agent_context.rs so that
+// the Node and Rust tracks produce byte-identical manifest shapes.
+const CURRENT_SCHEMA_VERSION = 1;
+
+// P11 / F36: chorus version recorded in the manifest. Read from the workspace
+// package.json so we don't hard-code a drifting string.
+function readChorusVersion() {
+  try {
+    const pkgPath = path.resolve(__dirname, '..', '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
 const REQUIRED_FILES = [
   '00_START_HERE.md',
   '10_SYSTEM_OVERVIEW.md',
@@ -355,9 +372,22 @@ function buildManifest({
   const wordsTotal = filesMeta.reduce((sum, m) => sum + m.words, 0);
   const bytesTotal = filesMeta.reduce((sum, m) => sum + m.bytes, 0);
 
+  // P11 / F36: sha256 of the node script performing the seal. Gives the
+  // manifest a forensic fingerprint of the tool that produced it without
+  // pulling in the whole chorus binary path.
+  let verifierSha256 = null;
+  try {
+    verifierSha256 = sha256(fs.readFileSync(__filename));
+  } catch (_err) {
+    // fall through — null is a valid value
+  }
+
   return {
     value: {
-      schema_version: 1,
+      schema_version: CURRENT_SCHEMA_VERSION,
+      chorus_version: readChorusVersion(),
+      skill_version: null,
+      verifier_sha256: verifierSha256,
       generated_at: generatedAt,
       repo_name: repoName,
       repo_root: '.',
