@@ -321,17 +321,50 @@ function validateStructuredLayer(repoRoot, currentDir) {
   }
 }
 
+// P8 — hostile input guards. Keep these constants in sync with the Rust
+// helper `read_file_for_pack` in cli/src/agent_context.rs.
+const MAX_PACK_FILE_BYTES = 5_000_000;
+const BINARY_SNIFF_BYTES = 8_192;
+
+// TODO(P8): Node-side parity for F20 (symlink escape) and F22 (glob path
+// traversal) still needs to land. This helper covers F19 (binary/non-UTF-8)
+// and F23 (size) for the seal hashing path, which is the blocker. See
+// cli/src/agent_context.rs:~1175 for the full Rust implementation.
+function readFileForPack(absolutePath) {
+  const stat = fs.statSync(absolutePath);
+  if (stat.size > MAX_PACK_FILE_BYTES) {
+    return { ok: false, reason: `file too large (${stat.size} bytes, limit ${MAX_PACK_FILE_BYTES})` };
+  }
+  const buf = fs.readFileSync(absolutePath); // Buffer (raw bytes)
+  const sniffLen = Math.min(buf.length, BINARY_SNIFF_BYTES);
+  for (let i = 0; i < sniffLen; i += 1) {
+    if (buf[i] === 0) {
+      return { ok: false, reason: 'binary content (NUL bytes detected)' };
+    }
+  }
+  // utf8 lossy: Buffer#toString('utf8') already replaces invalid sequences
+  // with U+FFFD, matching String::from_utf8_lossy semantics.
+  return { ok: true, content: buf.toString('utf8'), bytes: stat.size };
+}
+
 function collectFilesMeta(currentDir, relativePaths) {
-  return relativePaths.map((relativePath) => {
+  const out = [];
+  for (const relativePath of relativePaths) {
     const absolutePath = path.join(currentDir, relativePath);
-    const content = fs.readFileSync(absolutePath, 'utf8');
-    return {
+    const result = readFileForPack(absolutePath);
+    if (!result.ok) {
+      console.error(`[context-pack] WARN: skipping pack file ${relativePath}: ${result.reason}`);
+      continue;
+    }
+    out.push({
       path: relativePath,
-      sha256: sha256(content),
-      bytes: fs.statSync(absolutePath).size,
-      words: (content.match(/\S+/g) || []).length,
-    };
-  });
+      path_lower: relativePath.toLowerCase(),
+      sha256: sha256(result.content),
+      bytes: result.bytes,
+      words: (result.content.match(/\S+/g) || []).length,
+    });
+  }
+  return out;
 }
 
 function buildManifest({

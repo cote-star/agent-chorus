@@ -385,6 +385,12 @@ enum ContextPackCommand {
         /// Overwrite existing template files
         #[arg(long)]
         force: bool,
+
+        /// Dereference symlinks whose targets resolve outside the repo root.
+        /// Off by default so a rogue symlink cannot exfiltrate content into
+        /// the pack. Opt in only for repos that rely on out-of-tree sources.
+        #[arg(long)]
+        follow_symlinks: bool,
     },
 
     /// Validate and seal an agent-authored context pack
@@ -416,6 +422,12 @@ enum ContextPackCommand {
         /// Force creating a new snapshot even when unchanged
         #[arg(long)]
         force_snapshot: bool,
+
+        /// Dereference symlinks whose targets resolve outside the repo root.
+        /// Off by default; turn on only when an out-of-tree source must be
+        /// read into the pack. Seal will still warn on skipped files.
+        #[arg(long)]
+        follow_symlinks: bool,
     },
 }
 
@@ -913,11 +925,13 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             pack_dir,
             cwd,
             force,
+            follow_symlinks,
         } => {
             agent_context::init(agent_context::InitOptions {
                 pack_dir,
                 cwd,
                 force,
+                follow_symlinks,
             })?;
         }
         ContextPackCommand::Seal {
@@ -928,6 +942,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             cwd,
             force,
             force_snapshot,
+            follow_symlinks,
         } => {
             agent_context::seal(agent_context::SealOptions {
                 reason,
@@ -937,6 +952,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 cwd,
                 force,
                 force_snapshot,
+                follow_symlinks,
             })?;
         }
     }
