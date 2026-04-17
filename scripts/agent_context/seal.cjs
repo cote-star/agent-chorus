@@ -78,6 +78,7 @@ const {
   isProcessRunning,
   safeWriteText,
   safeWriteTextAtomic,
+  appendJsonl,
 } = require('./cp_utils.cjs');
 
 /**
@@ -508,8 +509,10 @@ function collectGitignoreZoneWarnings(repoRoot, currentDir) {
 }
 
 function appendHistory(historyPath, entry) {
-  ensureDir(path.dirname(historyPath));
-  fs.appendFileSync(historyPath, `${JSON.stringify(entry)}\n`, 'utf8');
+  // Atomic-per-line: appendJsonl rotates the file when it crosses the F55
+  // thresholds before the append. The seal lock (F29) serializes concurrent
+  // writers, so we do not need extra synchronization here.
+  appendJsonl(historyPath, entry);
 }
 
 function copyDir(source, destination) {
@@ -526,32 +529,71 @@ function compactTimestamp(iso) {
   return iso.replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
 }
 
+// F29: bounded wait with exponential backoff. The lock covers the entire
+// read-manifest -> write-files -> write-history transaction in seal().
+const LOCK_WAIT_MS = 10_000;
+const LOCK_BACKOFF_INITIAL_MS = 50;
+const LOCK_BACKOFF_MAX_MS = 500;
+
+function sleepBusy(ms) {
+  const end = Date.now() + ms;
+  // Avoid requiring async/await; seal.cjs is a sync pipeline. This is a
+  // simple busy wait used only when the lock is contended.
+  while (Date.now() < end) {
+    // eslint-disable-next-line no-empty
+  }
+}
+
 function acquireLock(lockPath) {
-  try {
-    const fd = fs.openSync(lockPath, 'wx');
-    fs.writeFileSync(fd, `${process.pid}\n`);
-    return () => {
+  const start = Date.now();
+  let backoff = LOCK_BACKOFF_INITIAL_MS;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      fs.writeFileSync(fd, `${process.pid}\n`);
       try {
-        fs.unlinkSync(lockPath);
+        fs.fsyncSync(fd);
       } catch (_) {
         /* ignore */
       }
-    };
-  } catch (error) {
-    if (error.code === 'EEXIST') {
-      try {
-        const pidContent = fs.readFileSync(lockPath, 'utf8').trim();
-        const pid = parseInt(pidContent, 10);
-        if (!isNaN(pid) && !isProcessRunning(pid)) {
-          console.error(`[context-pack] WARNING: cleaned stale lock (pid ${pid} no longer running)`);
+      fs.closeSync(fd);
+      return () => {
+        try {
           fs.unlinkSync(lockPath);
-          return acquireLock(lockPath);
+        } catch (_) {
+          /* ignore */
         }
-      } catch (readError) {
-        // Fall through to original error if we can't read/process the lockfile
+      };
+    } catch (error) {
+      if (error.code === 'EEXIST') {
+        let holderAlive = true;
+        try {
+          const pidContent = fs.readFileSync(lockPath, 'utf8').trim();
+          const pid = parseInt(pidContent, 10);
+          if (!isNaN(pid) && !isProcessRunning(pid)) {
+            console.error(`[context-pack] WARNING: cleaned stale lock (pid ${pid} no longer running)`);
+            fs.unlinkSync(lockPath);
+            holderAlive = false;
+          }
+        } catch (_) {
+          /* fall through to the timeout check */
+        }
+        if (!holderAlive) {
+          continue;
+        }
+        if (Date.now() - start >= LOCK_WAIT_MS) {
+          throw new Error(
+            `[context-pack] another seal is in progress (lock: ${lockPath}); waited ${Math.floor(
+              LOCK_WAIT_MS / 1000
+            )}s`
+          );
+        }
+        sleepBusy(backoff);
+        backoff = Math.min(backoff * 2, LOCK_BACKOFF_MAX_MS);
+        continue;
       }
+      throw new Error(`[context-pack] another seal is in progress (lock: ${lockPath}): ${error.message}`);
     }
-    throw new Error(`[context-pack] another seal is in progress (lock: ${lockPath}): ${error.message}`);
   }
 }
 
