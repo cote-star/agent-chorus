@@ -28,6 +28,16 @@ const STRUCTURED_FILES: &[&str] = &[
 ];
 const TASK_FAMILIES: &[&str] = &["lookup", "impact_analysis", "planning", "diagnosis"];
 
+// P8 — hostile input & platform safety bounds.
+/// Maximum bytes we will read into a pack file (F23). Files larger than this
+/// are skipped with a warning so seal cannot OOM on a rogue asset.
+const MAX_PACK_FILE_BYTES: u64 = 5_000_000;
+/// Bytes inspected for NUL detection when classifying a file as binary (F19).
+const BINARY_SNIFF_BYTES: usize = 8_192;
+/// Maximum directory walk depth (F20). Guards against symlink loops and
+/// pathological nested-dir layouts when resolving glob patterns.
+const MAX_WALK_DEPTH: usize = 20;
+
 pub struct BuildOptions {
     pub reason: Option<String>,
     pub base: Option<String>,
@@ -43,6 +53,9 @@ pub struct InitOptions {
     pub pack_dir: Option<String>,
     pub cwd: Option<String>,
     pub force: bool,
+    /// P8/F20: when true, dereference symlinks whose canonical target escapes
+    /// the repo root. Default false (safe).
+    pub follow_symlinks: bool,
 }
 
 pub struct SealOptions {
@@ -53,10 +66,16 @@ pub struct SealOptions {
     pub cwd: Option<String>,
     pub force: bool,
     pub force_snapshot: bool,
+    /// P8/F20: when true, dereference symlinks whose canonical target escapes
+    /// the repo root. Default false (safe).
+    pub follow_symlinks: bool,
 }
 
 struct FileMeta {
     path: String,
+    /// P8/F21: lowercased copy of `path` for case-insensitive FS collision
+    /// detection during verify. Written into the manifest alongside `path`.
+    path_lower: String,
     sha256: String,
     bytes: u64,
     words: usize,
@@ -144,6 +163,7 @@ pub fn build(options: BuildOptions) -> Result<()> {
             pack_dir: options.pack_dir,
             cwd: Some(cwd.display().to_string()),
             force: false,
+            follow_symlinks: false,
         });
     }
 
@@ -156,6 +176,7 @@ pub fn build(options: BuildOptions) -> Result<()> {
         cwd: Some(cwd.display().to_string()),
         force: false,
         force_snapshot: options.force_snapshot,
+        follow_symlinks: false,
     })
 }
 
@@ -417,8 +438,10 @@ pub fn seal(options: SealOptions) -> Result<()> {
             ));
         }
         if !options.force {
-            let content = fs::read_to_string(&path)
-                .with_context(|| format!("Failed to read {}", path.display()))?;
+            // P8 — read via helper so a binary/non-UTF-8 required file raises
+            // a clear error instead of panicking read_to_string.
+            let content = read_file_for_pack(&path, &repo_root, options.follow_symlinks)
+                .map_err(|e| anyhow!("[context-pack] seal failed: cannot read {}: {}", rel_path(&path, &repo_root), e))?;
             if content.contains("<!-- AGENT:") {
                 return Err(anyhow!(
                     "[context-pack] seal failed: template markers remain in {} (use --force to override)",
@@ -441,7 +464,9 @@ pub fn seal(options: SealOptions) -> Result<()> {
 
     let files_meta = collect_files_meta(
         &current_dir,
+        &repo_root,
         &required_files,
+        options.follow_symlinks,
     )?;
 
     let previous_manifest = read_json(&manifest_path)?;
@@ -778,6 +803,39 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     let mut pass_count = 0usize;
     let mut fail_count = 0usize;
 
+    // P8/F21 — detect case-insensitive FS collisions in the manifest: two
+    // distinct `path` entries whose `path_lower` is identical (e.g. on macOS
+    // where `Readme.md` and `README.md` round-trip through HFS+/APFS as one
+    // file but show up differently on a case-sensitive Linux CI runner).
+    {
+        use std::collections::HashMap;
+        let mut by_lower: HashMap<String, Vec<String>> = HashMap::new();
+        for entry in files.unwrap() {
+            let original = entry.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            // Prefer stored path_lower (P8 manifests); fall back to computing
+            // it for older manifests that predate the field.
+            let lower = entry
+                .get("path_lower")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| original.to_lowercase());
+            by_lower.entry(lower).or_default().push(original.to_string());
+        }
+        for (lower, variants) in by_lower {
+            if variants.len() > 1 {
+                let distinct: BTreeSet<&str> = variants.iter().map(|s| s.as_str()).collect();
+                if distinct.len() > 1 {
+                    let joined: Vec<&str> = distinct.into_iter().collect();
+                    eprintln!(
+                        "[agent-context] WARN: case-insensitive FS collision: {} (variants: {})",
+                        lower,
+                        joined.join(" vs ")
+                    );
+                }
+            }
+        }
+    }
+
     for file_entry in files.unwrap() {
         let file_path_str = file_entry.get("path").and_then(|p| p.as_str()).unwrap_or("unknown");
         let expected_hash = file_entry.get("sha256").and_then(|h| h.as_str()).unwrap_or("");
@@ -791,7 +849,21 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             continue;
         }
 
-        let content = fs::read_to_string(&actual_path)?;
+        // P8/F19 — read via the pack helper so a non-UTF-8 / binary pack
+        // file surfaces as a checksum mismatch rather than panicking verify.
+        // Pass the resolved repo root for the symlink policy check; verify
+        // allows follow_symlinks=true since the manifest already accepted
+        // whatever layout seal produced.
+        let content = match read_file_for_pack(&actual_path, &repo_root, true) {
+            Ok(c) => c,
+            Err(err) => {
+                if !options.ci {
+                    eprintln!("  FAIL  {}  (unreadable: {})", file_path_str, err);
+                }
+                fail_count += 1;
+                continue;
+            }
+        };
         use sha2::{Digest, Sha256};
         let actual_hash = format!("{:x}", Sha256::digest(content.as_bytes()));
 
@@ -1111,16 +1183,166 @@ fn summarize_path_counts(paths: &[String]) -> Vec<(String, usize)> {
         .collect()
 }
 
-fn collect_files_meta(current_dir: &Path, relative_paths: &[String]) -> Result<Vec<FileMeta>> {
+/// Failure modes for [`read_file_for_pack`] that callers can downgrade to
+/// warnings (skip file) instead of aborting seal. See P8 / F19, F20, F23.
+#[derive(Debug)]
+enum PackReadError {
+    /// File contains NUL bytes in the first [`BINARY_SNIFF_BYTES`] bytes — we
+    /// treat it as a binary blob and refuse to hash it (F19).
+    LikelyBinary(PathBuf),
+    /// File larger than [`MAX_PACK_FILE_BYTES`] — refuse to read to avoid
+    /// OOM / slow hashing on pack-adjacent logs or assets (F23).
+    TooLarge(PathBuf, u64),
+    /// File is a symlink whose canonical target escapes the repo root (F20).
+    /// Only raised when `follow_symlinks` is false.
+    SymlinkEscape(PathBuf, PathBuf),
+    /// Anything else filesystem-level (missing file, permissions).
+    IoError(PathBuf, std::io::Error),
+}
+
+impl std::fmt::Display for PackReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PackReadError::LikelyBinary(p) => {
+                write!(f, "binary content (NUL bytes detected) at {}", p.display())
+            }
+            PackReadError::TooLarge(p, n) => {
+                write!(f, "file too large ({} bytes, limit {}) at {}", n, MAX_PACK_FILE_BYTES, p.display())
+            }
+            PackReadError::SymlinkEscape(p, target) => {
+                write!(f, "symlink {} escapes repo root (target: {})", p.display(), target.display())
+            }
+            PackReadError::IoError(p, e) => {
+                write!(f, "io error reading {}: {}", p.display(), e)
+            }
+        }
+    }
+}
+
+/// P8 — read a file that is destined for the pack (hashed into the manifest)
+/// in a way that cannot panic on hostile input.
+///
+/// Behaviour:
+/// - Refuses files whose canonical target is outside `repo_root`, unless
+///   `follow_symlinks` is true (F20).
+/// - Refuses files whose size exceeds [`MAX_PACK_FILE_BYTES`] (F23).
+/// - Refuses files whose first [`BINARY_SNIFF_BYTES`] bytes contain NUL (F19).
+/// - Otherwise reads as bytes and decodes with [`String::from_utf8_lossy`],
+///   replacing invalid sequences with U+FFFD (F19 — never panic).
+fn read_file_for_pack(
+    path: &Path,
+    repo_root: &Path,
+    follow_symlinks: bool,
+) -> std::result::Result<String, PackReadError> {
+    // F20 — check symlink status before committing to the read.
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            let target = match fs::canonicalize(path) {
+                Ok(t) => t,
+                Err(e) => return Err(PackReadError::IoError(path.to_path_buf(), e)),
+            };
+            let root_canonical = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+            if !target.starts_with(&root_canonical) && !follow_symlinks {
+                return Err(PackReadError::SymlinkEscape(path.to_path_buf(), target));
+            }
+        }
+        Ok(_) => {}
+        Err(e) => return Err(PackReadError::IoError(path.to_path_buf(), e)),
+    }
+
+    // F23 — size guard.
+    let metadata = fs::metadata(path)
+        .map_err(|e| PackReadError::IoError(path.to_path_buf(), e))?;
+    if metadata.len() > MAX_PACK_FILE_BYTES {
+        return Err(PackReadError::TooLarge(path.to_path_buf(), metadata.len()));
+    }
+
+    // F19 — read as bytes, detect binary, decode lossily.
+    let bytes = fs::read(path)
+        .map_err(|e| PackReadError::IoError(path.to_path_buf(), e))?;
+    let sniff_len = bytes.len().min(BINARY_SNIFF_BYTES);
+    if bytes[..sniff_len].contains(&0u8) {
+        return Err(PackReadError::LikelyBinary(path.to_path_buf()));
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Check whether `target` resolves inside `repo_root`. Used by symlink policy
+/// and glob-pattern sanitization. Best-effort canonicalization — if either
+/// path cannot be canonicalized (e.g. the target does not exist yet), we
+/// fall back to the as-given value.
+#[allow(dead_code)]
+fn is_within_repo_root(repo_root: &Path, target: &Path) -> bool {
+    let root = fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    let canonical = fs::canonicalize(target).unwrap_or_else(|_| target.to_path_buf());
+    canonical.starts_with(&root)
+}
+
+/// P8/F22 — reject glob patterns that could resolve outside the repo root.
+///
+/// Conservative rules:
+/// - Absolute paths (`/foo/**`, `C:\…`) are rejected.
+/// - Patterns containing `..` are rejected; callers should not need to walk
+///   out of the repo to describe pack scope.
+/// - Other patterns are passed through — the glob library is responsible for
+///   matching safety at resolution time.
+fn validate_pack_glob(pattern: &str, _repo_root: &Path) -> Result<()> {
+    let normalized = pattern.replace('\\', "/");
+    if normalized.is_empty() {
+        return Err(anyhow!(
+            "[context-pack] invalid glob pattern: empty string"
+        ));
+    }
+    if normalized.starts_with('/') {
+        return Err(anyhow!(
+            "[context-pack] invalid glob pattern {:?}: absolute paths are not allowed; use a repo-relative pattern",
+            pattern
+        ));
+    }
+    // Windows absolute path heuristic: "C:" style drive letter.
+    let bytes = normalized.as_bytes();
+    if bytes.len() >= 2 && bytes[1] == b':' && (bytes[0] as char).is_ascii_alphabetic() {
+        return Err(anyhow!(
+            "[context-pack] invalid glob pattern {:?}: absolute paths are not allowed; use a repo-relative pattern",
+            pattern
+        ));
+    }
+    // Reject any `..` segment — either leading or embedded, the pattern
+    // could escape the repo root once resolved.
+    for segment in normalized.split('/') {
+        if segment == ".." {
+            return Err(anyhow!(
+                "[context-pack] invalid glob pattern {:?}: `..` path traversal is not allowed",
+                pattern
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn collect_files_meta(
+    current_dir: &Path,
+    repo_root: &Path,
+    relative_paths: &[String],
+    follow_symlinks: bool,
+) -> Result<Vec<FileMeta>> {
     let mut out = Vec::new();
     for relative_path in relative_paths {
         let absolute_path = current_dir.join(relative_path);
-        let content = fs::read_to_string(&absolute_path)
-            .with_context(|| format!("Failed to read {}", absolute_path.display()))?;
+        let content = match read_file_for_pack(&absolute_path, repo_root, follow_symlinks) {
+            Ok(c) => c,
+            Err(err) => {
+                // P8 — skip hostile files with a clear warning rather than
+                // panicking the entire seal.
+                eprintln!("[context-pack] WARN: skipping pack file: {}", err);
+                continue;
+            }
+        };
         let metadata = fs::metadata(&absolute_path)
             .with_context(|| format!("Failed to stat {}", absolute_path.display()))?;
         out.push(FileMeta {
             path: relative_path.clone(),
+            path_lower: relative_path.to_lowercase(),
             sha256: sha256_hex(content.as_bytes()),
             bytes: metadata.len(),
             words: content.split_whitespace().count(),
@@ -1164,6 +1386,9 @@ fn build_manifest(
         .map(|meta| {
             json!({
                 "path": meta.path,
+                // P8/F21: lowercased path for case-insensitive FS collision
+                // detection on verify. Additive field; keeps existing shape.
+                "path_lower": meta.path_lower,
                 "sha256": meta.sha256,
                 "bytes": meta.bytes,
                 "words": meta.words,
@@ -1704,6 +1929,26 @@ fn required_files_for_mode(current_dir: &Path) -> Vec<String> {
 }
 
 fn walk_files(root_dir: &Path, current_dir: &Path, out: &mut Vec<String>) -> Result<()> {
+    walk_files_bounded(root_dir, current_dir, out, 0)
+}
+
+/// P8/F20 — bounded directory walk. `depth` is the distance from the walk's
+/// initial root. We stop descending past [`MAX_WALK_DEPTH`] to prevent
+/// symlink-loop hangs and runaway recursion on pathological layouts.
+fn walk_files_bounded(
+    root_dir: &Path,
+    current_dir: &Path,
+    out: &mut Vec<String>,
+    depth: usize,
+) -> Result<()> {
+    if depth >= MAX_WALK_DEPTH {
+        eprintln!(
+            "[context-pack] WARN: walk depth limit ({}) reached at {} — skipping deeper entries",
+            MAX_WALK_DEPTH,
+            current_dir.display()
+        );
+        return Ok(());
+    }
     for entry in fs::read_dir(current_dir)
         .with_context(|| format!("Failed to read {}", current_dir.display()))?
     {
@@ -1713,8 +1958,18 @@ fn walk_files(root_dir: &Path, current_dir: &Path, out: &mut Vec<String>) -> Res
         if entry.file_name() == ".git" {
             continue;
         }
+        // F20 — do NOT descend into symlinked directories; they can loop.
+        // Pack snapshotting still follows symlinks in `copy_dir_recursive`
+        // via fs::copy (which dereferences) so any in-repo symlink still
+        // copies correctly, but walking is bounded here.
+        let is_symlink = fs::symlink_metadata(&entry_path)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false);
+        if is_symlink {
+            continue;
+        }
         if entry_path.is_dir() {
-            walk_files(root_dir, &entry_path, out)?;
+            walk_files_bounded(root_dir, &entry_path, out, depth + 1)?;
         } else if entry_path.is_file() {
             out.push(rel_path(&entry_path, root_dir).replace('\\', "/"));
         }
@@ -1950,6 +2205,14 @@ fn validate_structured_layer(repo_root: &Path, current_dir: &Path) -> Result<()>
                     {
                         for dir in dirs {
                             if let Some(dir_str) = dir.as_str() {
+                                // P8/F22 — reject path-traversal / absolute
+                                // patterns before doing any filesystem lookup.
+                                validate_pack_glob(dir_str, repo_root).map_err(|e| {
+                                    anyhow!(
+                                        "[context-pack] seal failed: search_scope.json ({}) {}",
+                                        task, e
+                                    )
+                                })?;
                                 let dir_path = repo_root.join(dir_str);
                                 if !dir_path.exists() {
                                     return Err(anyhow!(
@@ -1965,8 +2228,16 @@ fn validate_structured_layer(repo_root: &Path, current_dir: &Path) -> Result<()>
                         entry.get("verification_shortcuts").and_then(|v| v.as_object())
                     {
                         for (file_path, _) in shortcuts {
-                            let file_on_disk =
-                                repo_root.join(file_path.split(':').next().unwrap_or(file_path));
+                            // P8/F22 — reject path-traversal / absolute
+                            // shortcut keys before touching disk.
+                            let shortcut_path = file_path.split(':').next().unwrap_or(file_path);
+                            validate_pack_glob(shortcut_path, repo_root).map_err(|e| {
+                                anyhow!(
+                                    "[context-pack] seal failed: search_scope.json ({}) verification_shortcuts {}",
+                                    task, e
+                                )
+                            })?;
+                            let file_on_disk = repo_root.join(shortcut_path);
                             if !file_on_disk.exists() {
                                 return Err(anyhow!(
                                     "[context-pack] seal failed: search_scope.json verification_shortcuts references missing file {}",
@@ -2697,6 +2968,200 @@ mod tests {
             !dir.join("00_START_HERE.md").exists(),
             "should not create the file"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P8 hostile-input & platform safety tests (F19–F23) -----------------
+
+    #[test]
+    fn pack_read_accepts_valid_utf8() {
+        let dir = test_dir("pack_read_utf8");
+        let file = dir.join("ok.md");
+        fs::write(&file, "# Hello — world\n").unwrap();
+
+        let result = read_file_for_pack(&file, &dir, false);
+        assert!(result.is_ok(), "valid utf-8 should read cleanly: {:?}", result);
+        let content = result.unwrap();
+        assert!(content.contains("Hello"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pack_read_rejects_nul_bytes_as_binary() {
+        let dir = test_dir("pack_read_nul");
+        let file = dir.join("blob.bin");
+        // Embed a NUL inside the first 8KB so the sniffer catches it.
+        let mut bytes = b"header".to_vec();
+        bytes.push(0u8);
+        bytes.extend_from_slice(b"payload");
+        fs::write(&file, &bytes).unwrap();
+
+        let err = read_file_for_pack(&file, &dir, false).expect_err("nul should fail");
+        match err {
+            PackReadError::LikelyBinary(_) => {}
+            other => panic!("expected LikelyBinary, got {:?}", other),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pack_read_decodes_invalid_utf8_lossily_without_panic() {
+        let dir = test_dir("pack_read_lossy");
+        let file = dir.join("invalid.md");
+        // Not a NUL, but an invalid UTF-8 sequence (lone 0xFF).
+        fs::write(&file, [b'a', 0xFF, b'b']).unwrap();
+
+        let result = read_file_for_pack(&file, &dir, false)
+            .expect("lossy decode should not fail on invalid utf-8");
+        assert!(result.contains('a') && result.contains('b'));
+        // U+FFFD is the replacement character inserted by from_utf8_lossy.
+        assert!(result.contains('\u{FFFD}'));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pack_read_rejects_files_larger_than_limit() {
+        let dir = test_dir("pack_read_too_large");
+        let file = dir.join("big.log");
+        // Write just over the limit. We keep this test fast by writing a
+        // single buffer — MAX_PACK_FILE_BYTES is 5MB.
+        let buf = vec![b'x'; (MAX_PACK_FILE_BYTES as usize) + 1];
+        fs::write(&file, &buf).unwrap();
+
+        let err = read_file_for_pack(&file, &dir, false).expect_err("oversized should fail");
+        match err {
+            PackReadError::TooLarge(_, n) => assert!(n > MAX_PACK_FILE_BYTES),
+            other => panic!("expected TooLarge, got {:?}", other),
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pack_read_rejects_symlink_escaping_repo_root() {
+        use std::os::unix::fs::symlink;
+
+        let dir = test_dir("pack_read_symlink_escape");
+        let outside = test_dir("pack_read_symlink_target");
+        let target = outside.join("secret.md");
+        fs::write(&target, "escaped!").unwrap();
+
+        let link = dir.join("link.md");
+        symlink(&target, &link).unwrap();
+
+        // follow_symlinks = false: escape should be refused.
+        let err = read_file_for_pack(&link, &dir, false)
+            .expect_err("symlink escape should fail with follow_symlinks=false");
+        match err {
+            PackReadError::SymlinkEscape(_, _) => {}
+            other => panic!("expected SymlinkEscape, got {:?}", other),
+        }
+
+        // follow_symlinks = true: should succeed (opt-in override).
+        let ok = read_file_for_pack(&link, &dir, true)
+            .expect("symlink should dereference with follow_symlinks=true");
+        assert!(ok.contains("escaped!"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn collect_files_meta_skips_hostile_files_without_panic() {
+        let dir = test_dir("collect_meta_hostile");
+        // One valid file
+        fs::write(dir.join("good.md"), "hello").unwrap();
+        // One binary file (should be skipped with warning)
+        fs::write(dir.join("bad.bin"), [b'a', 0u8, b'b']).unwrap();
+
+        let relatives = vec!["good.md".to_string(), "bad.bin".to_string()];
+        let meta = collect_files_meta(&dir, &dir, &relatives, false).expect("no panic");
+        assert_eq!(meta.len(), 1, "binary file should be skipped");
+        assert_eq!(meta[0].path, "good.md");
+        assert_eq!(meta[0].path_lower, "good.md");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_includes_path_lower_for_case_insensitive_collision_detection() {
+        let files = vec![
+            FileMeta {
+                path: "Readme.md".into(),
+                path_lower: "readme.md".into(),
+                sha256: "a".into(),
+                bytes: 1,
+                words: 1,
+            },
+            FileMeta {
+                path: "README.md".into(),
+                path_lower: "readme.md".into(),
+                sha256: "b".into(),
+                bytes: 1,
+                words: 1,
+            },
+        ];
+        let bundle = build_manifest(
+            "2026-04-17T00:00:00Z",
+            &std::path::PathBuf::from("/repo"),
+            "repo",
+            "main",
+            Some("abc"),
+            "test",
+            None,
+            &[],
+            &files,
+        );
+        let arr = bundle
+            .value
+            .get("files")
+            .and_then(|v| v.as_array())
+            .expect("files array");
+        assert_eq!(arr.len(), 2);
+        for entry in arr {
+            assert_eq!(entry.get("path_lower").and_then(|v| v.as_str()), Some("readme.md"));
+        }
+    }
+
+    #[test]
+    fn validate_pack_glob_rejects_absolute_and_traversal() {
+        let root = std::path::PathBuf::from("/repo");
+        // Absolute — Unix.
+        assert!(validate_pack_glob("/etc/passwd", &root).is_err());
+        // Absolute — Windows drive letter.
+        assert!(validate_pack_glob("C:\\Windows\\System32", &root).is_err());
+        // Path traversal with ..
+        assert!(validate_pack_glob("../../etc/passwd", &root).is_err());
+        assert!(validate_pack_glob("src/../../outside/**", &root).is_err());
+        // Empty is rejected.
+        assert!(validate_pack_glob("", &root).is_err());
+
+        // Valid patterns pass.
+        assert!(validate_pack_glob("src/**/*.rs", &root).is_ok());
+        assert!(validate_pack_glob("docs/README.md", &root).is_ok());
+        assert!(validate_pack_glob("a/b/c", &root).is_ok());
+    }
+
+    #[test]
+    fn walk_files_bounded_respects_depth_limit() {
+        let dir = test_dir("walk_depth");
+        // Build a nested chain deeper than MAX_WALK_DEPTH.
+        let mut p = dir.clone();
+        for i in 0..(MAX_WALK_DEPTH + 3) {
+            p = p.join(format!("d{}", i));
+            fs::create_dir_all(&p).unwrap();
+            fs::write(p.join("f.md"), "x").unwrap();
+        }
+
+        let mut out = Vec::new();
+        walk_files(&dir, &dir, &mut out).expect("walk should not panic or hang");
+        // We expect some files (up to MAX_WALK_DEPTH) but not all.
+        assert!(out.len() <= MAX_WALK_DEPTH);
 
         let _ = fs::remove_dir_all(&dir);
     }
