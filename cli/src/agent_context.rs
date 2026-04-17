@@ -8122,4 +8122,1096 @@ After cleanup there are 32 tests today.\n\
         assert_eq!(affected.len(), 1);
         assert_eq!(affected[0].as_str(), Some("routes.json"));
     }
+
+    // --- P4 tests (restored post-integration) ---
+
+
+    #[test]
+    fn p4_install_settings_template_is_idempotent() {
+        let dir = test_dir("p4_install_idempotent");
+        install_settings_template(dir.to_str().unwrap(), false).unwrap();
+        let first = fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
+
+        install_settings_template(dir.to_str().unwrap(), false).unwrap();
+        let second = fs::read_to_string(dir.join(".claude/settings.json")).unwrap();
+        assert_eq!(
+            first, second,
+            "running install-settings-template twice must produce identical bytes"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_acceptance_tests_graceful_degrade_when_p2_absent() {
+        // No signature_drift.json on disk → every test stays `ready`
+        // regardless of its invalidated_by entries. This is the graceful
+        // degradation contract documented inline on evaluate_acceptance_tests.
+        let dir = test_dir("p4_acceptance_no_p2");
+        let current = dir.join(".agent-context/current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "### test: t1\n- invalidated_by: fn_a, fn_b\n",
+        )
+        .unwrap();
+
+        let drifted = collect_signature_drift(&current);
+        assert!(
+            drifted.is_empty(),
+            "absence of signature_drift.json must yield an empty set, got {drifted:?}"
+        );
+
+        let tests = evaluate_acceptance_tests(&current, &drifted);
+        assert_eq!(tests.len(), 1);
+        assert_eq!(
+            tests[0]["status"].as_str(),
+            Some("ready"),
+            "without P2 drift signal, tests stay ready even when invalidated_by is populated"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_install_settings_template_creates_new_file() {
+        let dir = test_dir("p4_install_new");
+        install_settings_template(dir.to_str().unwrap(), false)
+            .expect("install must succeed when no settings.json exists");
+
+        let path = dir.join(".claude/settings.json");
+        assert!(path.exists(), "settings.json must be created");
+        let raw = fs::read_to_string(&path).unwrap();
+        let parsed: Value = serde_json::from_str(&raw).expect("must be valid JSON");
+        let pre_tool_use = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .expect("hooks.PreToolUse must be present");
+        assert!(
+            pre_tool_use.len() >= 2,
+            "shipped template should install both Edit|Write and Bash matchers, got {} entries",
+            pre_tool_use.len()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_install_settings_template_preserves_existing_keys() {
+        let dir = test_dir("p4_install_merge");
+        let claude_dir = dir.join(".claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        let existing = json!({
+            "permissions": {"allow": ["Bash(ls:*)"]},
+            "env": {"DEBUG": "false"},
+            "hooks": {
+                "PostToolUse": [
+                    {"matcher": "Edit", "hooks": [{"type": "command", "command": "echo hi"}]}
+                ]
+            }
+        });
+        fs::write(
+            claude_dir.join("settings.json"),
+            format!("{}\n", serde_json::to_string_pretty(&existing).unwrap()),
+        )
+        .unwrap();
+
+        install_settings_template(dir.to_str().unwrap(), false)
+            .expect("merge must succeed when settings.json exists");
+
+        let raw = fs::read_to_string(claude_dir.join("settings.json")).unwrap();
+        let parsed: Value = serde_json::from_str(&raw).unwrap();
+
+        // Existing non-hooks keys preserved verbatim.
+        assert_eq!(
+            parsed
+                .get("permissions")
+                .and_then(|p| p.get("allow"))
+                .and_then(|a| a.as_array())
+                .map(|a| a.len()),
+            Some(1),
+            "permissions.allow must be preserved, got {parsed}"
+        );
+        assert_eq!(
+            parsed.get("env").and_then(|e| e.get("DEBUG")).and_then(|v| v.as_str()),
+            Some("false"),
+            "env.DEBUG must be preserved"
+        );
+        // Existing hooks.PostToolUse stays intact.
+        assert!(
+            parsed
+                .get("hooks")
+                .and_then(|h| h.get("PostToolUse"))
+                .and_then(|v| v.as_array())
+                .map(|a| !a.is_empty())
+                .unwrap_or(false),
+            "existing hooks.PostToolUse must survive the merge"
+        );
+        // PreToolUse entries added by the template are now present.
+        let pre = parsed
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .expect("hooks.PreToolUse must be inserted");
+        assert!(
+            pre.iter().any(|e| e.get("matcher").and_then(|v| v.as_str()) == Some("Edit|Write")),
+            "Edit|Write matcher must be present after merge, got {pre:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_merge_settings_template_dedupes_existing_command() {
+        // A user who already added the chorus PreToolUse hook (e.g. by hand)
+        // should see no duplicate on subsequent install.
+        let template: Value = serde_json::from_str(SETTINGS_TEMPLATE_JSON).unwrap();
+        let existing = template.clone();
+        let merged = merge_settings_template(&existing, &template);
+        let pre = merged
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .expect("PreToolUse must be present");
+        let template_pre_len = template
+            .get("hooks")
+            .and_then(|h| h.get("PreToolUse"))
+            .and_then(|v| v.as_array())
+            .map(|a| a.len())
+            .unwrap();
+        assert_eq!(
+            pre.len(),
+            template_pre_len,
+            "merging the template with itself must not double entries"
+        );
+    }
+
+    #[test]
+    fn p4_acceptance_tests_missing_file_returns_empty() {
+        let dir = test_dir("p4_acceptance_missing");
+        let current = dir.join(".agent-context/current");
+        fs::create_dir_all(&current).unwrap();
+        let drifted = std::collections::BTreeSet::new();
+        let tests = evaluate_acceptance_tests(&current, &drifted);
+        assert!(tests.is_empty(), "missing file → empty list");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p4_acceptance_tests_needs_revalidation_on_drift() {
+        // acceptance_tests.md declares two tests; one lists `compute_lift`
+        // in its invalidated_by field. When signature_drift.json names
+        // `compute_lift`, the corresponding test must flip to
+        // `needs_revalidation`; the other test must stay `ready`.
+        let dir = test_dir("p4_acceptance_drift");
+        let current = dir.join(".agent-context/current");
+        fs::create_dir_all(&current).unwrap();
+
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "# Acceptance Tests\n\n\
+             ### test: verify_lift_calculation\n\
+             - invalidated_by: compute_lift, format_result\n\n\
+             ### test: verify_summary_shape\n\
+             - invalidated_by: render_summary\n",
+        )
+        .unwrap();
+
+        // P2 drift signal — only compute_lift drifted.
+        fs::write(
+            current.join("signature_drift.json"),
+            r#"{"drifted_functions": ["compute_lift"]}"#,
+        )
+        .unwrap();
+
+        let drifted = collect_signature_drift(&current);
+        assert!(drifted.contains("compute_lift"));
+
+        let tests = evaluate_acceptance_tests(&current, &drifted);
+        assert_eq!(tests.len(), 2, "both tests must be surfaced, got {tests:?}");
+
+        let lift = tests
+            .iter()
+            .find(|t| t["id"] == "verify_lift_calculation")
+            .expect("lift test must be present");
+        assert_eq!(
+            lift["status"].as_str(),
+            Some("needs_revalidation"),
+            "drift in compute_lift must flip verify_lift_calculation to needs_revalidation"
+        );
+        let matched: Vec<&str> = lift["invalidated_by_matched"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert_eq!(matched, vec!["compute_lift"]);
+
+        let summary = tests
+            .iter()
+            .find(|t| t["id"] == "verify_summary_shape")
+            .expect("summary test must be present");
+        assert_eq!(
+            summary["status"].as_str(),
+            Some("ready"),
+            "no overlap with drifted set → stays ready"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P6 tests (restored post-integration) ---
+
+
+    /// A PR range with only pure-code and only pure-pack commits passes the
+    /// separate-commit gate. A commit that mixes the two is reported with the
+    /// `commit <sha> mixes pack + non-pack changes` message.
+    #[test]
+    fn p6_check_separate_commits_reports_mixed_commit() {
+        let repo = init_repo_with_commits("p6_separate_commits_mixed");
+        // Capture the pre-range tip — we'll diff against it as `base`.
+        let base = run_git(&["rev-parse", "HEAD"], &repo, true)
+            .expect("base sha")
+            .trim()
+            .to_string();
+
+        // Pure-code commit (passes).
+        commit_file(&repo, "src/pure_code.rs", "fn a() {}\n");
+
+        // Pure-pack commit (passes).
+        fs::create_dir_all(repo.join(".agent-context/current")).unwrap();
+        commit_file(
+            &repo,
+            ".agent-context/current/20_CODE_MAP.md",
+            "# pack content\n",
+        );
+
+        // Mixed commit: touches both a pack file and a non-pack file in a
+        // single commit. This is the case the gate must flag.
+        fs::write(repo.join("src/pure_code.rs"), "fn a() -> i32 { 0 }\n").unwrap();
+        fs::write(
+            repo.join(".agent-context/current/20_CODE_MAP.md"),
+            "# pack content v2\n",
+        )
+        .unwrap();
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .expect("git")
+        };
+        run(&["add", "-A"]);
+        run(&["commit", "-q", "-m", "mix: pack and code in one commit"]);
+        let mixed_sha = run_git(&["rev-parse", "HEAD"], &repo, true)
+            .expect("mixed sha")
+            .trim()
+            .to_string();
+
+        let errors = check_separate_commits(&base, &repo).expect("separate-commit check runs");
+        assert_eq!(errors.len(), 1, "only one commit should fail the gate: {errors:?}");
+        let msg = &errors[0];
+        assert!(
+            msg.contains(&mixed_sha),
+            "error message must name the offending sha ({mixed_sha}), got {msg:?}"
+        );
+        assert!(
+            msg.contains("mixes pack + non-pack changes"),
+            "error message must use the documented phrase, got {msg:?}"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    /// `write_last_freshness_state` creates the state file with the three
+    /// documented keys when the pack directory exists, and silently
+    /// no-ops when it does not. Covers the "warn → state file" path.
+    #[test]
+    fn p6_write_last_freshness_state_emits_payload() {
+        let dir = test_dir("p6_write_state");
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).expect("create pack dir");
+
+        let result = FreshnessResult {
+            status: "warn".to_string(),
+            changed_files: vec!["src/foo.rs".to_string(), "src/bar.rs".to_string()],
+            pack_updated: false,
+            skipped_reason: None,
+            affected_sections: vec![
+                "20_CODE_MAP.md".to_string(),
+                "30_BEHAVIORAL_INVARIANTS.md".to_string(),
+            ],
+        };
+        write_last_freshness_state(&dir, &result);
+
+        let state_path = current.join(".last_freshness.json");
+        assert!(state_path.exists(), "state file must be created");
+        let body = fs::read_to_string(&state_path).expect("read state file");
+        let parsed: Value = serde_json::from_str(&body).expect("state file must be valid json");
+        let changed = parsed
+            .get("changed_files")
+            .and_then(|v| v.as_array())
+            .expect("changed_files array");
+        assert_eq!(changed.len(), 2);
+        let sections = parsed
+            .get("affected_sections")
+            .and_then(|v| v.as_array())
+            .expect("affected_sections array");
+        assert_eq!(sections.len(), 2);
+        assert!(
+            parsed.get("timestamp").and_then(|v| v.as_u64()).is_some(),
+            "timestamp must be a number"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The generated pre-push hook must include the P6 pack-only skip
+    /// shortcut so users who inspect the hook can see the behavior. We
+    /// pin on the sentinel strings the hook's callers expect rather than
+    /// the whole body, so surrounding hook content can evolve.
+    #[test]
+    fn p6_hook_section_contains_pack_only_skip_logic() {
+        let hook = build_pre_push_hook_section();
+        assert!(
+            hook.contains("pack_only_skip"),
+            "hook must define pack_only_skip helper, got:\n{hook}"
+        );
+        assert!(
+            hook.contains("pack-only push, skipping freshness check"),
+            "hook must announce the skip when triggered, got:\n{hook}"
+        );
+        assert!(
+            hook.contains(".agent-context/current/.last_freshness.json"),
+            "hook must read the last-freshness state file, got:\n{hook}"
+        );
+        assert!(
+            hook.contains("warning appears addressed"),
+            "hook must report when prior warning is addressed, got:\n{hook}"
+        );
+    }
+
+    /// `check_separate_commits` is a no-op when the directory is not a git
+    /// repo. The surrounding verify flow already reports that case, so this
+    /// check simply must not error out.
+    #[test]
+    fn p6_check_separate_commits_non_git_is_empty() {
+        let dir = test_dir("p6_separate_commits_non_git");
+        let errors = check_separate_commits("origin/main", &dir)
+            .expect("must not fail on non-git directory");
+        assert!(
+            errors.is_empty(),
+            "non-git directory must return empty error list, got {errors:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Non-warn results must not overwrite an existing state file; only a
+    /// warn is authoritative. The public API reflects this by guarding the
+    /// write behind `result.status == "warn"`.
+    #[test]
+    fn p6_write_last_freshness_state_skips_non_warn() {
+        let dir = test_dir("p6_write_state_noop");
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).expect("create pack dir");
+
+        let result = FreshnessResult {
+            status: "pass".to_string(),
+            changed_files: vec![],
+            pack_updated: false,
+            skipped_reason: None,
+            affected_sections: vec![],
+        };
+        write_last_freshness_state(&dir, &result);
+
+        let state_path = current.join(".last_freshness.json");
+        assert!(
+            !state_path.exists(),
+            "non-warn result must not write the state file"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// When the pack directory does not exist yet, `write_last_freshness_state`
+    /// must silently no-op rather than panic. This guards the pre-init case
+    /// where a freshness helper fires before the pack has been scaffolded.
+    #[test]
+    fn p6_write_last_freshness_state_no_pack_dir_is_noop() {
+        let dir = test_dir("p6_write_state_no_pack");
+        let result = FreshnessResult {
+            status: "warn".to_string(),
+            changed_files: vec!["src/foo.rs".to_string()],
+            pack_updated: false,
+            skipped_reason: None,
+            affected_sections: vec!["20_CODE_MAP.md".to_string()],
+        };
+        // Should not panic.
+        write_last_freshness_state(&dir, &result);
+        assert!(
+            !dir.join(".agent-context/current/.last_freshness.json").exists(),
+            "state file must not be written when pack dir is absent"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A range where no commit mixes pack + non-pack returns an empty error
+    /// list so the CI gate stays silent.
+    #[test]
+    fn p6_check_separate_commits_clean_range_passes() {
+        let repo = init_repo_with_commits("p6_separate_commits_clean");
+        let base = run_git(&["rev-parse", "HEAD"], &repo, true)
+            .expect("base sha")
+            .trim()
+            .to_string();
+
+        // Alternating but separate commits — each is either pure code or
+        // pure pack, so the gate must not flag them.
+        commit_file(&repo, "src/code_a.rs", "fn a() {}\n");
+        fs::create_dir_all(repo.join(".agent-context/current")).unwrap();
+        commit_file(
+            &repo,
+            ".agent-context/current/20_CODE_MAP.md",
+            "# pack content\n",
+        );
+        commit_file(&repo, "src/code_b.rs", "fn b() {}\n");
+
+        let errors = check_separate_commits(&base, &repo).expect("separate-commit check runs");
+        assert!(
+            errors.is_empty(),
+            "clean range must produce no errors, got {errors:?}"
+        );
+
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    // --- P5 tests (restored post-integration) ---
+
+
+    #[test]
+    fn extract_numeric_claims_flags_stale_prose() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("files".to_string(), 7usize);
+        let content = "We have 6 files in the repo.";
+        let mismatches = extract_numeric_claims(content, &authoritative, "10_SYSTEM_OVERVIEW.md");
+        assert_eq!(mismatches.len(), 1, "expected one mismatch, got {mismatches:?}");
+        let m = &mismatches[0];
+        assert_eq!(m.claimed_count, 6);
+        assert_eq!(m.authoritative_count, 7);
+        assert_eq!(m.noun, "files");
+        assert_eq!(m.line, 1);
+    }
+
+    #[test]
+    fn slug_for_count_key_normalizes_globs() {
+        assert_eq!(slug_for_count_key("scripts/run_*.py"), "scripts_run_py");
+        assert_eq!(
+            slug_for_count_key("src/brand_lift/*.py"),
+            "src_brand_lift_py"
+        );
+        assert_eq!(slug_for_count_key("tests/**/*.py"), "tests_py");
+        assert_eq!(slug_for_count_key("docs/methodology"), "docs_methodology");
+    }
+
+    #[test]
+    fn extract_numeric_claims_respects_ignore_region() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("files".to_string(), 7usize);
+        let content = "\
+<!-- count-claim: ignore -->\n\
+Historic note: we once shipped 6 files.\n\
+<!-- count-claim: end -->\n\
+Current count is {{counts.files_py}}.\n";
+        let mismatches = extract_numeric_claims(content, &authoritative, "doc.md");
+        assert!(
+            mismatches.is_empty(),
+            "claim inside ignore region must not be flagged, got {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn extract_numeric_claims_passes_matching_prose() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("tests".to_string(), 32usize);
+        let content = "Currently 32 tests pass.";
+        let mismatches = extract_numeric_claims(content, &authoritative, "doc.md");
+        assert!(
+            mismatches.is_empty(),
+            "prose that matches authoritative must not be flagged, got {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn seal_fails_on_stale_prose_number_without_force() {
+        let dir = test_dir("p5_seal_stale");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        // Required files (P1 schema — 5 markdown).
+        fs::write(
+            current.join("00_START_HERE.md"),
+            "- Branch at generation: `main`\n- HEAD commit: `unknown`\n- Generated at: `never`\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("10_SYSTEM_OVERVIEW.md"),
+            "The repo ships 6 scripts today.\n",
+        )
+        .unwrap();
+        fs::write(current.join("20_CODE_MAP.md"), "map\n").unwrap();
+        fs::write(current.join("30_BEHAVIORAL_INVARIANTS.md"), "rules\n").unwrap();
+        fs::write(current.join("40_OPERATIONS_AND_RELEASE.md"), "ops\n").unwrap();
+        // Completeness contract declares the scripts/run_*.py family so P1
+        // family_counts resolves to 12 at seal time.
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        // Seed a commit so HEAD resolves.
+        let _ = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        let err = seal(SealOptions {
+            reason: None,
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.to_string_lossy().to_string()),
+            force: false,
+            force_snapshot: false,
+            follow_symlinks: false,
+        })
+        .expect_err("seal must fail when prose count disagrees with authoritative");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("disagree")
+                || msg.contains("claim")
+                || msg.contains("numeric claims"),
+            "expected a count-claim failure message, got: {msg}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn expand_count_handlebars_substitutes_known_slugs() {
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("scripts_run".to_string(), 12usize);
+        counts.insert("src_brand_lift".to_string(), 6usize);
+        let content = "The repo has {{counts.scripts_run}} scripts and {{counts.src_brand_lift}} brand-lift modules.";
+        let expanded = expand_count_handlebars(content, &counts);
+        assert_eq!(
+            expanded,
+            "The repo has 12 scripts and 6 brand-lift modules.",
+            "handlebars must expand to authoritative values"
+        );
+    }
+
+    #[test]
+    fn expand_count_handlebars_leaves_unknown_slugs_literal() {
+        let counts = std::collections::HashMap::new();
+        let content = "No mapping for {{counts.bogus_slug}} here.";
+        let expanded = expand_count_handlebars(content, &counts);
+        assert_eq!(
+            expanded,
+            "No mapping for {{counts.bogus_slug}} here.",
+            "unknown slugs must remain literal to surface author mistakes"
+        );
+    }
+
+    #[test]
+    fn seal_force_downgrades_stale_prose_to_warning() {
+        let dir = test_dir("p5_seal_force");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(
+            current.join("00_START_HERE.md"),
+            "- Branch at generation: `main`\n- HEAD commit: `unknown`\n- Generated at: `never`\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("10_SYSTEM_OVERVIEW.md"),
+            "Legacy prose: 6 scripts ship today.\n",
+        )
+        .unwrap();
+        fs::write(current.join("20_CODE_MAP.md"), "map\n").unwrap();
+        fs::write(current.join("30_BEHAVIORAL_INVARIANTS.md"), "rules\n").unwrap();
+        fs::write(current.join("40_OPERATIONS_AND_RELEASE.md"), "ops\n").unwrap();
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let _ = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        // --force must succeed (mismatches downgraded to warnings).
+        seal(SealOptions {
+            reason: None,
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.to_string_lossy().to_string()),
+            force: true,
+            force_snapshot: false,
+            follow_symlinks: false,
+        })
+        .expect("seal must succeed under --force even with stale prose");
+
+        // Manifest should now exist with family_counts populated.
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(current.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest
+                .get("family_counts")
+                .and_then(|v| v.get("scripts/run_*.py"))
+                .and_then(|v| v.as_u64()),
+            Some(12),
+            "family_counts must be sealed correctly even under --force"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn derive_count_maps_splits_by_slug_and_noun() {
+        let mut family = std::collections::BTreeMap::new();
+        family.insert("scripts/run_*.py".to_string(), 12usize);
+        family.insert("src/brand_lift/*.py".to_string(), 6usize);
+        let (slugs, nouns) = derive_count_maps(&family);
+        assert_eq!(slugs.get("scripts_run_py").copied(), Some(12));
+        assert_eq!(slugs.get("src_brand_lift_py").copied(), Some(6));
+        // "scripts" noun sums every slug whose tokens include "scripts"
+        // — only scripts/run_*.py does, so authoritative is 12.
+        assert_eq!(nouns.get("scripts").copied(), Some(12));
+        // "brands" noun would match only `brand` / `brands` slug tokens; the
+        // brand_lift slug contains "brand" so it's included via singular.
+        assert_eq!(nouns.get("brand").copied(), Some(6));
+    }
+
+    #[test]
+    fn seal_expands_handlebars_into_sealed_pack() {
+        let dir = test_dir("p5_seal_expand");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(
+            current.join("00_START_HERE.md"),
+            "- Branch at generation: `main`\n- HEAD commit: `unknown`\n- Generated at: `never`\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("10_SYSTEM_OVERVIEW.md"),
+            "We ship {{counts.scripts_run_py}} scripts.\n",
+        )
+        .unwrap();
+        fs::write(current.join("20_CODE_MAP.md"), "map\n").unwrap();
+        fs::write(current.join("30_BEHAVIORAL_INVARIANTS.md"), "rules\n").unwrap();
+        fs::write(current.join("40_OPERATIONS_AND_RELEASE.md"), "ops\n").unwrap();
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let _ = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        seal(SealOptions {
+            reason: None,
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.to_string_lossy().to_string()),
+            force: false,
+            force_snapshot: false,
+            follow_symlinks: false,
+        })
+        .expect("seal with expanded handlebars must succeed");
+
+        let expanded_body =
+            fs::read_to_string(current.join("10_SYSTEM_OVERVIEW.md")).unwrap();
+        assert!(
+            expanded_body.contains("We ship 12 scripts."),
+            "handlebar must be expanded in the sealed file body, got: {expanded_body:?}"
+        );
+        assert!(
+            !expanded_body.contains("{{counts."),
+            "no handlebar should survive seal, got: {expanded_body:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+
+    #[test]
+    fn extract_numeric_claims_skips_expanded_counts_matches() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("scripts".to_string(), 12usize);
+        let mut slug_counts = std::collections::HashMap::new();
+        slug_counts.insert("scripts_run".to_string(), 12usize);
+        // Author wrote the handlebar; after expansion the number is the
+        // authoritative 12, which must not be flagged as a mismatch.
+        let authored = "We ship {{counts.scripts_run}} scripts.";
+        let expanded = expand_count_handlebars(authored, &slug_counts);
+        assert_eq!(expanded, "We ship 12 scripts.");
+        let mismatches = extract_numeric_claims(&expanded, &authoritative, "doc.md");
+        assert!(
+            mismatches.is_empty(),
+            "expanded handlebar value must match authoritative without being flagged, got {mismatches:?}"
+        );
+    }
+
+    // --- P7 tests (restored post-integration) ---
+
+    fn commit_and_sha(root: &Path, rel: &str, content: &str) -> String {
+        commit_file(root, rel, content);
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn seed_manifest(root: &Path, head_sha_at_seal: &str) {
+        let current = root.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let manifest = json!({
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "head_sha": head_sha_at_seal,
+            "head_sha_at_seal": head_sha_at_seal,
+            "post_commit_sha": null,
+            "files": [],
+        });
+        fs::write(
+            current.join("manifest.json"),
+            format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
+        )
+        .unwrap();
+    }
+
+
+
+    #[test]
+    fn diff_since_seal_returns_empty_zones_when_no_changes() {
+        let dir = test_dir("p7_no_changes");
+        init_git(&dir);
+        // Commit an initial seed + a second commit so HEAD~1 resolves; the
+        // seal baseline points at the LATEST commit so the diff is empty.
+        commit_file(&dir, "seed.txt", "one");
+        commit_file(&dir, "second.txt", "two");
+        write_relevance_json(
+            &dir,
+            r#"{"zones":[{"paths":["src/**"],"affects":["20_CODE_MAP.md"]}]}"#,
+        );
+        // A `src/` file must exist so zone validation can pass when loaded
+        // elsewhere; diff_since_seal itself doesn't validate zones here.
+        commit_file(&dir, "src/lib.rs", "fn a() {}\n");
+        // Re-seal baseline to THIS commit so there's nothing newer to diff.
+        let latest = run_git(&["rev-parse", "HEAD"], &dir, true).unwrap();
+        seed_manifest(&dir, &latest);
+
+        let out = diff_since_seal(&dir, None).expect("diff_since_seal must succeed");
+        let zones = out
+            .value
+            .get("zones")
+            .and_then(|v| v.as_array())
+            .expect("zones array");
+        assert!(zones.is_empty(), "no changes must yield empty zones, got {zones:?}");
+        assert!(
+            out.acceptance_tests_invalidated.is_empty(),
+            "no drifts -> empty acceptance_tests_invalidated"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_acceptance_invalidated_by_reads_list_markers() {
+        let dir = test_dir("p7_parse_invalidated");
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let body = "\
+# Acceptance tests\n\
+\n\
+## Q1: lookup the release flow\n\
+- invalidated_by: publish_release\n\
+\n\
+## Q2: rename impact\n\
+  invalidated_by: compute_lift_with_ci, resolve_sample\n\
+\n\
+## Q3: unrelated\n\
+(no invalidated_by marker)\n\
+";
+        fs::write(current.join("acceptance_tests.md"), body).unwrap();
+
+        let entries = parse_acceptance_invalidated_by(&current);
+        assert_eq!(entries.len(), 2, "expected 2 bindings, got {entries:?}");
+        let q1 = &entries[0];
+        assert_eq!(
+            q1.get("test_id").and_then(|v| v.as_str()),
+            Some("Q1: lookup the release flow")
+        );
+        let q1_fns: Vec<String> = q1
+            .get("invalidated_by")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert_eq!(q1_fns, vec!["publish_release"]);
+        let q2 = &entries[1];
+        let q2_fns: Vec<String> = q2
+            .get("invalidated_by")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert_eq!(q2_fns, vec!["compute_lift_with_ci", "resolve_sample"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn diff_since_seal_groups_changes_by_zone() {
+        let dir = test_dir("p7_zone_grouping");
+        init_git(&dir);
+        // Seed commit so HEAD~1 is available and baseline has a predecessor.
+        commit_file(&dir, "seed.txt", "seed");
+        // Seed a file in the src/ zone so the zone map validates downstream.
+        let baseline_sha = commit_and_sha(&dir, "src/existing.rs", "fn a() {}\n");
+
+        write_relevance_json(
+            &dir,
+            r#"{"zones":[
+              {"paths":["src/**"],"affects":["20_CODE_MAP.md"]},
+              {"paths":["docs/**"],"affects":["10_SYSTEM_OVERVIEW.md"]}
+            ]}"#,
+        );
+        seed_manifest(&dir, &baseline_sha);
+
+        // Add a src file and a docs file AFTER seal.
+        commit_file(&dir, "src/new_module.rs", "fn b() {}\n");
+        commit_file(&dir, "docs/intro.md", "# Intro\n");
+
+        let out = diff_since_seal(&dir, None).expect("diff_since_seal must succeed");
+        let zones = out
+            .value
+            .get("zones")
+            .and_then(|v| v.as_array())
+            .expect("zones array");
+        assert_eq!(zones.len(), 2, "expected 2 populated zones, got {zones:?}");
+
+        // Check each zone carries its own changed_files + affects.
+        let find_zone = |affect: &str| -> &Value {
+            zones
+                .iter()
+                .find(|z| {
+                    z.get("affects")
+                        .and_then(|v| v.as_array())
+                        .map(|a| a.iter().any(|s| s.as_str() == Some(affect)))
+                        .unwrap_or(false)
+                })
+                .expect("zone present")
+        };
+        let src_zone = find_zone("20_CODE_MAP.md");
+        let src_changed: Vec<String> = src_zone
+            .get("changed_files")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert!(
+            src_changed.iter().any(|f| f == "src/new_module.rs"),
+            "src zone must include src/new_module.rs, got {src_changed:?}"
+        );
+        let docs_zone = find_zone("10_SYSTEM_OVERVIEW.md");
+        let docs_changed: Vec<String> = docs_zone
+            .get("changed_files")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert_eq!(docs_changed, vec!["docs/intro.md"]);
+
+        // P2 degradation: empty drift/count/delete arrays present and typed.
+        for zone in zones {
+            for field in ["signature_drifts", "count_deltas", "deleted_files"] {
+                assert!(
+                    zone.get(field).and_then(|v| v.as_array()).is_some(),
+                    "zone must emit {field} as an array (possibly empty), zone={zone:?}"
+                );
+            }
+        }
+
+        // Recommended actions should include a re-seal reminder since pack
+        // wasn't updated in this diff.
+        let actions: Vec<String> = out
+            .value
+            .get("recommended_reconciliation_actions")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert!(
+            actions.iter().any(|s| s.contains("Re-seal")),
+            "expected a re-seal reminder in actions, got {actions:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn verify_ci_fails_when_acceptance_test_invalidated_and_pack_stale() {
+        // End-to-end: signature drift in a function listed by
+        // acceptance_tests.md `invalidated_by` should make `verify --ci`
+        // exit non-zero when the pack wasn't updated. We prove this by
+        // inspecting the computed diff payload directly — going through the
+        // actual `verify` would std::process::exit, which we can't capture
+        // in a unit test.
+        let dir = test_dir("p7_ci_gate");
+        init_git(&dir);
+        commit_file(&dir, "seed.txt", "s");
+        // Seed a file in the src zone so the initial zone passes validation.
+        let baseline_sha = commit_and_sha(&dir, "src/lib.rs", "fn compute_lift_with_ci() {}\n");
+        write_relevance_json(
+            &dir,
+            r#"{"zones":[{"paths":["src/**"],"affects":["20_CODE_MAP.md"]}]}"#,
+        );
+
+        // Manually craft a drift payload inside the manifest so we simulate
+        // what a P2-integrated pipeline would produce. diff_since_seal doesn't
+        // (yet) produce drifts itself (TODO(P2-integration)), so we exercise
+        // the matcher + gate directly.
+        let bindings = vec![json!({
+            "test_id": "Q: rename impact",
+            "invalidated_by": ["compute_lift_with_ci"],
+        })];
+        let drifts = vec![json!({"fn": "compute_lift_with_ci"})];
+        let invalidated = match_invalidated_tests(&drifts, &bindings);
+        assert_eq!(
+            invalidated.len(),
+            1,
+            "matcher must flag the drifted acceptance test"
+        );
+
+        // And confirm diff_since_seal returns pack_updated=false in this
+        // scenario (pack wasn't touched after seal).
+        seed_manifest(&dir, &baseline_sha);
+        commit_file(&dir, "src/new.rs", "fn b() {}\n");
+        let out = diff_since_seal(&dir, None).expect("diff_since_seal must succeed");
+        assert_eq!(
+            out.value.get("pack_updated").and_then(|v| v.as_bool()),
+            Some(false),
+            "expected pack_updated=false when only code changed"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_seal_baseline_sha_prefers_post_commit_sha() {
+        let with_post = json!({
+            "head_sha_at_seal": "aaaa",
+            "post_commit_sha": "bbbb",
+        });
+        assert_eq!(resolve_seal_baseline_sha(&with_post).as_deref(), Some("bbbb"));
+
+        let only_seal = json!({
+            "head_sha_at_seal": "aaaa",
+            "post_commit_sha": null,
+        });
+        assert_eq!(resolve_seal_baseline_sha(&only_seal).as_deref(), Some("aaaa"));
+
+        let neither = json!({"foo": "bar"});
+        assert!(resolve_seal_baseline_sha(&neither).is_none());
+    }
+
+    #[test]
+    fn match_invalidated_tests_surfaces_drifted_function() {
+        // Simulate P4 acceptance-test schema + a P2-style drift payload.
+        let bindings = vec![json!({
+            "test_id": "Q2: what changes for a rename?",
+            "invalidated_by": ["compute_lift_with_ci", "resolve_sample"],
+        })];
+        // Drift shape 1: {file, fn}
+        let drifts_obj = vec![json!({"file": "src/lib.rs", "fn": "compute_lift_with_ci"})];
+        let hits = match_invalidated_tests(&drifts_obj, &bindings);
+        assert_eq!(hits.len(), 1, "expected one matched test, got {hits:?}");
+        let matched: Vec<String> = hits[0]
+            .get("matched_drifts")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect();
+        assert!(matched.contains(&"compute_lift_with_ci".to_string()));
+
+        // Drift shape 2: bare string. Still matches.
+        let drifts_str = vec![json!("resolve_sample")];
+        let hits2 = match_invalidated_tests(&drifts_str, &bindings);
+        assert_eq!(hits2.len(), 1);
+
+        // Non-matching drift yields no invalidation.
+        let drifts_none = vec![json!("unrelated_fn")];
+        let hits3 = match_invalidated_tests(&drifts_none, &bindings);
+        assert!(hits3.is_empty(), "unrelated drift must not match, got {hits3:?}");
+    }
 }
