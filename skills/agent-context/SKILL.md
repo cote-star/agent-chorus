@@ -243,46 +243,29 @@ A context pack is ready when:
 - Do not include secrets, credentials, or sensitive configuration in the context pack
 - Do not add the context pack to `.gitignore` — it is meant to be committed and shared
 
-## Known limitations
+---
 
-Two issues are documented here rather than fixed by tooling. Agents and human
-authors should follow the conventions below so they don't become blockers.
+## Parallel subagent pattern
 
-### Markdown merge conflicts (#11)
+When an orchestrator spawns parallel subagents that each modify code in different zones (`src/`, `study/`, `scripts/`, etc.), do **not** ask each subagent to reconcile the context pack. That approach merge-conflicts on pack files and produces N competing, inconsistent patches.
 
-Two PRs that both edit the same pack markdown file — say, both adding a row
-to the `20_CODE_MAP.md` authority table — will conflict on merge. The
-tooling cannot auto-resolve these; markdown has no canonical AST and the
-pack intentionally lives in human-readable files.
+Use this flow instead:
 
-**Mitigation: stable H2 section headings.** Keep each markdown file
-organized around a fixed set of H2 (`## ...`) section headings, and only
-edit inside a section. When two PRs touch *different* sections of the same
-file, most three-way merges will complete cleanly because the conflict
-surface is bounded by the heading boundaries. When they touch the *same*
-section, the human resolving the conflict can reason section-by-section
-rather than line-by-line.
+1. **Spawn** subagents in parallel. Each one touches its own code zone and returns a brief change summary. None of them should touch `.agent-context/`.
+2. **Collect** the changes. After all subagents return, run:
 
-After resolving a conflict by hand, re-run `chorus agent-context seal` so
-the manifest checksum matches the merged bytes.
+    ```bash
+    chorus agent-context diff --since-seal --format json
+    ```
 
-### Squash-merge collapses pack commits (#12)
+    This emits a zone-grouped JSON payload: for each authored zone in `relevance.json`, the `changed_files` that match plus the `affects` pack sections (e.g. `20_CODE_MAP.md`, `30_BEHAVIORAL_INVARIANTS.md`). It also includes `acceptance_tests_invalidated` — the acceptance tests whose `invalidated_by` functions drifted — and `recommended_reconciliation_actions`, a bullet list the next agent can follow.
 
-The Update (Agent PR) flow above asks you to land pack edits as a separate
-commit so reviewers can assess them independently. If your team uses
-**squash merge**, every commit in the PR is folded into a single squash
-commit on `main`, and that separation disappears. This is a git workflow
-decision, not something the pack tooling can override.
+3. **Dispatch a single reconciler subagent** with the JSON payload. Its job is to:
+   - patch each `affects` section (only the lines the zone implies)
+   - revalidate any `acceptance_tests_invalidated`
+   - run `chorus agent-context seal --force` once, at the end
+   - commit `.agent-context/` as a separate commit per the Update flow
 
-**Mitigation: treat pack updates as a separate PR.** On squash-merge teams,
-land the code change in one PR and the pack update in a follow-up PR. The
-pack PR is small and localized, so reviewers can verify the pack-to-code
-mapping without wading through the code diff. Teams that use
-**merge-commit** or **rebase-and-merge** can keep the pack update in the
-same PR as the code change — the separate commits survive the merge.
+4. **Verify in CI.** `chorus agent-context verify --ci` surfaces the same payload under `diff_since_seal` and fails when `acceptance_tests_invalidated` is non-empty AND the pack wasn't updated to revalidate. If CI fails on this gate, the reconciler subagent was either skipped or incomplete.
 
-For teams that want this convention enforced at CI time, enable
-`chorus agent-context verify --ci --enforce-separate-commits`. It inspects
-every commit in `base..HEAD` and fails the check when any one of them
-mixes pack and non-pack paths. The gate is off by default — only turn it
-on after the team has agreed on the convention.
+One reconciler subagent = one consistent pack patch. N parallel reconcilers = conflicts and stale prose.

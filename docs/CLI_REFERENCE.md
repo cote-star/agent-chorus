@@ -278,6 +278,11 @@ chorus agent-context rollback
 
 # Non-blocking warning check for stale pack updates
 chorus agent-context check-freshness --base origin/main
+
+# P7: zone-grouped diff from seal-time baseline → current HEAD
+#     (subagent reconciliation protocol)
+chorus agent-context diff --since-seal
+chorus agent-context diff --since-seal --format text
 ```
 
 You can also bootstrap agent-context from setup:
@@ -347,22 +352,75 @@ with a message pointing to the Rust binary until the Node port lands.
 
 A CI workflow template is available at `templates/ci-agent-context.yml`.
 
-**Pre-push hook behavior (P6):**
+The `--ci` JSON payload also carries the P7 subagent-reconciliation shape under
+`diff_since_seal` and the flat `acceptance_tests_invalidated` list. CI fails
+(`exit_code = 1`) when `acceptance_tests_invalidated` is non-empty AND the pack
+wasn't updated, so stale ground truth cannot pass the gate.
 
-When the pre-push hook installed by `chorus agent-context install-hooks`
-detects a push whose entire diff range lives under `.agent-context/`, it
-prints `pack-only push, skipping freshness check` and exits 0 without
-running `sync-main`. This suppresses the noise loop where a code push warns
-"pack is stale", the agent updates the pack, and a second push reopens the
-same warning.
+## Context Pack Diff (Subagent Reconciliation)
 
-Each time `verify` or `check-freshness` reports a warn, the tooling writes
-`.agent-context/current/.last_freshness.json` with
-`{changed_files, affected_sections, timestamp}`. On the next pack-only
-push, the hook reads that state file and — if the push touches the section
-files the prior warning named — prints
-`warning appears addressed: sections [X, Y] updated`. This is advisory,
-not a hard guarantee; the surrounding verify flow remains the authority.
+P7. Zone-grouped diff from the seal-time baseline to current HEAD. Intended for
+the orchestrator of a parallel-subagent session: after subagents modify code,
+run this to learn which pack sections are impacted, then dispatch a single
+reconciler subagent to patch and re-seal.
+
+```bash
+# Machine-readable JSON (default)
+chorus agent-context diff --since-seal
+
+# Human-readable summary of zones + actions
+chorus agent-context diff --since-seal --format text
+
+# Explicit pack dir / cwd
+chorus agent-context diff --since-seal --pack-dir .agent-context --cwd /repo
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--since-seal` | Required. Diff from `manifest.post_commit_sha` (preferred) or `head_sha_at_seal`. | — |
+| `--format` | `json` (default) or `text`. | `json` |
+| `--pack-dir` | Override pack directory. | `.agent-context` |
+| `--cwd` | Working directory. | current directory |
+
+**JSON output:**
+
+```json
+{
+  "baseline_sha": "abc1234…",
+  "pack_updated": false,
+  "zones": [
+    {
+      "paths": ["src/**"],
+      "affects": ["20_CODE_MAP.md"],
+      "changed_files": ["src/lib.rs", "src/new_module.rs"],
+      "signature_drifts": [],
+      "count_deltas": [],
+      "deleted_files": []
+    }
+  ],
+  "acceptance_tests_invalidated": [],
+  "recommended_reconciliation_actions": [
+    "Review 20_CODE_MAP.md: 2 file(s) changed in zone",
+    "Re-seal the pack (`chorus agent-context seal --force`) after patching sections"
+  ]
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `baseline_sha` | `string` or `null` | The seal-time commit (`post_commit_sha` if present, else `head_sha_at_seal`). |
+| `pack_updated` | `boolean` | Whether `.agent-context/current/` was touched since the baseline. |
+| `zones[]` | array | One entry per authored zone in `relevance.json` that had a matching changed file. |
+| `zones[].signature_drifts` | array | Reserved for P2 baseline-drift integration — empty today. |
+| `zones[].count_deltas` | array | Reserved for P2 — empty today. |
+| `zones[].deleted_files` | array | Reserved for P2 — empty today. |
+| `acceptance_tests_invalidated[]` | array | Acceptance tests whose `invalidated_by` functions drifted (requires P4 schema in `acceptance_tests.md`). |
+| `recommended_reconciliation_actions[]` | `string[]` | Natural-language bullets the reconciler subagent can follow. |
+
+See the "Parallel subagent pattern" section in `skills/agent-context/SKILL.md`
+for the orchestrator workflow.
 
 ## Common Recipes
 
