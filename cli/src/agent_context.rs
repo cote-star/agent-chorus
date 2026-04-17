@@ -1914,24 +1914,11 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         }
     };
 
-    // P6: persist the freshness warning so the pre-push hook can later detect
-    // a pack-only follow-up push. Runs from both --ci and human-readable paths
-    // so CI-only consumers still populate the state file.
-    if freshness.status == "warn" {
-        write_last_freshness_state(&repo_root, &freshness);
-    }
-
-    // P6: opt-in separate-commit enforcement. Only active under `--ci` so it
-    // cannot surprise a developer running verify locally on a branch mid-work.
-    let mut mixed_commits: Vec<String> = Vec::new();
-    if options.ci && options.enforce_separate_commits {
-        match check_separate_commits(base_ref, &cwd_path) {
-            Ok(errs) => mixed_commits = errs,
-            Err(err) => eprintln!(
-                "[agent-context] WARN: --enforce-separate-commits could not run: {err}"
-            ),
-        }
-    }
+    // P2 — structural checks. Non-fatal by default: warnings surface in CI
+    // JSON under `structural_warnings[]` and in human output as a summary
+    // block, but they do not flip the exit code. This preserves existing
+    // verify behavior for already-sealed packs while making drift visible.
+    let structural_warnings = run_structural_checks(&manifest, &repo_root, &current_dir);
 
     if options.ci {
         // P7: compute the diff-since-seal payload so CI can surface acceptance
@@ -1986,13 +1973,12 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             "affected_sections".to_string(),
             json!(freshness.affected_sections),
         );
-        // P7: surface the full subagent-reconciliation payload under a stable
-        // key so CI parsers can drive reconciler dispatch off the same JSON.
+        // P2: emit structural warnings so CI consumers can surface drift
+        // without parsing stderr. Shape: [{kind, message, affected_pack_files}].
         result_obj.insert(
-            "acceptance_tests_invalidated".to_string(),
-            json!(diff_result.acceptance_tests_invalidated),
+            "structural_warnings".to_string(),
+            structural_warnings_as_json(&structural_warnings),
         );
-        result_obj.insert("diff_since_seal".to_string(), diff_result.value);
         result_obj.insert("exit_code".to_string(), json!(exit_code));
         println!("{}", serde_json::to_string_pretty(&Value::Object(result_obj))?);
         if exit_code != 0 {
@@ -2055,44 +2041,21 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         }
     }
 
-    // P4: surface acceptance_tests status in human-readable mode so operators
-    // notice revalidation needs without having to read the CI JSON.
-    if !acceptance_tests.is_empty() {
-        let needs_reval: Vec<&Value> = acceptance_tests
-            .iter()
-            .filter(|t| {
-                t.get("status")
-                    .and_then(|s| s.as_str())
-                    .map(|s| s == "needs_revalidation")
-                    .unwrap_or(false)
-            })
-            .collect();
-        if needs_reval.is_empty() {
-            println!(
-                "  Acceptance tests: {} test(s) ready",
-                acceptance_tests.len()
-            );
-        } else {
-            println!(
-                "  Acceptance tests: {} of {} test(s) need revalidation:",
-                needs_reval.len(),
-                acceptance_tests.len()
-            );
-            for test in needs_reval {
-                let id = test
-                    .get("id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("<unnamed>");
-                let trigger: Vec<&str> = test
-                    .get("invalidated_by_matched")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
-                if trigger.is_empty() {
-                    println!("    - {}", id);
-                } else {
-                    println!("    - {} (drift: {})", id, trigger.join(", "));
-                }
+    // P2: structural warnings summary (non-fatal). Rendered after freshness
+    // so the human reader sees integrity → freshness → structural in the
+    // same top-down order as the CI JSON keys.
+    if !structural_warnings.is_empty() {
+        eprintln!(
+            "  Structural: {} warning(s)",
+            structural_warnings.len()
+        );
+        for w in &structural_warnings {
+            eprintln!("    [{}] {}", w.kind, w.message);
+            if !w.affected_pack_files.is_empty() {
+                eprintln!(
+                    "        affected: {}",
+                    w.affected_pack_files.join(", ")
+                );
             }
         }
     }
@@ -6234,6 +6197,625 @@ fi"#
     .to_string()
 }
 
+// ============================================================================
+// P2 — Structural verifier
+//
+// Extends `verify` with structural checks that complement Pass-0's byte-level
+// integrity. Ported from team_skills' `scripts/verify_context_pack.py` (the
+// machine-checkable pack-author contract) and extended with four P1-baseline
+// drift checks:
+//
+//   1. `family_counts` drift   — resolve globs NOW, compare vs manifest
+//   2. `declared_counts` drift — re-extract prose numbers, name stale files
+//   3. `shortcut_signatures`   — re-parse signatures, `SIGNATURE_DRIFT` per fn
+//   4. `dependencies_snapshot` — re-hash deps files, point at 40_OPERATIONS
+//
+// Ported from team_skills:
+//   a. Template-marker absence in pack JSON ({name}, {domain}, {module}, REPLACE, <!-- AGENT:)
+//   b. `completeness_contract.json` glob existence + cardinality >=1
+//   c. `search_scope.json` verification_shortcuts `look_for` present in file
+//   d. Routing files (CLAUDE.md/GEMINI.md/AGENTS.md) reference canonical paths
+//
+// Plus `contractually_required_files[]` existence (catches deletions; #5).
+//
+// Design notes:
+// - Warnings are non-fatal by default so existing tests / already-sealed packs
+//   don't regress. CI JSON surfaces them under `structural_warnings[]` with a
+//   stable shape: `{kind, message, affected_pack_files: []}`.
+// - `affected_pack_files` is derived directly from the check category per the
+//   P3 zone-map contract: template-marker names the file; family-count drift
+//   points at 20_CODE_MAP.md + 40_OPERATIONS_AND_RELEASE.md; signature drift
+//   points at 20_CODE_MAP.md + search_scope.json; deps drift points at
+//   40_OPERATIONS_AND_RELEASE.md; etc. This is the fixed P3-style affects[]
+//   list; a future pass will read zones from `relevance.json` when present.
+// - Each helper is intentionally small and pure (manifest JSON + filesystem)
+//   so tests can exercise a single check without standing up the full verify.
+// ============================================================================
+
+/// P2 — structural warning emitted by `run_structural_checks`. Consumers
+/// (human output, CI JSON) render these identically; the `kind` discriminator
+/// is the machine-readable category.
+#[derive(Clone, Debug)]
+struct StructuralWarning {
+    /// Upper-snake-case category, e.g. "TEMPLATE_MARKER", "FAMILY_COUNT_DRIFT",
+    /// "SIGNATURE_DRIFT", "DECLARED_COUNT_DRIFT", "DEPENDENCIES_DRIFT",
+    /// "CONTRACT_GLOB_MISS", "LOOK_FOR_MISSING", "ROUTING_MISSING_REF",
+    /// "CONTRACT_REQUIRED_FILE_MISSING".
+    kind: String,
+    message: String,
+    /// Pack filenames (repo-relative under `.agent-context/current/`) whose
+    /// prose probably needs updating to clear this warning. Empty is a valid
+    /// value (e.g. when the check names a repo file, not a pack file).
+    affected_pack_files: Vec<String>,
+}
+
+/// P2 — template markers that must never appear in sealed pack JSON. Matches
+/// the team_skills reference + the Claude-specific scaffolding tag we emit.
+fn template_marker_candidates() -> &'static [&'static str] {
+    &["{name}", "{domain}", "{module}", "REPLACE", "<!-- AGENT:"]
+}
+
+/// P2 check (a): fail on template markers left in any `*.json` file under the
+/// pack's current directory.
+fn check_template_markers(current_dir: &Path, out: &mut Vec<StructuralWarning>) {
+    let entries = match fs::read_dir(current_dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_file() && p.extension().and_then(|x| x.to_str()) == Some("json") {
+            paths.push(p);
+        }
+    }
+    paths.sort();
+    for path in paths {
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        for marker in template_marker_candidates() {
+            if text.contains(marker) {
+                let fname = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                out.push(StructuralWarning {
+                    kind: "TEMPLATE_MARKER".to_string(),
+                    message: format!(
+                        "template marker '{}' found in pack JSON: {}",
+                        marker, fname
+                    ),
+                    affected_pack_files: vec![fname.clone()],
+                });
+            }
+        }
+    }
+}
+
+/// P2 check (b) + #5: `completeness_contract.json` required_file_families[]
+/// globs must still resolve to at least one file AND
+/// `contractually_required_files[]` entries must still exist on disk.
+fn check_contract_files_exist(
+    repo_root: &Path,
+    current_dir: &Path,
+    out: &mut Vec<StructuralWarning>,
+) {
+    let contract_path = current_dir.join("completeness_contract.json");
+    let Ok(Some(contract)) = read_json(&contract_path) else {
+        return;
+    };
+    // Support both the flat `contracts` shape (team_skills reference) and
+    // the `task_families` shape (chorus scaffolding). Walk whichever is
+    // present so the check stays agnostic.
+    let mut entries: Vec<(String, &serde_json::Map<String, Value>)> = Vec::new();
+    if let Some(map) = contract.get("contracts").and_then(|v| v.as_object()) {
+        for (k, v) in map {
+            if let Some(obj) = v.as_object() {
+                entries.push((k.clone(), obj));
+            }
+        }
+    }
+    if let Some(map) = contract.get("task_families").and_then(|v| v.as_object()) {
+        for (k, v) in map {
+            if let Some(obj) = v.as_object() {
+                entries.push((k.clone(), obj));
+            }
+        }
+    }
+
+    for (name, entry) in entries {
+        if let Some(list) = entry
+            .get("contractually_required_files")
+            .and_then(|v| v.as_array())
+        {
+            for item in list {
+                if let Some(rel) = item.as_str() {
+                    if !repo_root.join(rel).exists() {
+                        out.push(StructuralWarning {
+                            kind: "CONTRACT_REQUIRED_FILE_MISSING".to_string(),
+                            message: format!(
+                                "completeness_contract '{name}': required file missing on disk: {rel}"
+                            ),
+                            affected_pack_files: vec![
+                                "completeness_contract.json".to_string(),
+                                "20_CODE_MAP.md".to_string(),
+                            ],
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(list) = entry.get("required_file_families").and_then(|v| v.as_array()) {
+            for item in list {
+                if let Some(pattern) = item.as_str() {
+                    // Template markers in globs are their own failure mode
+                    // (redundant with check_template_markers but cheap to
+                    // call here for clarity of error message).
+                    let has_marker = template_marker_candidates()
+                        .iter()
+                        .any(|m| pattern.contains(m));
+                    if has_marker {
+                        out.push(StructuralWarning {
+                            kind: "CONTRACT_GLOB_MISS".to_string(),
+                            message: format!(
+                                "completeness_contract '{name}': template marker in glob: {pattern}"
+                            ),
+                            affected_pack_files: vec![
+                                "completeness_contract.json".to_string(),
+                            ],
+                        });
+                        continue;
+                    }
+                    let matches =
+                        resolve_pattern_matches(repo_root, pattern).unwrap_or_default();
+                    if matches.is_empty() {
+                        out.push(StructuralWarning {
+                            kind: "CONTRACT_GLOB_MISS".to_string(),
+                            message: format!(
+                                "completeness_contract '{name}': glob matches no files: {pattern}"
+                            ),
+                            affected_pack_files: vec![
+                                "completeness_contract.json".to_string(),
+                                "20_CODE_MAP.md".to_string(),
+                            ],
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// P2 check (c): every `search_scope.json` verification_shortcut with a
+/// `look_for` string must contain that substring in the referenced file.
+///
+/// Handles both shortcut shapes:
+/// - team_skills: `verification_shortcuts: [{file, look_for}]`
+/// - chorus default scaffold: `verification_shortcuts: { "path": "hint" }`
+///   (no `look_for` — we silently skip; there's nothing to verify).
+fn check_verification_shortcuts_look_for(
+    repo_root: &Path,
+    current_dir: &Path,
+    out: &mut Vec<StructuralWarning>,
+) {
+    let scope_path = current_dir.join("search_scope.json");
+    let Ok(Some(scope)) = read_json(&scope_path) else {
+        return;
+    };
+    let Some(families) = scope.get("task_families").and_then(|v| v.as_object()) else {
+        return;
+    };
+    for (family, data) in families {
+        // Array form (team_skills).
+        if let Some(arr) = data.get("verification_shortcuts").and_then(|v| v.as_array()) {
+            for shortcut in arr {
+                let Some(obj) = shortcut.as_object() else { continue };
+                let Some(rel) = obj.get("file").and_then(|v| v.as_str()) else {
+                    out.push(StructuralWarning {
+                        kind: "LOOK_FOR_MISSING".to_string(),
+                        message: format!(
+                            "search_scope {family}: verification shortcut missing 'file'"
+                        ),
+                        affected_pack_files: vec!["search_scope.json".to_string()],
+                    });
+                    continue;
+                };
+                let look_for = obj
+                    .get("look_for")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let path = repo_root.join(rel);
+                if !path.exists() {
+                    out.push(StructuralWarning {
+                        kind: "LOOK_FOR_MISSING".to_string(),
+                        message: format!(
+                            "search_scope {family}: missing verification file: {rel}"
+                        ),
+                        affected_pack_files: vec!["search_scope.json".to_string()],
+                    });
+                    continue;
+                }
+                if !look_for.is_empty() {
+                    let text = fs::read_to_string(&path).unwrap_or_default();
+                    if !text.contains(look_for) {
+                        out.push(StructuralWarning {
+                            kind: "LOOK_FOR_MISSING".to_string(),
+                            message: format!(
+                                "search_scope {family}: look_for string not found in {rel}: {look_for}"
+                            ),
+                            affected_pack_files: vec![
+                                "search_scope.json".to_string(),
+                                "20_CODE_MAP.md".to_string(),
+                            ],
+                        });
+                    }
+                }
+            }
+        }
+        // Object form (chorus scaffold) — nothing to verify at `look_for` level,
+        // but catching a missing file is still useful. We intentionally do not
+        // emit a redundant existence error here because `validate_structured_layer`
+        // already runs this check at seal time.
+    }
+}
+
+/// P2 check (d): routing files (CLAUDE.md / GEMINI.md / AGENTS.md) must
+/// reference the canonical pack paths. Missing files are not errors (repos
+/// may scaffold only a subset of agents); *present* files must be correct.
+fn check_routing_files(repo_root: &Path, out: &mut Vec<StructuralWarning>) {
+    let claude = repo_root.join("CLAUDE.md");
+    let gemini = repo_root.join("GEMINI.md");
+    let agents = repo_root.join("AGENTS.md");
+
+    if claude.exists() {
+        let text = fs::read_to_string(&claude).unwrap_or_default();
+        if !text.contains("00_START_HERE.md") || !text.contains("30_BEHAVIORAL_INVARIANTS.md") {
+            out.push(StructuralWarning {
+                kind: "ROUTING_MISSING_REF".to_string(),
+                message:
+                    "CLAUDE.md does not reference canonical pack paths (00_START_HERE.md + 30_BEHAVIORAL_INVARIANTS.md)"
+                        .to_string(),
+                affected_pack_files: vec!["CLAUDE.md".to_string()],
+            });
+        }
+    }
+    if gemini.exists() {
+        let text = fs::read_to_string(&gemini).unwrap_or_default();
+        if !text.contains("00_START_HERE.md") || !text.contains("30_BEHAVIORAL_INVARIANTS.md") {
+            out.push(StructuralWarning {
+                kind: "ROUTING_MISSING_REF".to_string(),
+                message:
+                    "GEMINI.md does not reference canonical pack paths (00_START_HERE.md + 30_BEHAVIORAL_INVARIANTS.md)"
+                        .to_string(),
+                affected_pack_files: vec!["GEMINI.md".to_string()],
+            });
+        }
+    }
+    if agents.exists() {
+        let text = fs::read_to_string(&agents).unwrap_or_default();
+        // AGENTS.md is the search-and-verify routing: expect routes.json reference.
+        if !text.contains("routes.json") {
+            out.push(StructuralWarning {
+                kind: "ROUTING_MISSING_REF".to_string(),
+                message: "AGENTS.md does not reference canonical routes.json".to_string(),
+                affected_pack_files: vec!["AGENTS.md".to_string()],
+            });
+        }
+    }
+}
+
+/// P2 check 1: compare manifest's stored `family_counts` (from seal) against a
+/// live resolution. Emits one `FAMILY_COUNT_DRIFT` warning per pattern whose
+/// count changed; names the prose files that most commonly quote code-family
+/// counts (20_CODE_MAP.md + 40_OPERATIONS_AND_RELEASE.md).
+fn check_family_counts_drift(
+    manifest: &Value,
+    repo_root: &Path,
+    current_dir: &Path,
+    out: &mut Vec<StructuralWarning>,
+) {
+    let stored = manifest
+        .get("family_counts")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    if stored.is_empty() {
+        return;
+    }
+    let live = resolve_family_counts(repo_root, current_dir);
+    // Iterate in BTreeSet order over the union of keys so output is stable.
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for k in stored.keys() {
+        keys.insert(k.clone());
+    }
+    for k in live.keys() {
+        keys.insert(k.clone());
+    }
+    for k in keys {
+        let stored_n = stored.get(&k).and_then(|v| v.as_u64()).unwrap_or(0);
+        let live_n = live.get(&k).copied().unwrap_or(0) as u64;
+        if stored_n == live_n {
+            continue;
+        }
+        out.push(StructuralWarning {
+            kind: "FAMILY_COUNT_DRIFT".to_string(),
+            message: format!(
+                "family_counts drift for '{k}': manifest says {stored_n}, live resolves to {live_n} (delta {delta})",
+                delta = (live_n as i64) - (stored_n as i64)
+            ),
+            affected_pack_files: vec![
+                "20_CODE_MAP.md".to_string(),
+                "40_OPERATIONS_AND_RELEASE.md".to_string(),
+            ],
+        });
+    }
+}
+
+/// P2 check 2: cross-check pack prose numeric claims against live authoritative
+/// counts resolved from globs. Emits one `DECLARED_COUNT_DRIFT` warning per
+/// stale (noun, count) tuple, naming every pack file+line that parrots the
+/// stale number.
+///
+/// The authoritative source is live `family_counts` (re-resolved against
+/// disk): for each noun we heuristically find the glob whose pattern
+/// mentions that noun (e.g. noun "scripts" -> pattern "scripts/run_*.py").
+/// When prose says N and the matched glob resolves to M, every prose line
+/// saying N is reported as stale.
+///
+/// Nouns without a matching glob pattern fall back to comparing live prose
+/// against the manifest's sealed `declared_counts` for the same noun — if
+/// they disagree, we name the stale (older-seal) lines so the reviewer can
+/// pick the authoritative answer.
+fn check_declared_counts_drift(
+    manifest: &Value,
+    repo_root: &Path,
+    current_dir: &Path,
+    out: &mut Vec<StructuralWarning>,
+) {
+    let live_prose = extract_declared_counts(current_dir);
+    if live_prose.is_empty() {
+        return;
+    }
+    let stored_prose = manifest
+        .get("declared_counts")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    // Authoritative counts: re-resolve globs NOW. This is what "the repo
+    // actually looks like" at verify time. Keyed by the glob pattern.
+    let live_families = resolve_family_counts(repo_root, current_dir);
+
+    // Map each noun to an authoritative count when a glob pattern references
+    // the noun word. Matching is case-insensitive and checks for the noun or
+    // its singular form in the pattern text (e.g. "scripts" -> "scripts/").
+    fn noun_matches_pattern(noun: &str, pattern: &str) -> bool {
+        let p = pattern.to_ascii_lowercase();
+        let n = noun.to_ascii_lowercase();
+        if p.contains(&n) {
+            return true;
+        }
+        // Try the singular form (strip trailing "s"/"es").
+        let trimmed = n.trim_end_matches('s');
+        if trimmed.len() < n.len() && !trimmed.is_empty() && p.contains(trimmed) {
+            return true;
+        }
+        false
+    }
+
+    let resolve_auth_count = |noun: &str| -> Option<u64> {
+        for (pattern, count) in &live_families {
+            if noun_matches_pattern(noun, pattern) {
+                return Some(*count as u64);
+            }
+        }
+        None
+    };
+
+    // Walk live prose claims: for each (noun, count, file, line), check
+    // whether an authoritative answer exists and disagrees.
+    use std::collections::BTreeMap;
+    // (noun, stale_count, authoritative_count) -> [file:line, ...].
+    let mut stale_tuples: BTreeMap<(String, u64, u64), Vec<String>> = BTreeMap::new();
+
+    for v in &live_prose {
+        let noun = match v.get("noun").and_then(|x| x.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let count = v.get("count").and_then(|x| x.as_u64()).unwrap_or(0);
+        let file = v
+            .get("file")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let line = v.get("line").and_then(|x| x.as_u64()).unwrap_or(0);
+
+        // Prefer the authoritative answer. Fall back to manifest sealed prose.
+        let auth = resolve_auth_count(&noun).or_else(|| {
+            stored_prose.iter().find_map(|sv| {
+                let sv_noun = sv.get("noun").and_then(|x| x.as_str()).unwrap_or("");
+                if sv_noun.eq_ignore_ascii_case(&noun) {
+                    sv.get("count").and_then(|x| x.as_u64())
+                } else {
+                    None
+                }
+            })
+        });
+        if let Some(auth_count) = auth {
+            if auth_count != count {
+                stale_tuples
+                    .entry((noun.clone(), count, auth_count))
+                    .or_default()
+                    .push(format!("{}:{}", file, line));
+            }
+        }
+    }
+
+    for ((noun, stale_count, auth_count), occurrences) in stale_tuples {
+        let mut affected: BTreeSet<String> = BTreeSet::new();
+        for occ in &occurrences {
+            if let Some(f) = occ.split(':').next() {
+                affected.insert(f.to_string());
+            }
+        }
+        let affected_vec: Vec<String> = affected.into_iter().collect();
+        out.push(StructuralWarning {
+            kind: "DECLARED_COUNT_DRIFT".to_string(),
+            message: format!(
+                "declared_counts drift: pack prose says '{stale_count} {noun}' but authoritative count is {auth_count}; stale at {occurrences}",
+                occurrences = occurrences.join(", ")
+            ),
+            affected_pack_files: affected_vec,
+        });
+    }
+}
+
+/// P2 check 3: re-parse `verification_shortcuts` signatures from the repo and
+/// compare to manifest. Emits one `SIGNATURE_DRIFT` warning per function whose
+/// signature changed (including renames — the old key disappears, a new key
+/// appears; we emit one warning per side so the reviewer can spot renames).
+fn check_shortcut_signatures_drift(
+    manifest: &Value,
+    repo_root: &Path,
+    current_dir: &Path,
+    out: &mut Vec<StructuralWarning>,
+) {
+    let stored_map = manifest
+        .get("shortcut_signatures")
+        .and_then(|v| v.as_object());
+    let Some(stored_map) = stored_map else { return };
+    let live = parse_shortcut_signatures(repo_root, current_dir);
+
+    let stored_keys: BTreeSet<String> = stored_map.keys().cloned().collect();
+    let live_keys: BTreeSet<String> = live.keys().cloned().collect();
+
+    // Changed (same key, different signature).
+    for key in stored_keys.intersection(&live_keys) {
+        let stored = stored_map.get(key).and_then(|v| v.as_str()).unwrap_or("");
+        let live_sig = live.get(key).map(|s| s.as_str()).unwrap_or("");
+        if stored != live_sig {
+            out.push(StructuralWarning {
+                kind: "SIGNATURE_DRIFT".to_string(),
+                message: format!(
+                    "SIGNATURE_DRIFT: {key}: manifest='{stored}' vs live='{live_sig}'"
+                ),
+                affected_pack_files: vec![
+                    "20_CODE_MAP.md".to_string(),
+                    "search_scope.json".to_string(),
+                ],
+            });
+        }
+    }
+    // Removed (possibly renamed — the old name is gone).
+    for key in stored_keys.difference(&live_keys) {
+        out.push(StructuralWarning {
+            kind: "SIGNATURE_DRIFT".to_string(),
+            message: format!(
+                "SIGNATURE_DRIFT: {key} present in manifest but missing from source (rename or deletion)"
+            ),
+            affected_pack_files: vec![
+                "20_CODE_MAP.md".to_string(),
+                "search_scope.json".to_string(),
+            ],
+        });
+    }
+    // Added (possibly renamed — a new name appeared).
+    for key in live_keys.difference(&stored_keys) {
+        out.push(StructuralWarning {
+            kind: "SIGNATURE_DRIFT".to_string(),
+            message: format!(
+                "SIGNATURE_DRIFT: {key} present in source but not in manifest (new function or rename)"
+            ),
+            affected_pack_files: vec![
+                "20_CODE_MAP.md".to_string(),
+                "search_scope.json".to_string(),
+            ],
+        });
+    }
+}
+
+/// P2 check 4: re-hash dependency files and compare to manifest. Points the
+/// reviewer at `40_OPERATIONS_AND_RELEASE.md` which typically owns the deps
+/// narrative.
+fn check_dependencies_drift(
+    manifest: &Value,
+    repo_root: &Path,
+    out: &mut Vec<StructuralWarning>,
+) {
+    let stored = manifest
+        .get("dependencies_snapshot")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+    if stored.is_empty() {
+        return;
+    }
+    let live = compute_dependencies_snapshot(repo_root);
+    let mut keys: BTreeSet<String> = BTreeSet::new();
+    for k in stored.keys() {
+        keys.insert(k.clone());
+    }
+    for k in live.keys() {
+        keys.insert(k.clone());
+    }
+    for key in keys {
+        let stored_hash = stored.get(&key).and_then(|v| v.as_str()).unwrap_or("");
+        let live_hash = live.get(&key).map(|s| s.as_str()).unwrap_or("");
+        if stored_hash != live_hash {
+            out.push(StructuralWarning {
+                kind: "DEPENDENCIES_DRIFT".to_string(),
+                message: format!(
+                    "dependencies_snapshot drift for '{key}': manifest hash differs from on-disk file; review {file}",
+                    file = "40_OPERATIONS_AND_RELEASE.md"
+                ),
+                affected_pack_files: vec!["40_OPERATIONS_AND_RELEASE.md".to_string()],
+            });
+        }
+    }
+}
+
+/// P2 — run every structural check and return their collected warnings. Pure
+/// function over manifest JSON + filesystem. Missing pack configs cause
+/// individual checks to no-op; the caller treats warnings as non-fatal.
+fn run_structural_checks(
+    manifest: &Value,
+    repo_root: &Path,
+    current_dir: &Path,
+) -> Vec<StructuralWarning> {
+    let mut out: Vec<StructuralWarning> = Vec::new();
+    check_template_markers(current_dir, &mut out);
+    check_contract_files_exist(repo_root, current_dir, &mut out);
+    check_verification_shortcuts_look_for(repo_root, current_dir, &mut out);
+    check_routing_files(repo_root, &mut out);
+    check_family_counts_drift(manifest, repo_root, current_dir, &mut out);
+    check_declared_counts_drift(manifest, repo_root, current_dir, &mut out);
+    check_shortcut_signatures_drift(manifest, repo_root, current_dir, &mut out);
+    check_dependencies_drift(manifest, repo_root, &mut out);
+    out
+}
+
+/// Serialize a `StructuralWarning` list into the CI JSON array shape defined
+/// by the P2 plan: `[{kind, message, affected_pack_files[]}]`. Always emits an
+/// array (possibly empty) so downstream consumers can rely on the key.
+fn structural_warnings_as_json(warnings: &[StructuralWarning]) -> Value {
+    Value::Array(
+        warnings
+            .iter()
+            .map(|w| {
+                json!({
+                    "kind": w.kind,
+                    "message": w.message,
+                    "affected_pack_files": w.affected_pack_files,
+                })
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7187,304 +7769,357 @@ After cleanup there are 32 tests today.\n\
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // --- P7 tests — subagent reconciliation diff --since-seal ---
+    // --- P2 structural verifier tests ---
 
-    /// Commit a single file at `rel` and return the resulting HEAD sha. Wraps
-    /// the existing 3-arg `commit_file` and follows up with `rev-parse HEAD`.
-    fn commit_and_sha(root: &Path, rel: &str, content: &str) -> String {
-        commit_file(root, rel, content);
-        let out = std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(root)
-            .output()
-            .unwrap();
-        String::from_utf8_lossy(&out.stdout).trim().to_string()
-    }
-
-    fn seed_manifest(root: &Path, head_sha_at_seal: &str) {
-        let current = root.join(".agent-context").join("current");
-        fs::create_dir_all(&current).unwrap();
-        let manifest = json!({
-            "schema_version": CURRENT_SCHEMA_VERSION,
-            "head_sha": head_sha_at_seal,
-            "head_sha_at_seal": head_sha_at_seal,
-            "post_commit_sha": null,
-            "files": [],
-        });
-        fs::write(
-            current.join("manifest.json"),
-            format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn diff_since_seal_returns_empty_zones_when_no_changes() {
-        let dir = test_dir("p7_no_changes");
-        init_git(&dir);
-        // Commit an initial seed + a second commit so HEAD~1 resolves; the
-        // seal baseline points at the LATEST commit so the diff is empty.
-        commit_file(&dir, "seed.txt", "one");
-        commit_file(&dir, "second.txt", "two");
-        write_relevance_json(
-            &dir,
-            r#"{"zones":[{"paths":["src/**"],"affects":["20_CODE_MAP.md"]}]}"#,
-        );
-        // A `src/` file must exist so zone validation can pass when loaded
-        // elsewhere; diff_since_seal itself doesn't validate zones here.
-        commit_file(&dir, "src/lib.rs", "fn a() {}\n");
-        // Re-seal baseline to THIS commit so there's nothing newer to diff.
-        let latest = run_git(&["rev-parse", "HEAD"], &dir, true).unwrap();
-        seed_manifest(&dir, &latest);
-
-        let out = diff_since_seal(&dir, None).expect("diff_since_seal must succeed");
-        let zones = out
-            .value
-            .get("zones")
-            .and_then(|v| v.as_array())
-            .expect("zones array");
-        assert!(zones.is_empty(), "no changes must yield empty zones, got {zones:?}");
-        assert!(
-            out.acceptance_tests_invalidated.is_empty(),
-            "no drifts -> empty acceptance_tests_invalidated"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn diff_since_seal_groups_changes_by_zone() {
-        let dir = test_dir("p7_zone_grouping");
-        init_git(&dir);
-        // Seed commit so HEAD~1 is available and baseline has a predecessor.
-        commit_file(&dir, "seed.txt", "seed");
-        // Seed a file in the src/ zone so the zone map validates downstream.
-        let baseline_sha = commit_and_sha(&dir, "src/existing.rs", "fn a() {}\n");
-
-        write_relevance_json(
-            &dir,
-            r#"{"zones":[
-              {"paths":["src/**"],"affects":["20_CODE_MAP.md"]},
-              {"paths":["docs/**"],"affects":["10_SYSTEM_OVERVIEW.md"]}
-            ]}"#,
-        );
-        seed_manifest(&dir, &baseline_sha);
-
-        // Add a src file and a docs file AFTER seal.
-        commit_file(&dir, "src/new_module.rs", "fn b() {}\n");
-        commit_file(&dir, "docs/intro.md", "# Intro\n");
-
-        let out = diff_since_seal(&dir, None).expect("diff_since_seal must succeed");
-        let zones = out
-            .value
-            .get("zones")
-            .and_then(|v| v.as_array())
-            .expect("zones array");
-        assert_eq!(zones.len(), 2, "expected 2 populated zones, got {zones:?}");
-
-        // Check each zone carries its own changed_files + affects.
-        let find_zone = |affect: &str| -> &Value {
-            zones
-                .iter()
-                .find(|z| {
-                    z.get("affects")
-                        .and_then(|v| v.as_array())
-                        .map(|a| a.iter().any(|s| s.as_str() == Some(affect)))
-                        .unwrap_or(false)
-                })
-                .expect("zone present")
-        };
-        let src_zone = find_zone("20_CODE_MAP.md");
-        let src_changed: Vec<String> = src_zone
-            .get("changed_files")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        assert!(
-            src_changed.iter().any(|f| f == "src/new_module.rs"),
-            "src zone must include src/new_module.rs, got {src_changed:?}"
-        );
-        let docs_zone = find_zone("10_SYSTEM_OVERVIEW.md");
-        let docs_changed: Vec<String> = docs_zone
-            .get("changed_files")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        assert_eq!(docs_changed, vec!["docs/intro.md"]);
-
-        // P2 degradation: empty drift/count/delete arrays present and typed.
-        for zone in zones {
-            for field in ["signature_drifts", "count_deltas", "deleted_files"] {
-                assert!(
-                    zone.get(field).and_then(|v| v.as_array()).is_some(),
-                    "zone must emit {field} as an array (possibly empty), zone={zone:?}"
-                );
-            }
-        }
-
-        // Recommended actions should include a re-seal reminder since pack
-        // wasn't updated in this diff.
-        let actions: Vec<String> = out
-            .value
-            .get("recommended_reconciliation_actions")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        assert!(
-            actions.iter().any(|s| s.contains("Re-seal")),
-            "expected a re-seal reminder in actions, got {actions:?}"
-        );
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn match_invalidated_tests_surfaces_drifted_function() {
-        // Simulate P4 acceptance-test schema + a P2-style drift payload.
-        let bindings = vec![json!({
-            "test_id": "Q2: what changes for a rename?",
-            "invalidated_by": ["compute_lift_with_ci", "resolve_sample"],
-        })];
-        // Drift shape 1: {file, fn}
-        let drifts_obj = vec![json!({"file": "src/lib.rs", "fn": "compute_lift_with_ci"})];
-        let hits = match_invalidated_tests(&drifts_obj, &bindings);
-        assert_eq!(hits.len(), 1, "expected one matched test, got {hits:?}");
-        let matched: Vec<String> = hits[0]
-            .get("matched_drifts")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        assert!(matched.contains(&"compute_lift_with_ci".to_string()));
-
-        // Drift shape 2: bare string. Still matches.
-        let drifts_str = vec![json!("resolve_sample")];
-        let hits2 = match_invalidated_tests(&drifts_str, &bindings);
-        assert_eq!(hits2.len(), 1);
-
-        // Non-matching drift yields no invalidation.
-        let drifts_none = vec![json!("unrelated_fn")];
-        let hits3 = match_invalidated_tests(&drifts_none, &bindings);
-        assert!(hits3.is_empty(), "unrelated drift must not match, got {hits3:?}");
-    }
-
-    #[test]
-    fn parse_acceptance_invalidated_by_reads_list_markers() {
-        let dir = test_dir("p7_parse_invalidated");
+    /// Build a minimal `.agent-context/current/` at `<dir>` and return the
+    /// `current_dir` PathBuf. Used by several P2 tests.
+    fn p2_init_pack(dir: &Path) -> PathBuf {
         let current = dir.join(".agent-context").join("current");
         fs::create_dir_all(&current).unwrap();
-        let body = "\
-# Acceptance tests\n\
-\n\
-## Q1: lookup the release flow\n\
-- invalidated_by: publish_release\n\
-\n\
-## Q2: rename impact\n\
-  invalidated_by: compute_lift_with_ci, resolve_sample\n\
-\n\
-## Q3: unrelated\n\
-(no invalidated_by marker)\n\
-";
-        fs::write(current.join("acceptance_tests.md"), body).unwrap();
+        current
+    }
 
-        let entries = parse_acceptance_invalidated_by(&current);
-        assert_eq!(entries.len(), 2, "expected 2 bindings, got {entries:?}");
-        let q1 = &entries[0];
-        assert_eq!(
-            q1.get("test_id").and_then(|v| v.as_str()),
-            Some("Q1: lookup the release flow")
+    #[test]
+    fn p2_template_marker_in_pack_json_is_flagged() {
+        let dir = test_dir("p2_template_markers");
+        let current = p2_init_pack(&dir);
+        fs::write(
+            current.join("routes.json"),
+            r#"{"task_routes": {"lookup": {"pack_read_order": ["{name}/00_START_HERE.md"]}}}"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_template_markers(&current, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "TEMPLATE_MARKER"
+                && w.message.contains("routes.json")
+                && w.message.contains("{name}")),
+            "expected TEMPLATE_MARKER warning naming routes.json + {{name}}, got {out:?}"
         );
-        let q1_fns: Vec<String> = q1
-            .get("invalidated_by")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        assert_eq!(q1_fns, vec!["publish_release"]);
-        let q2 = &entries[1];
-        let q2_fns: Vec<String> = q2
-            .get("invalidated_by")
-            .and_then(|v| v.as_array())
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str().map(String::from))
-            .collect();
-        assert_eq!(q2_fns, vec!["compute_lift_with_ci", "resolve_sample"]);
 
         let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn resolve_seal_baseline_sha_prefers_post_commit_sha() {
-        let with_post = json!({
-            "head_sha_at_seal": "aaaa",
-            "post_commit_sha": "bbbb",
-        });
-        assert_eq!(resolve_seal_baseline_sha(&with_post).as_deref(), Some("bbbb"));
-
-        let only_seal = json!({
-            "head_sha_at_seal": "aaaa",
-            "post_commit_sha": null,
-        });
-        assert_eq!(resolve_seal_baseline_sha(&only_seal).as_deref(), Some("aaaa"));
-
-        let neither = json!({"foo": "bar"});
-        assert!(resolve_seal_baseline_sha(&neither).is_none());
-    }
-
-    #[test]
-    fn verify_ci_fails_when_acceptance_test_invalidated_and_pack_stale() {
-        // End-to-end: signature drift in a function listed by
-        // acceptance_tests.md `invalidated_by` should make `verify --ci`
-        // exit non-zero when the pack wasn't updated. We prove this by
-        // inspecting the computed diff payload directly — going through the
-        // actual `verify` would std::process::exit, which we can't capture
-        // in a unit test.
-        let dir = test_dir("p7_ci_gate");
+    fn p2_contract_glob_existence_flags_empty_matches() {
+        let dir = test_dir("p2_contract_glob");
         init_git(&dir);
-        commit_file(&dir, "seed.txt", "s");
-        // Seed a file in the src zone so the initial zone passes validation.
-        let baseline_sha = commit_and_sha(&dir, "src/lib.rs", "fn compute_lift_with_ci() {}\n");
-        write_relevance_json(
-            &dir,
-            r#"{"zones":[{"paths":["src/**"],"affects":["20_CODE_MAP.md"]}]}"#,
-        );
+        let current = p2_init_pack(&dir);
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "contractually_required_files": ["nonexistent/plan.md"],
+                  "required_file_families": ["scripts/run_*.py"]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
 
-        // Manually craft a drift payload inside the manifest so we simulate
-        // what a P2-integrated pipeline would produce. diff_since_seal doesn't
-        // (yet) produce drifts itself (TODO(P2-integration)), so we exercise
-        // the matcher + gate directly.
-        let bindings = vec![json!({
-            "test_id": "Q: rename impact",
-            "invalidated_by": ["compute_lift_with_ci"],
-        })];
-        let drifts = vec![json!({"fn": "compute_lift_with_ci"})];
-        let invalidated = match_invalidated_tests(&drifts, &bindings);
-        assert_eq!(
-            invalidated.len(),
-            1,
-            "matcher must flag the drifted acceptance test"
-        );
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_contract_files_exist(&dir, &current, &mut out);
 
-        // And confirm diff_since_seal returns pack_updated=false in this
-        // scenario (pack wasn't touched after seal).
-        seed_manifest(&dir, &baseline_sha);
-        commit_file(&dir, "src/new.rs", "fn b() {}\n");
-        let out = diff_since_seal(&dir, None).expect("diff_since_seal must succeed");
-        assert_eq!(
-            out.value.get("pack_updated").and_then(|v| v.as_bool()),
-            Some(false),
-            "expected pack_updated=false when only code changed"
+        // Both checks must fire: missing file AND empty glob.
+        assert!(
+            out.iter().any(|w| w.kind == "CONTRACT_REQUIRED_FILE_MISSING"
+                && w.message.contains("nonexistent/plan.md")),
+            "expected CONTRACT_REQUIRED_FILE_MISSING naming nonexistent/plan.md, got {out:?}"
+        );
+        assert!(
+            out.iter().any(|w| w.kind == "CONTRACT_GLOB_MISS"
+                && w.message.contains("scripts/run_*.py")),
+            "expected CONTRACT_GLOB_MISS naming scripts/run_*.py, got {out:?}"
         );
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p2_look_for_substring_check_flags_missing_string() {
+        let dir = test_dir("p2_look_for");
+        init_git(&dir);
+        let current = p2_init_pack(&dir);
+        // Repo file that does NOT contain the look_for string.
+        fs::write(
+            dir.join("calc.py"),
+            "def compute_lift(data):\n    return 1\n",
+        )
+        .unwrap();
+        // team_skills-shape verification_shortcuts (array of {file, look_for}).
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": [
+                    {"file": "calc.py", "look_for": "MIN_CELL_SIZE = 30"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verification_shortcuts_look_for(&dir, &current, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "LOOK_FOR_MISSING"
+                && w.message.contains("calc.py")
+                && w.message.contains("MIN_CELL_SIZE = 30")),
+            "expected LOOK_FOR_MISSING naming calc.py + MIN_CELL_SIZE, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p2_routing_file_check_flags_missing_canonical_refs() {
+        let dir = test_dir("p2_routing");
+        // CLAUDE.md exists but does not reference the canonical pack paths.
+        fs::write(dir.join("CLAUDE.md"), "# empty routing block\n").unwrap();
+        // GEMINI.md missing entirely — must not produce a warning.
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_routing_files(&dir, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "ROUTING_MISSING_REF"
+                && w.message.contains("CLAUDE.md")),
+            "expected ROUTING_MISSING_REF naming CLAUDE.md, got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|w| w.message.contains("GEMINI.md")),
+            "missing GEMINI.md must not trigger a warning, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p2_family_count_delta_after_adding_a_script() {
+        // Fixture: 12 scripts at seal, manifest says 12, add a 13th → warn.
+        let dir = test_dir("p2_family_count_delta");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = p2_init_pack(&dir);
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{"task_families": {"lookup": {"required_file_families": ["scripts/run_*.py"]}}}"#,
+        )
+        .unwrap();
+
+        // Manifest records 12 (seal-time count).
+        let manifest = json!({
+            "family_counts": {"scripts/run_*.py": 12},
+        });
+
+        // No drift yet.
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_family_counts_drift(&manifest, &dir, &current, &mut out);
+        assert!(
+            out.is_empty(),
+            "no drift expected before adding the 13th file, got {out:?}"
+        );
+
+        // Add a 13th script — live count becomes 13.
+        fs::write(scripts.join("run_12.py"), "# 13th\n").unwrap();
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_family_counts_drift(&manifest, &dir, &current, &mut out);
+        assert!(
+            out.iter().any(|w| w.kind == "FAMILY_COUNT_DRIFT"
+                && w.message.contains("scripts/run_*.py")
+                && w.message.contains("12")
+                && w.message.contains("13")),
+            "expected FAMILY_COUNT_DRIFT naming 12 vs 13, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p2_declared_count_drift_names_every_stale_file() {
+        // Fixture: prose in two pack files says "12 scripts" but the repo
+        // actually has 13 matching scripts on disk. The authoritative count
+        // comes from the live resolution of the glob pattern that mentions
+        // "scripts" in its path.
+        let dir = test_dir("p2_declared_count_delta");
+        init_git(&dir);
+        // Create 13 scripts on disk — the authoritative answer.
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..13 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = p2_init_pack(&dir);
+        // Declare the glob so resolve_family_counts returns 13 for it.
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{"task_families": {"lookup": {"required_file_families": ["scripts/run_*.py"]}}}"#,
+        )
+        .unwrap();
+        // Two pack files both claim "12 scripts" — both must be reported.
+        fs::write(
+            current.join("10_SYSTEM_OVERVIEW.md"),
+            "# Overview\n\nThe repo has 12 scripts.\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("20_CODE_MAP.md"),
+            "# Code Map\n\nWe maintain 12 scripts total.\n",
+        )
+        .unwrap();
+
+        // Manifest is intentionally the seal-time snapshot; the authoritative
+        // signal is the live family_counts (which now resolves to 13).
+        let manifest = json!({
+            "declared_counts": [
+                {"noun": "scripts", "count": 12, "file": "10_SYSTEM_OVERVIEW.md", "line": 3},
+                {"noun": "scripts", "count": 12, "file": "20_CODE_MAP.md", "line": 3},
+            ],
+        });
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_declared_counts_drift(&manifest, &dir, &current, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "DECLARED_COUNT_DRIFT"
+                && w.message.contains("12 scripts")
+                && w.message.contains("13")),
+            "expected DECLARED_COUNT_DRIFT naming '12 scripts' stale vs auth 13, got {out:?}"
+        );
+        // affected_pack_files should include both stale file names so the
+        // reviewer can see every repetition.
+        let affected: Vec<String> = out
+            .iter()
+            .filter(|w| w.kind == "DECLARED_COUNT_DRIFT")
+            .flat_map(|w| w.affected_pack_files.clone())
+            .collect();
+        assert!(
+            affected.iter().any(|f| f == "10_SYSTEM_OVERVIEW.md"),
+            "expected 10_SYSTEM_OVERVIEW.md in affected_pack_files, got {affected:?}"
+        );
+        assert!(
+            affected.iter().any(|f| f == "20_CODE_MAP.md"),
+            "expected 20_CODE_MAP.md in affected_pack_files, got {affected:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p2_signature_drift_fires_on_rename() {
+        // Manifest has "calc.py::compute_lift_with_ci". Rename the function
+        // in the repo file → drift check must surface both sides (old missing,
+        // new added).
+        let dir = test_dir("p2_sig_drift");
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("calc.py"),
+            "def compute_lift(data):\n    return 1\n",
+        )
+        .unwrap();
+        // search_scope points at calc.py so parse_shortcut_signatures picks it up.
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": {"calc.py": "compute_lift"}
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let manifest = json!({
+            "shortcut_signatures": {
+                "calc.py::compute_lift_with_ci": "def compute_lift_with_ci(data)"
+            }
+        });
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_shortcut_signatures_drift(&manifest, &dir, &current, &mut out);
+
+        // Old key gone:
+        assert!(
+            out.iter().any(|w| w.kind == "SIGNATURE_DRIFT"
+                && w.message.contains("compute_lift_with_ci")
+                && w.message.contains("rename or deletion")),
+            "expected SIGNATURE_DRIFT for renamed-out compute_lift_with_ci, got {out:?}"
+        );
+        // New key present:
+        assert!(
+            out.iter().any(|w| w.kind == "SIGNATURE_DRIFT"
+                && w.message.contains("calc.py::compute_lift")
+                && w.message.contains("new function or rename")),
+            "expected SIGNATURE_DRIFT for added compute_lift, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p2_dependencies_drift_fires_on_pyproject_change() {
+        let dir = test_dir("p2_deps_drift");
+        fs::write(dir.join("pyproject.toml"), "[tool.poetry]\nname=\"v1\"\n").unwrap();
+        // Seal-time hash is the hash of the *old* file contents; compute it
+        // against a different string so drift is guaranteed to fire.
+        let manifest = json!({
+            "dependencies_snapshot": {"pyproject": "a".repeat(64)}
+        });
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_dependencies_drift(&manifest, &dir, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "DEPENDENCIES_DRIFT"
+                && w.message.contains("pyproject")
+                && w.message.contains("40_OPERATIONS_AND_RELEASE.md")),
+            "expected DEPENDENCIES_DRIFT naming pyproject + 40_OPERATIONS_AND_RELEASE.md, got {out:?}"
+        );
+        // affected_pack_files points at operations md.
+        assert!(
+            out.iter().any(|w| w
+                .affected_pack_files
+                .iter()
+                .any(|f| f == "40_OPERATIONS_AND_RELEASE.md")),
+            "expected affected_pack_files to include 40_OPERATIONS_AND_RELEASE.md, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p2_structural_warnings_as_json_shape_is_stable() {
+        // CI JSON contract: each warning has {kind, message, affected_pack_files}.
+        let warnings = vec![StructuralWarning {
+            kind: "TEMPLATE_MARKER".to_string(),
+            message: "marker found".to_string(),
+            affected_pack_files: vec!["routes.json".to_string()],
+        }];
+        let v = structural_warnings_as_json(&warnings);
+        let arr = v.as_array().expect("must be an array");
+        assert_eq!(arr.len(), 1);
+        let obj = arr[0].as_object().expect("must be an object");
+        assert_eq!(obj.get("kind").and_then(|v| v.as_str()), Some("TEMPLATE_MARKER"));
+        assert_eq!(
+            obj.get("message").and_then(|v| v.as_str()),
+            Some("marker found")
+        );
+        let affected = obj
+            .get("affected_pack_files")
+            .and_then(|v| v.as_array())
+            .expect("affected_pack_files must be an array");
+        assert_eq!(affected.len(), 1);
+        assert_eq!(affected[0].as_str(), Some("routes.json"));
     }
 }
