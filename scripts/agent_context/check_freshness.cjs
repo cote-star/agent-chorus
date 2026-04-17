@@ -49,6 +49,23 @@ function runGit(args, cwd, allowFailure = false) {
   }
 }
 
+// P9 F27: detect whether cwd is inside a git repository.
+function isGitRepo(cwd) {
+  return runGit(['rev-parse', '--git-dir'], cwd, true) !== '';
+}
+
+// P9 F24: detect a shallow clone (CI fetch-depth=1).
+function isShallowRepo(cwd) {
+  return runGit(['rev-parse', '--is-shallow-repository'], cwd, true) === 'true';
+}
+
+// P9 F25: detect initial-commit (no HEAD~1 to diff against).
+function commitCount(cwd) {
+  const raw = runGit(['rev-list', '--count', 'HEAD'], cwd, true);
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 function getChangedFiles(base, cwd) {
   const withBase = runGit(['diff', '--name-only', `${base}...HEAD`], cwd, true);
   if (withBase) {
@@ -62,6 +79,27 @@ function getChangedFiles(base, cwd) {
 
 function main() {
   const options = parseArgs(process.argv);
+
+  // P9 F27: non-git directory → explicit skipped, not silent pass.
+  if (!isGitRepo(options.cwd)) {
+    process.stdout.write('SKIPPED agent-context-freshness (non-git)\n');
+    return;
+  }
+
+  // P9 F24: shallow clone → skipped with guidance rather than empty-diff "pass".
+  if (isShallowRepo(options.cwd)) {
+    process.stdout.write(
+      'SKIPPED agent-context-freshness (shallow-clone: increase fetch-depth to >=20)\n'
+    );
+    return;
+  }
+
+  // P9 F25: initial commit → no HEAD~1 to diff against; surface explicitly.
+  if (commitCount(options.cwd) === 1) {
+    process.stdout.write('SKIPPED agent-context-freshness (initial-commit)\n');
+    return;
+  }
+
   const changedFiles = getChangedFiles(options.base, options.cwd);
   const config = relevance.loadRelevanceConfig(options.cwd);
 

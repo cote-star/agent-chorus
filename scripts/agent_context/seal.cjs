@@ -339,6 +339,7 @@ function buildManifest({
   repoRoot,
   repoName,
   branch,
+  detached,
   headSha,
   reason,
   baseSha,
@@ -355,13 +356,17 @@ function buildManifest({
   const wordsTotal = filesMeta.reduce((sum, m) => sum + m.words, 0);
   const bytesTotal = filesMeta.reduce((sum, m) => sum + m.bytes, 0);
 
+  // P9 F26: detached HEAD → branch null + detached: true rather than literal "HEAD".
+  const branchValue = detached || !branch || branch === 'HEAD' ? null : branch;
+
   return {
     value: {
       schema_version: 1,
       generated_at: generatedAt,
       repo_name: repoName,
       repo_root: '.',
-      branch,
+      branch: branchValue,
+      detached: Boolean(detached),
       head_sha: headSha || null,
       build_reason: reason,
       base_sha: baseSha || null,
@@ -376,6 +381,97 @@ function buildManifest({
     stable_checksum: stableChecksum,
     pack_checksum: packChecksum,
   };
+}
+
+// P9 F27: detect whether cwd is inside a git repository.
+function isGitRepo(cwd) {
+  return runGit(['rev-parse', '--git-dir'], cwd, true) !== '';
+}
+
+// P9 F26: resolve current branch, reporting detached HEAD explicitly rather
+// than leaking the literal string "HEAD" into the manifest.
+function resolveBranch(cwd) {
+  let symbolicOk = true;
+  try {
+    execFileSync('git', ['symbolic-ref', '-q', 'HEAD'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    symbolicOk = false;
+  }
+  const abbrev = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, true) || '';
+  if (!symbolicOk || abbrev === 'HEAD') {
+    return { branch: null, detached: true };
+  }
+  if (!abbrev) {
+    return { branch: null, detached: false };
+  }
+  return { branch: abbrev, detached: false };
+}
+
+// P9 F28: return warning strings for zone paths (search_scope.json) that resolve
+// to git-ignored files. Silent on missing config / invalid JSON.
+function collectGitignoreZoneWarnings(repoRoot, currentDir) {
+  const warnings = [];
+  const seen = new Set();
+  const scopePath = path.join(currentDir, 'search_scope.json');
+  if (!fs.existsSync(scopePath)) return warnings;
+  let scope;
+  try {
+    scope = JSON.parse(fs.readFileSync(scopePath, 'utf8'));
+  } catch (_) {
+    return warnings;
+  }
+  const families = scope && scope.task_families;
+  if (!families || typeof families !== 'object') return warnings;
+
+  const isIgnored = (rel) => {
+    try {
+      const res = require('child_process').spawnSync(
+        'git',
+        ['check-ignore', '-q', '--', rel],
+        { cwd: repoRoot, stdio: ['ignore', 'ignore', 'ignore'] }
+      );
+      return res.status === 0;
+    } catch (_) {
+      return false;
+    }
+  };
+
+  for (const name of Object.keys(families)) {
+    const entry = families[name];
+    if (!entry || typeof entry !== 'object') continue;
+    const dirs = Array.isArray(entry.search_directories) ? entry.search_directories : [];
+    for (const dir of dirs) {
+      if (typeof dir !== 'string') continue;
+      const abs = path.join(repoRoot, dir);
+      if (fs.existsSync(abs) && isIgnored(dir)) {
+        const msg = `zone path '${dir}' matches git-ignored file '${dir}' — update .gitignore or remove the zone`;
+        if (!seen.has(msg)) {
+          seen.add(msg);
+          warnings.push(msg);
+        }
+      }
+    }
+    const shortcuts = entry.verification_shortcuts && typeof entry.verification_shortcuts === 'object'
+      ? entry.verification_shortcuts
+      : null;
+    if (shortcuts) {
+      for (const key of Object.keys(shortcuts)) {
+        const rel = key.split(':')[0] || key;
+        const abs = path.join(repoRoot, rel);
+        if (fs.existsSync(abs) && isIgnored(rel)) {
+          const msg = `zone path '${key}' matches git-ignored file '${rel}' — update .gitignore or remove the zone`;
+          if (!seen.has(msg)) {
+            seen.add(msg);
+            warnings.push(msg);
+          }
+        }
+      }
+    }
+  }
+  return warnings;
 }
 
 function appendHistory(historyPath, entry) {
@@ -498,9 +594,26 @@ function isHookInstalled(repoRoot) {
 
 function main() {
   const opts = parseArgs(process.argv);
+
+  // P9 F27: non-git directory → fail loudly rather than silently producing a
+  // manifest with empty branch/head_sha and no freshness signal.
+  if (!isGitRepo(opts.cwd)) {
+    console.error(
+      `[context-pack] seal failed: not a git repository (cwd: ${opts.cwd})`
+    );
+    process.exit(1);
+  }
+
   const repoRoot = runGit(['rev-parse', '--show-toplevel'], opts.cwd, true) || opts.cwd;
   const repoName = path.basename(repoRoot);
-  const branch = runGit(['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot, true) || 'unknown';
+  // P9 F26: resolve branch + detect detached HEAD.
+  const { branch: resolvedBranch, detached } = resolveBranch(repoRoot);
+  const branch = resolvedBranch || '';
+  if (detached) {
+    process.stderr.write(
+      '[context-pack] NOTICE: HEAD is detached — manifest recorded as branch: null, detached: true\n'
+    );
+  }
   const headSha = opts.head || runGit(['rev-parse', 'HEAD'], repoRoot, true) || null;
 
   const packRoot = path.isAbsolute(opts.packDir)
@@ -560,11 +673,17 @@ function main() {
       repoRoot,
       repoName,
       branch,
+      detached,
       headSha,
       reason: opts.reason,
       baseSha: opts.base,
       filesMeta,
     });
+
+    // P9 F28: warn if any zone path is git-ignored.
+    for (const w of collectGitignoreZoneWarnings(repoRoot, currentDir)) {
+      process.stderr.write(`[context-pack] WARN: ${w}\n`);
+    }
 
     const previous = readJson(manifestPath);
     const previousStable = previous?.stable_checksum;

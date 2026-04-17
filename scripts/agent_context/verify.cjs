@@ -140,11 +140,47 @@ function verifyIntegrity(packDir, quiet) {
   return { pass: failCount === 0, passCount, failCount, details };
 }
 
+// P9 F27: detect whether cwd is inside a git repository.
+function isGitRepo(cwd) {
+  return runGit(['rev-parse', '--git-dir'], cwd, true) !== '';
+}
+
+// P9 F24: shallow-clone detection.
+function isShallowRepo(cwd) {
+  return runGit(['rev-parse', '--is-shallow-repository'], cwd, true) === 'true';
+}
+
+// P9 F25: commit count for initial-commit detection.
+function commitCount(cwd) {
+  const raw = runGit(['rev-list', '--count', 'HEAD'], cwd, true);
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 /**
  * Run freshness check: detect context-relevant file changes since base ref.
- * Returns { status: 'pass'|'warn'|'skip', changedFiles: string[], packUpdated: boolean }
+ * Returns { status: 'pass'|'warn'|'skip'|'skipped', changedFiles: string[],
+ *           packUpdated: boolean, skippedReason?: string }
  */
 function checkFreshness(base, cwd) {
+  // P9 F27: non-git directory → explicit skipped status.
+  if (!isGitRepo(cwd)) {
+    return { status: 'skipped', changedFiles: [], packUpdated: false, skippedReason: 'non-git' };
+  }
+  // P9 F24: shallow clone → explicit skipped, not silent empty-diff pass.
+  if (isShallowRepo(cwd)) {
+    return {
+      status: 'skipped',
+      changedFiles: [],
+      packUpdated: false,
+      skippedReason: 'shallow-clone: increase fetch-depth to >=20',
+    };
+  }
+  // P9 F25: initial commit → no HEAD~1 to diff against.
+  if (commitCount(cwd) === 1) {
+    return { status: 'skipped', changedFiles: [], packUpdated: false, skippedReason: 'initial-commit' };
+  }
+
   let changedFiles;
   try {
     changedFiles = getChangedFiles(base, cwd);
@@ -224,6 +260,9 @@ if (require.main === module) {
         pack_updated: freshness.packUpdated,
         exit_code: exitCode,
       };
+      if (freshness.skippedReason) {
+        report.skipped_reason = freshness.skippedReason;
+      }
 
       process.stdout.write(JSON.stringify(report) + '\n');
       process.exit(exitCode);
