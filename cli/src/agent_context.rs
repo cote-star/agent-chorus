@@ -819,6 +819,57 @@ pub fn seal(options: SealOptions) -> Result<()> {
     // so the manifest reflects the updated content.
     update_start_here_snapshot(&current_dir, branch.trim(), head_sha.as_deref(), &generated_at)?;
 
+    // P1 — compute semantic baseline once, pass into build_manifest. Helpers
+    // degrade to empty for repos without the optional structured configs.
+    // Resolved here (pre file-hashing) because P5 handlebar expansion consumes
+    // `family_counts` before the files are hashed.
+    let baseline = collect_semantic_baseline(&repo_root, &current_dir);
+
+    // P5 — expand `{{counts.<slug>}}` handlebars and detect stale prose
+    // numeric claims before collect_files_meta hashes the files. The expanded
+    // bytes are what get sealed into the manifest, so prose and manifest
+    // agree by construction.
+    let (slug_counts, noun_counts) = derive_count_maps(&baseline.family_counts);
+    let expansion_reports =
+        apply_count_templates(&current_dir, &required_files, &slug_counts, &noun_counts);
+    let mut all_mismatches: Vec<NumericClaimMismatch> = Vec::new();
+    for report in &expansion_reports {
+        let abs_path = current_dir.join(&report.file);
+        // Write back the expanded content only when it changed — avoids a
+        // spurious snapshot bump on repos that don't use handlebars.
+        let changed = match fs::read_to_string(&abs_path) {
+            Ok(current) => current != report.expanded,
+            Err(_) => false,
+        };
+        if changed {
+            write_text_atomic(&abs_path, &report.expanded)?;
+        }
+        all_mismatches.extend(report.mismatches.iter().cloned());
+    }
+    if !all_mismatches.is_empty() {
+        let mut msg = String::from(
+            "[context-pack] seal failed: prose numeric claims disagree with authoritative family_counts:\n",
+        );
+        for m in &all_mismatches {
+            msg.push_str(&format!(
+                "  - {}:{}: claimed {} {}, authoritative {}\n",
+                m.file, m.line, m.claimed_count, m.noun, m.authoritative_count
+            ));
+        }
+        if options.force {
+            // With --force we downgrade the failure to a warning so the
+            // author can unstick an unusual seal. verify() still flags the
+            // drift on the next run, preserving the audit trail.
+            eprintln!("{}", msg.trim_end());
+            eprintln!("[context-pack] WARN: --force downgraded count-claim failures to warnings");
+        } else {
+            msg.push_str(
+                "  Fix: update prose to `{{counts.<slug>}}` or surround with `<!-- count-claim: ignore -->` / `<!-- count-claim: end -->`. Use --force to override.\n",
+            );
+            return Err(anyhow!(msg));
+        }
+    }
+
     let files_meta = collect_files_meta(
         &current_dir,
         &repo_root,
@@ -827,10 +878,6 @@ pub fn seal(options: SealOptions) -> Result<()> {
     )?;
 
     let previous_manifest = read_json(&manifest_path)?;
-
-    // P1 — compute semantic baseline once, pass into build_manifest. Helpers
-    // degrade to empty for repos without the optional structured configs.
-    let baseline = collect_semantic_baseline(&repo_root, &current_dir);
 
     let manifest = build_manifest(
         &generated_at,
@@ -1532,6 +1579,54 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
 
     let integrity_passed = fail_count == 0;
     let integrity_status = if integrity_passed { "pass" } else { "fail" };
+
+    // P5 — drift check: re-resolve family_counts from the current repo, then
+    // re-scan each pack markdown for prose numeric claims. Any mismatch is a
+    // warning (never a hard fail on verify — verify only reports drift). This
+    // catches the window between a successful seal and a subsequent repo
+    // change that invalidated the sealed counts.
+    let drift_counts = resolve_family_counts(&repo_root, &current_dir);
+    let (_drift_slugs, drift_noun_counts) = derive_count_maps(&drift_counts);
+    let mut drift_mismatches: Vec<NumericClaimMismatch> = Vec::new();
+    if !drift_noun_counts.is_empty() {
+        if let Ok(entries) = fs::read_dir(&current_dir) {
+            let mut md_paths: Vec<PathBuf> = Vec::new();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && path.extension().and_then(|ext| ext.to_str()) == Some("md")
+                {
+                    md_paths.push(path);
+                }
+            }
+            md_paths.sort();
+            for path in md_paths {
+                let label = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                let text = match fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                drift_mismatches
+                    .extend(extract_numeric_claims(&text, &drift_noun_counts, &label));
+            }
+        }
+    }
+    if !drift_mismatches.is_empty() && !options.ci {
+        eprintln!(
+            "  WARN  count drift: {} prose claim(s) disagree with current repo:",
+            drift_mismatches.len()
+        );
+        for m in &drift_mismatches {
+            eprintln!(
+                "    - {}:{}: prose says {} {}, repo currently has {}",
+                m.file, m.line, m.claimed_count, m.noun, m.authoritative_count
+            );
+        }
+    }
 
     // Run freshness check
     let base_ref = options.base.as_deref().unwrap_or("origin/main");
@@ -2415,6 +2510,327 @@ fn extract_declared_counts(current_dir: &Path) -> Vec<Value> {
         extract_declared_counts_from_text(&text, &file_label, &mut out);
     }
     out
+}
+
+// ---- P5: count SSOT via seal-time template expansion ----------------------
+//
+// Prose becomes a template; manifest's `family_counts` becomes authoritative.
+// Seal expands handlebars like `{{counts.scripts_run}}` before hashing, then
+// scans remaining prose for stale numeric claims. Verify re-computes counts
+// and re-scans to catch drift between seal and verify.
+
+/// P5 — single occurrence of a stale prose numeric claim produced by
+/// `extract_numeric_claims`. The caller formats these into user-facing errors
+/// (on seal) or warnings (on verify / `--force`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NumericClaimMismatch {
+    file: String,
+    line: u64,
+    claimed_count: u64,
+    authoritative_count: u64,
+    noun: String,
+}
+
+/// P5 — normalize a glob pattern into a handlebar slug. Rules:
+/// - strip glob wildcards (`*`, `**`, `?`)
+/// - replace non-word chars (including `/`, `.`, `-`) with `_`
+/// - collapse repeated `_` and trim leading/trailing `_`
+///
+/// Examples:
+/// - `scripts/run_*.py`  → `scripts_run`
+/// - `src/brand_lift/*.py` → `src_brand_lift`
+/// - `tests/**/*.py` → `tests`
+fn slug_for_count_key(pattern: &str) -> String {
+    let mut out = String::with_capacity(pattern.len());
+    for ch in pattern.chars() {
+        if ch == '*' || ch == '?' {
+            // Strip glob wildcards entirely — they are not part of the
+            // stable slug identifier.
+            continue;
+        }
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            out.push(ch);
+        } else {
+            // Any other char (`/`, `.`, `-`, whitespace, ...) becomes `_`.
+            out.push('_');
+        }
+    }
+    // Collapse runs of `_` and trim edges.
+    let mut collapsed = String::with_capacity(out.len());
+    let mut prev_underscore = true;
+    for ch in out.chars() {
+        if ch == '_' {
+            if !prev_underscore {
+                collapsed.push('_');
+            }
+            prev_underscore = true;
+        } else {
+            collapsed.push(ch);
+            prev_underscore = false;
+        }
+    }
+    let trimmed = collapsed.trim_matches('_').to_string();
+    trimmed
+}
+
+/// P5 — expand `{{counts.<slug>}}` handlebars in `content` using the supplied
+/// authoritative map. Unknown slugs are left as literal text so an authoring
+/// mistake is visible to the numeric-claim scan (the literal handlebar still
+/// won't match the prose regex, so this is purely informational).
+///
+/// Whitespace inside the braces is tolerated: `{{ counts.scripts_run }}` is
+/// treated the same as `{{counts.scripts_run}}`.
+fn expand_count_handlebars(
+    content: &str,
+    counts: &std::collections::HashMap<String, usize>,
+) -> String {
+    let bytes = content.as_bytes();
+    let mut out = String::with_capacity(content.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Fast path: look for the `{{` opener. Anything else is copied
+        // verbatim.
+        if i + 1 < bytes.len() && bytes[i] == b'{' && bytes[i + 1] == b'{' {
+            // Find the matching `}}`.
+            if let Some(close) = content[i + 2..].find("}}") {
+                let inner = &content[i + 2..i + 2 + close];
+                let trimmed = inner.trim();
+                if let Some(slug) = trimmed.strip_prefix("counts.") {
+                    let slug = slug.trim();
+                    if let Some(value) = counts.get(slug) {
+                        out.push_str(&value.to_string());
+                        i = i + 2 + close + 2;
+                        continue;
+                    }
+                }
+                // Not a recognized counts handlebar — leave the literal
+                // text as-is so authors see the typo.
+                out.push_str(&content[i..i + 2 + close + 2]);
+                i = i + 2 + close + 2;
+                continue;
+            }
+        }
+        // Push the current char (UTF-8 safe via char_indices).
+        let ch_start = i;
+        let ch_end = (1..=4)
+            .map(|n| ch_start + n)
+            .find(|&end| content.is_char_boundary(end))
+            .unwrap_or(ch_start + 1);
+        out.push_str(&content[ch_start..ch_end]);
+        i = ch_end;
+    }
+    out
+}
+
+/// P5 — given already-expanded markdown content and an authoritative
+/// noun→count map, return every prose `<n> <noun>` claim whose value
+/// disagrees with the authoritative count.
+///
+/// Contract:
+/// - Skips lines inside `<!-- count-claim: ignore -->` .. `<!-- count-claim: end -->`
+///   regions (identical semantics to P1's `extract_declared_counts`).
+/// - If a noun has no entry in `authoritative`, the claim is left alone — we
+///   only flag values that can be checked against a known-good answer.
+/// - Claims whose value matches authoritative produce no output.
+/// - The `file` label is supplied by the caller since this helper operates on
+///   a single file body.
+fn extract_numeric_claims(
+    content: &str,
+    authoritative: &std::collections::HashMap<String, usize>,
+    file_label: &str,
+) -> Vec<NumericClaimMismatch> {
+    let nouns = prose_claim_nouns();
+    let mut out: Vec<NumericClaimMismatch> = Vec::new();
+    let mut ignore = false;
+    for (idx, raw_line) in content.lines().enumerate() {
+        if raw_line.contains("<!-- count-claim: end -->")
+            || raw_line.contains("<!-- count-claim: /ignore -->")
+        {
+            ignore = false;
+            continue;
+        }
+        if raw_line.contains("<!-- count-claim: ignore -->") {
+            ignore = true;
+            continue;
+        }
+        if ignore {
+            continue;
+        }
+
+        // Same single-pass number+noun scan as extract_declared_counts_from_text.
+        let mut cursor = 0;
+        let bytes = raw_line.as_bytes();
+        while cursor < bytes.len() {
+            if !bytes[cursor].is_ascii_digit() {
+                cursor += 1;
+                continue;
+            }
+            let start = cursor;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_digit() {
+                cursor += 1;
+            }
+            let number_str = &raw_line[start..cursor];
+            let after_digits = cursor;
+            if after_digits >= bytes.len()
+                || !(bytes[after_digits] == b' ' || bytes[after_digits] == b'\t')
+            {
+                continue;
+            }
+            let rest = &raw_line[after_digits + 1..];
+            let mut matched: Option<&'static str> = None;
+            let mut ordered: Vec<&&str> = nouns.iter().collect();
+            ordered.sort_by_key(|s| std::cmp::Reverse(s.len()));
+            for noun in ordered {
+                if rest.len() < noun.len() {
+                    continue;
+                }
+                if !rest.is_char_boundary(noun.len()) {
+                    continue;
+                }
+                let candidate = &rest[..noun.len()];
+                if candidate.eq_ignore_ascii_case(noun) {
+                    let next = rest.as_bytes().get(noun.len()).copied();
+                    let is_boundary = match next {
+                        None => true,
+                        Some(b) => !(b.is_ascii_alphanumeric() || b == b'_'),
+                    };
+                    if is_boundary {
+                        matched = Some(noun);
+                        break;
+                    }
+                }
+            }
+            if let Some(noun) = matched {
+                if let Ok(claimed) = number_str.parse::<u64>() {
+                    // Look up authoritative: exact noun first, then
+                    // singular form (e.g. "scripts" → "script"), then the
+                    // plural form if the claim uses the singular.
+                    let singular = noun.trim_end_matches('s');
+                    let plural = format!("{}s", noun);
+                    let auth = authoritative
+                        .get(noun)
+                        .or_else(|| authoritative.get(singular))
+                        .or_else(|| authoritative.get(plural.as_str()))
+                        .copied();
+                    if let Some(authoritative_count) = auth {
+                        let authoritative_count = authoritative_count as u64;
+                        if claimed != authoritative_count {
+                            out.push(NumericClaimMismatch {
+                                file: file_label.to_string(),
+                                line: (idx + 1) as u64,
+                                claimed_count: claimed,
+                                authoritative_count,
+                                noun: noun.to_string(),
+                            });
+                        }
+                    }
+                }
+                cursor = after_digits + 1 + noun.len();
+            }
+        }
+    }
+    out
+}
+
+/// P5 — build the two derived maps (by slug for handlebar expansion; by noun
+/// for prose-claim authoritative lookup) from P1's family_counts.
+///
+/// Slug map: every glob key becomes `slug_for_count_key(glob) → count`.
+///
+/// Noun map: for each registered prose noun, we accumulate the sum of all
+/// family_counts whose slug contains the noun as a word token (split on `_`).
+/// If no slug matches, the noun is simply absent — the prose scan then leaves
+/// any `<n> <noun>` claim alone. This keeps the check conservative: we only
+/// flag prose numbers we can cross-check with confidence.
+fn derive_count_maps(
+    family_counts: &std::collections::BTreeMap<String, usize>,
+) -> (
+    std::collections::HashMap<String, usize>,
+    std::collections::HashMap<String, usize>,
+) {
+    let mut slug_map: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for (glob, count) in family_counts {
+        let slug = slug_for_count_key(glob);
+        if !slug.is_empty() {
+            // Sum duplicates rather than silently overwrite — two globs that
+            // resolve to the same slug (e.g. `a/run_*.py` + `a/run_*.rs`)
+            // should aggregate, not mask each other.
+            *slug_map.entry(slug).or_insert(0) += *count;
+        }
+    }
+
+    let mut noun_map: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    for noun in prose_claim_nouns() {
+        // Split the noun on whitespace so "study docs" matches against the
+        // slug tokens `study` or `docs`.
+        let noun_lower = noun.to_ascii_lowercase();
+        let noun_parts: Vec<&str> = noun_lower.split_whitespace().collect();
+        let mut accum = 0usize;
+        let mut matched_any = false;
+        for (glob, count) in family_counts {
+            let slug = slug_for_count_key(glob).to_ascii_lowercase();
+            let tokens: Vec<&str> = slug.split('_').filter(|s| !s.is_empty()).collect();
+            // A slug matches the noun when any of the noun parts appears as a
+            // slug token. Plural/singular forms are both tried.
+            let matches = noun_parts.iter().any(|np| {
+                let np_single = np.trim_end_matches('s');
+                tokens.iter().any(|t| *t == *np || *t == np_single)
+            });
+            if matches {
+                accum += *count;
+                matched_any = true;
+            }
+        }
+        if matched_any {
+            noun_map.insert((*noun).to_string(), accum);
+        }
+    }
+    (slug_map, noun_map)
+}
+
+/// P5 — per-file summary returned to `seal()` so it can either fail the seal
+/// or surface warnings. The caller writes the expanded content back to disk
+/// before `collect_files_meta` hashes it.
+struct CountExpansionReport {
+    /// Relative filename (used for diagnostics only).
+    file: String,
+    /// Content after handlebar expansion. This is what seal writes back.
+    expanded: String,
+    /// Mismatched prose claims found in `expanded`.
+    mismatches: Vec<NumericClaimMismatch>,
+}
+
+/// P5 — orchestration helper used by `seal`. Reads every required markdown
+/// file in `current_dir`, expands handlebars, scans for stale prose claims,
+/// and returns one report per file. Non-markdown required files (the JSON
+/// structured layer) are skipped.
+fn apply_count_templates(
+    current_dir: &Path,
+    required_files: &[String],
+    slug_counts: &std::collections::HashMap<String, usize>,
+    noun_counts: &std::collections::HashMap<String, usize>,
+) -> Vec<CountExpansionReport> {
+    let mut reports: Vec<CountExpansionReport> = Vec::new();
+    for file in required_files {
+        if !file.ends_with(".md") {
+            continue;
+        }
+        let path = current_dir.join(file);
+        let original = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        let expanded = expand_count_handlebars(&original, slug_counts);
+        let mismatches = extract_numeric_claims(&expanded, noun_counts, file);
+        reports.push(CountExpansionReport {
+            file: file.clone(),
+            expanded,
+            mismatches,
+        });
+    }
+    reports
 }
 
 /// P1 — parse Python top-level function signatures via a regex that tolerates
@@ -5727,6 +6143,332 @@ After cleanup there are 32 tests today.\n\
         assert!(
             ts_sigs.contains_key("helpers.ts::greet"),
             "expected ts greet arrow signature, got {ts_sigs:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P5 tests: count SSOT via handlebars expansion ---
+
+    #[test]
+    fn slug_for_count_key_normalizes_globs() {
+        assert_eq!(slug_for_count_key("scripts/run_*.py"), "scripts_run_py");
+        assert_eq!(
+            slug_for_count_key("src/brand_lift/*.py"),
+            "src_brand_lift_py"
+        );
+        assert_eq!(slug_for_count_key("tests/**/*.py"), "tests_py");
+        assert_eq!(slug_for_count_key("docs/methodology"), "docs_methodology");
+    }
+
+    #[test]
+    fn expand_count_handlebars_substitutes_known_slugs() {
+        let mut counts = std::collections::HashMap::new();
+        counts.insert("scripts_run".to_string(), 12usize);
+        counts.insert("src_brand_lift".to_string(), 6usize);
+        let content = "The repo has {{counts.scripts_run}} scripts and {{counts.src_brand_lift}} brand-lift modules.";
+        let expanded = expand_count_handlebars(content, &counts);
+        assert_eq!(
+            expanded,
+            "The repo has 12 scripts and 6 brand-lift modules.",
+            "handlebars must expand to authoritative values"
+        );
+    }
+
+    #[test]
+    fn expand_count_handlebars_leaves_unknown_slugs_literal() {
+        let counts = std::collections::HashMap::new();
+        let content = "No mapping for {{counts.bogus_slug}} here.";
+        let expanded = expand_count_handlebars(content, &counts);
+        assert_eq!(
+            expanded,
+            "No mapping for {{counts.bogus_slug}} here.",
+            "unknown slugs must remain literal to surface author mistakes"
+        );
+    }
+
+    #[test]
+    fn extract_numeric_claims_flags_stale_prose() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("files".to_string(), 7usize);
+        let content = "We have 6 files in the repo.";
+        let mismatches = extract_numeric_claims(content, &authoritative, "10_SYSTEM_OVERVIEW.md");
+        assert_eq!(mismatches.len(), 1, "expected one mismatch, got {mismatches:?}");
+        let m = &mismatches[0];
+        assert_eq!(m.claimed_count, 6);
+        assert_eq!(m.authoritative_count, 7);
+        assert_eq!(m.noun, "files");
+        assert_eq!(m.line, 1);
+    }
+
+    #[test]
+    fn extract_numeric_claims_respects_ignore_region() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("files".to_string(), 7usize);
+        let content = "\
+<!-- count-claim: ignore -->\n\
+Historic note: we once shipped 6 files.\n\
+<!-- count-claim: end -->\n\
+Current count is {{counts.files_py}}.\n";
+        let mismatches = extract_numeric_claims(content, &authoritative, "doc.md");
+        assert!(
+            mismatches.is_empty(),
+            "claim inside ignore region must not be flagged, got {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn extract_numeric_claims_skips_expanded_counts_matches() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("scripts".to_string(), 12usize);
+        let mut slug_counts = std::collections::HashMap::new();
+        slug_counts.insert("scripts_run".to_string(), 12usize);
+        // Author wrote the handlebar; after expansion the number is the
+        // authoritative 12, which must not be flagged as a mismatch.
+        let authored = "We ship {{counts.scripts_run}} scripts.";
+        let expanded = expand_count_handlebars(authored, &slug_counts);
+        assert_eq!(expanded, "We ship 12 scripts.");
+        let mismatches = extract_numeric_claims(&expanded, &authoritative, "doc.md");
+        assert!(
+            mismatches.is_empty(),
+            "expanded handlebar value must match authoritative without being flagged, got {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn extract_numeric_claims_passes_matching_prose() {
+        let mut authoritative = std::collections::HashMap::new();
+        authoritative.insert("tests".to_string(), 32usize);
+        let content = "Currently 32 tests pass.";
+        let mismatches = extract_numeric_claims(content, &authoritative, "doc.md");
+        assert!(
+            mismatches.is_empty(),
+            "prose that matches authoritative must not be flagged, got {mismatches:?}"
+        );
+    }
+
+    #[test]
+    fn derive_count_maps_splits_by_slug_and_noun() {
+        let mut family = std::collections::BTreeMap::new();
+        family.insert("scripts/run_*.py".to_string(), 12usize);
+        family.insert("src/brand_lift/*.py".to_string(), 6usize);
+        let (slugs, nouns) = derive_count_maps(&family);
+        assert_eq!(slugs.get("scripts_run_py").copied(), Some(12));
+        assert_eq!(slugs.get("src_brand_lift_py").copied(), Some(6));
+        // "scripts" noun sums every slug whose tokens include "scripts"
+        // — only scripts/run_*.py does, so authoritative is 12.
+        assert_eq!(nouns.get("scripts").copied(), Some(12));
+        // "brands" noun would match only `brand` / `brands` slug tokens; the
+        // brand_lift slug contains "brand" so it's included via singular.
+        assert_eq!(nouns.get("brand").copied(), Some(6));
+    }
+
+    #[test]
+    fn seal_fails_on_stale_prose_number_without_force() {
+        let dir = test_dir("p5_seal_stale");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        // Required files (P1 schema — 5 markdown).
+        fs::write(
+            current.join("00_START_HERE.md"),
+            "- Branch at generation: `main`\n- HEAD commit: `unknown`\n- Generated at: `never`\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("10_SYSTEM_OVERVIEW.md"),
+            "The repo ships 6 scripts today.\n",
+        )
+        .unwrap();
+        fs::write(current.join("20_CODE_MAP.md"), "map\n").unwrap();
+        fs::write(current.join("30_BEHAVIORAL_INVARIANTS.md"), "rules\n").unwrap();
+        fs::write(current.join("40_OPERATIONS_AND_RELEASE.md"), "ops\n").unwrap();
+        // Completeness contract declares the scripts/run_*.py family so P1
+        // family_counts resolves to 12 at seal time.
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        // Seed a commit so HEAD resolves.
+        let _ = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        let err = seal(SealOptions {
+            reason: None,
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.to_string_lossy().to_string()),
+            force: false,
+            force_snapshot: false,
+            follow_symlinks: false,
+        })
+        .expect_err("seal must fail when prose count disagrees with authoritative");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("disagree")
+                || msg.contains("claim")
+                || msg.contains("numeric claims"),
+            "expected a count-claim failure message, got: {msg}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seal_force_downgrades_stale_prose_to_warning() {
+        let dir = test_dir("p5_seal_force");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(
+            current.join("00_START_HERE.md"),
+            "- Branch at generation: `main`\n- HEAD commit: `unknown`\n- Generated at: `never`\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("10_SYSTEM_OVERVIEW.md"),
+            "Legacy prose: 6 scripts ship today.\n",
+        )
+        .unwrap();
+        fs::write(current.join("20_CODE_MAP.md"), "map\n").unwrap();
+        fs::write(current.join("30_BEHAVIORAL_INVARIANTS.md"), "rules\n").unwrap();
+        fs::write(current.join("40_OPERATIONS_AND_RELEASE.md"), "ops\n").unwrap();
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let _ = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        // --force must succeed (mismatches downgraded to warnings).
+        seal(SealOptions {
+            reason: None,
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.to_string_lossy().to_string()),
+            force: true,
+            force_snapshot: false,
+            follow_symlinks: false,
+        })
+        .expect("seal must succeed under --force even with stale prose");
+
+        // Manifest should now exist with family_counts populated.
+        let manifest: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(current.join("manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest
+                .get("family_counts")
+                .and_then(|v| v.get("scripts/run_*.py"))
+                .and_then(|v| v.as_u64()),
+            Some(12),
+            "family_counts must be sealed correctly even under --force"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seal_expands_handlebars_into_sealed_pack() {
+        let dir = test_dir("p5_seal_expand");
+        init_git(&dir);
+        let scripts = dir.join("scripts");
+        fs::create_dir_all(&scripts).unwrap();
+        for i in 0..12 {
+            fs::write(scripts.join(format!("run_{i}.py")), "# runner\n").unwrap();
+        }
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(
+            current.join("00_START_HERE.md"),
+            "- Branch at generation: `main`\n- HEAD commit: `unknown`\n- Generated at: `never`\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("10_SYSTEM_OVERVIEW.md"),
+            "We ship {{counts.scripts_run_py}} scripts.\n",
+        )
+        .unwrap();
+        fs::write(current.join("20_CODE_MAP.md"), "map\n").unwrap();
+        fs::write(current.join("30_BEHAVIORAL_INVARIANTS.md"), "rules\n").unwrap();
+        fs::write(current.join("40_OPERATIONS_AND_RELEASE.md"), "ops\n").unwrap();
+        fs::write(
+            current.join("completeness_contract.json"),
+            r#"{
+              "task_families": {
+                "lookup": {"required_file_families": ["scripts/run_*.py"]}
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let _ = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(&dir)
+            .output();
+        let _ = std::process::Command::new("git")
+            .args(["commit", "-m", "seed", "--quiet"])
+            .current_dir(&dir)
+            .output();
+
+        seal(SealOptions {
+            reason: None,
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.to_string_lossy().to_string()),
+            force: false,
+            force_snapshot: false,
+            follow_symlinks: false,
+        })
+        .expect("seal with expanded handlebars must succeed");
+
+        let expanded_body =
+            fs::read_to_string(current.join("10_SYSTEM_OVERVIEW.md")).unwrap();
+        assert!(
+            expanded_body.contains("We ship 12 scripts."),
+            "handlebar must be expanded in the sealed file body, got: {expanded_body:?}"
+        );
+        assert!(
+            !expanded_body.contains("{{counts."),
+            "no handlebar should survive seal, got: {expanded_body:?}"
         );
 
         let _ = fs::remove_dir_all(&dir);
