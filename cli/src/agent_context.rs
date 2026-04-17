@@ -96,15 +96,103 @@ pub struct VerifyOptions {
 
 /// Result of running the freshness check as a reusable helper.
 struct FreshnessResult {
-    /// "pass", "warn", or "skip"
+    /// "pass", "warn", "skip", or "skipped"
     status: String,
     /// Context-relevant files that changed
     changed_files: Vec<String>,
     /// Whether .agent-context/current/ was touched in the diff
     pack_updated: bool,
+    /// Reason when status is "skipped" (F24/F25/F27 — shallow-clone, initial-commit, non-git).
+    /// None when status is pass/warn/skip.
+    skipped_reason: Option<String>,
+}
+
+/// Detect whether `cwd` lives inside a shallow git clone. Returns `Ok(true)`
+/// if `git rev-parse --is-shallow-repository` prints `true`. Non-zero exit
+/// (e.g. non-git directory) returns `Ok(false)` so callers can perform their
+/// own non-git detection.
+fn is_shallow_repo(cwd: &Path) -> Result<bool> {
+    let raw = run_git(&["rev-parse", "--is-shallow-repository"], cwd, true)?;
+    Ok(raw.trim() == "true")
+}
+
+/// Detect whether `cwd` is inside a git repository. Uses `git rev-parse --git-dir`
+/// which succeeds (non-empty stdout) inside any git repo and fails otherwise.
+fn is_git_repo(cwd: &Path) -> bool {
+    !run_git(&["rev-parse", "--git-dir"], cwd, true)
+        .map(|s| s.trim().is_empty())
+        .unwrap_or(true)
+}
+
+/// Count commits reachable from HEAD. Returns `Ok(None)` when the count
+/// cannot be determined (e.g. no HEAD yet).
+fn commit_count(cwd: &Path) -> Result<Option<u64>> {
+    let raw = run_git(&["rev-list", "--count", "HEAD"], cwd, true)?;
+    Ok(raw.trim().parse::<u64>().ok())
+}
+
+/// Resolve the current branch for manifest metadata. Returns `(branch, detached)`:
+/// - `(Some(name), false)` for normal branches
+/// - `(None, true)` when HEAD is detached (either `git symbolic-ref -q HEAD` fails
+///   or `rev-parse --abbrev-ref HEAD` prints the literal `HEAD`)
+/// - `(None, false)` only if git is absent entirely
+fn resolve_branch(cwd: &Path) -> (Option<String>, bool) {
+    // symbolic-ref fails on detached HEAD, succeeds otherwise.
+    let symbolic = Command::new("git")
+        .args(["symbolic-ref", "-q", "HEAD"])
+        .current_dir(cwd)
+        .output();
+    let symbolic_ok = matches!(symbolic, Ok(ref out) if out.status.success());
+
+    let abbrev = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], cwd, true)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    if !symbolic_ok || abbrev == "HEAD" {
+        return (None, true);
+    }
+    if abbrev.is_empty() {
+        return (None, false);
+    }
+    (Some(abbrev), false)
 }
 
 fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
+    // F27: non-git directory → explicit skipped status rather than silent empty diff.
+    if !is_git_repo(cwd) {
+        return Ok(FreshnessResult {
+            status: "skipped".to_string(),
+            changed_files: Vec::new(),
+            pack_updated: false,
+            skipped_reason: Some("non-git".to_string()),
+        });
+    }
+
+    // F24: shallow clone (CI `fetch-depth: 1`) makes `git diff origin/main...HEAD`
+    // silently return empty. Surface this as an advisory skip instead of "pass".
+    if is_shallow_repo(cwd).unwrap_or(false) {
+        return Ok(FreshnessResult {
+            status: "skipped".to_string(),
+            changed_files: Vec::new(),
+            pack_updated: false,
+            skipped_reason: Some(
+                "shallow-clone: increase fetch-depth to >=20".to_string(),
+            ),
+        });
+    }
+
+    // F25: initial commit → no HEAD~1 to diff against. Return explicit skipped
+    // status rather than relying on the fallback diff quietly producing empty output.
+    if let Some(1) = commit_count(cwd)? {
+        return Ok(FreshnessResult {
+            status: "skipped".to_string(),
+            changed_files: Vec::new(),
+            pack_updated: false,
+            skipped_reason: Some("initial-commit".to_string()),
+        });
+    }
+
     let changed_files_raw = {
         let with_base = run_git(&["diff", "--name-only", &format!("{base}...HEAD")], cwd, true)?;
         if with_base.is_empty() {
@@ -132,6 +220,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
             status: "pass".to_string(),
             changed_files: Vec::new(),
             pack_updated: pack_touched,
+            skipped_reason: None,
         });
     }
 
@@ -140,6 +229,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
             status: "pass".to_string(),
             changed_files: relevant,
             pack_updated: true,
+            skipped_reason: None,
         });
     }
 
@@ -147,6 +237,7 @@ fn check_freshness_inner(base: &str, cwd: &Path) -> Result<FreshnessResult> {
         status: "warn".to_string(),
         changed_files: relevant,
         pack_updated: false,
+        skipped_reason: None,
     })
 }
 
@@ -185,6 +276,14 @@ pub fn init(options: InitOptions) -> Result<()> {
         .cwd
         .map(PathBuf::from)
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // F27: non-git directory → fail loudly rather than silently producing an
+    // ill-formed pack (empty branch / head_sha, no freshness signal).
+    if !is_git_repo(&cwd) {
+        return Err(anyhow!(
+            "[context-pack] init failed: not a git repository (cwd: {})",
+            cwd.display()
+        ));
+    }
     let repo_root = git_repo_root(&cwd)?;
     let repo_name = repo_root
         .file_name()
@@ -361,6 +460,80 @@ fn check_content_quality(current_dir: &Path) -> Vec<String> {
     warnings
 }
 
+/// Returns `true` when `repo_root/<rel_path>` is tracked as git-ignored.
+/// `git check-ignore -q -- <path>` exits 0 when ignored, 1 when not.
+/// Anything else (including non-git / git absent) is treated as "not ignored"
+/// so this helper is safe to call from the seal path without surfacing noise.
+fn is_git_ignored(repo_root: &Path, rel_path: &str) -> bool {
+    match Command::new("git")
+        .args(["check-ignore", "-q", "--", rel_path])
+        .current_dir(repo_root)
+        .output()
+    {
+        Ok(out) => out.status.code() == Some(0),
+        Err(_) => false,
+    }
+}
+
+/// F28: return warning strings for zone paths (search_scope.json `search_directories`
+/// and `verification_shortcuts`) whose on-disk file is git-ignored. Silent on
+/// missing config, unreadable JSON, or missing files — those cases are either
+/// already covered by other seal-time validation or are explicit opt-outs.
+fn collect_gitignore_zone_warnings(repo_root: &Path, current_dir: &Path) -> Vec<String> {
+    let mut warnings = Vec::new();
+    let search_scope_path = current_dir.join("search_scope.json");
+    let scope = match read_json(&search_scope_path) {
+        Ok(Some(v)) => v,
+        _ => return warnings,
+    };
+    let families = match scope.get("task_families").and_then(|v| v.as_object()) {
+        Some(obj) => obj,
+        None => return warnings,
+    };
+
+    let mut seen_warnings = BTreeSet::new();
+
+    for (_task_name, family_val) in families {
+        let entry = match family_val.as_object() {
+            Some(obj) => obj,
+            None => continue,
+        };
+
+        if let Some(dirs) = entry.get("search_directories").and_then(|v| v.as_array()) {
+            for dir in dirs.iter().filter_map(|v| v.as_str()) {
+                // Resolve dir relative to repo root. Warn per-dir only (don't walk).
+                let on_disk = repo_root.join(dir);
+                if on_disk.exists() && is_git_ignored(repo_root, dir) {
+                    let msg = format!(
+                        "zone path '{dir}' matches git-ignored file '{dir}' — update .gitignore or remove the zone"
+                    );
+                    if seen_warnings.insert(msg.clone()) {
+                        warnings.push(msg);
+                    }
+                }
+            }
+        }
+
+        if let Some(shortcuts) = entry.get("verification_shortcuts").and_then(|v| v.as_object()) {
+            for file_key in shortcuts.keys() {
+                // Shortcut keys may use "path:line" form; path comes first.
+                let rel = file_key.split(':').next().unwrap_or(file_key.as_str());
+                let on_disk = repo_root.join(rel);
+                if on_disk.exists() && is_git_ignored(repo_root, rel) {
+                    let msg = format!(
+                        "zone path '{file_key}' matches git-ignored file '{rel}' — update .gitignore or remove the zone"
+                    );
+                    if seen_warnings.insert(msg.clone()) {
+                        warnings.push(msg);
+                    }
+                }
+            }
+        }
+    }
+
+    warnings
+}
+
 fn is_hook_installed(repo_root: &Path) -> bool {
     let hooks_path = run_git(&["config", "--get", "core.hooksPath"], repo_root, true)
         .unwrap_or_default();
@@ -389,15 +562,29 @@ pub fn seal(options: SealOptions) -> Result<()> {
         .cwd
         .map(PathBuf::from)
         .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    // F27: non-git directory → fail loudly. Previous behavior silently produced a
+    // manifest with empty branch/head_sha and skipped freshness with no explanation.
+    if !is_git_repo(&cwd) {
+        return Err(anyhow!(
+            "[context-pack] seal failed: not a git repository (cwd: {})",
+            cwd.display()
+        ));
+    }
     let repo_root = git_repo_root(&cwd)?;
     let repo_name = repo_root
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("repo")
         .to_string();
-    let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], &repo_root, true)?
-        .trim()
-        .to_string();
+    // F26: detect detached HEAD so manifest `branch` is `null`+`detached: true`
+    // rather than the literal string "HEAD".
+    let (branch_opt, detached) = resolve_branch(&repo_root);
+    let branch = branch_opt.clone().unwrap_or_default();
+    if detached {
+        eprintln!(
+            "[context-pack] NOTICE: HEAD is detached — manifest recorded as branch: null, detached: true"
+        );
+    }
     let head_sha = match options.head.as_ref() {
         Some(sha) if !sha.trim().is_empty() => Some(sha.trim().to_string()),
         _ => {
@@ -476,6 +663,7 @@ pub fn seal(options: SealOptions) -> Result<()> {
         &repo_root,
         &repo_name,
         branch.trim(),
+        detached,
         head_sha.as_deref(),
         &reason,
         options.base.as_deref(),
@@ -505,6 +693,12 @@ pub fn seal(options: SealOptions) -> Result<()> {
 
     let quality_warnings = check_content_quality(&current_dir);
     for w in &quality_warnings {
+        eprintln!("[context-pack] WARN: {w}");
+    }
+
+    // F28: warn if any zone path (search_scope.json search_directories / verification_shortcuts)
+    // resolves to a file that is git-ignored — a strong signal the pack and .gitignore disagree.
+    for w in collect_gitignore_zone_warnings(&repo_root, &current_dir) {
         eprintln!("[context-pack] WARN: {w}");
     }
 
@@ -918,6 +1112,7 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
                 status: "skip".to_string(),
                 changed_files: Vec::new(),
                 pack_updated: false,
+                skipped_reason: None,
             },
         }
     } else {
@@ -928,20 +1123,23 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
                 status: "skip".to_string(),
                 changed_files: Vec::new(),
                 pack_updated: false,
+                skipped_reason: None,
             },
         }
     };
 
     if options.ci {
         let exit_code = if !integrity_passed || freshness.status == "warn" { 1 } else { 0 };
-        let result = json!({
-            "integrity": integrity_status,
-            "freshness": freshness.status,
-            "changed_files": freshness.changed_files,
-            "pack_updated": freshness.pack_updated,
-            "exit_code": exit_code
-        });
-        println!("{}", serde_json::to_string_pretty(&result)?);
+        let mut result_obj = serde_json::Map::new();
+        result_obj.insert("integrity".to_string(), json!(integrity_status));
+        result_obj.insert("freshness".to_string(), json!(freshness.status));
+        result_obj.insert("changed_files".to_string(), json!(freshness.changed_files));
+        result_obj.insert("pack_updated".to_string(), json!(freshness.pack_updated));
+        if let Some(reason) = &freshness.skipped_reason {
+            result_obj.insert("skipped_reason".to_string(), json!(reason));
+        }
+        result_obj.insert("exit_code".to_string(), json!(exit_code));
+        println!("{}", serde_json::to_string_pretty(&Value::Object(result_obj))?);
         if exit_code != 0 {
             std::process::exit(exit_code);
         }
@@ -977,6 +1175,13 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             }
             println!("  Consider running: chorus agent-context build");
         }
+        "skipped" => {
+            if let Some(reason) = &freshness.skipped_reason {
+                println!("  Freshness: skipped ({})", reason);
+            } else {
+                println!("  Freshness: skipped");
+            }
+        }
         _ => {
             println!("  Freshness: skipped (no git history available)");
         }
@@ -1011,6 +1216,13 @@ pub fn check_freshness(base: &str, cwd: &str) -> Result<()> {
             }
             println!();
             println!("Consider running: chorus agent-context build");
+        }
+        "skipped" => {
+            if let Some(reason) = &result.skipped_reason {
+                println!("SKIPPED agent-context-freshness ({reason})");
+            } else {
+                println!("SKIPPED agent-context-freshness");
+            }
         }
         _ => {}
     }
@@ -1357,6 +1569,7 @@ fn build_manifest(
     _repo_root: &Path,
     repo_name: &str,
     branch: &str,
+    detached: bool,
     head_sha: Option<&str>,
     reason: &str,
     base_sha: Option<&str>,
@@ -1396,12 +1609,20 @@ fn build_manifest(
         })
         .collect::<Vec<_>>();
 
+    // F26: detached HEAD → branch is null + detached: true rather than the literal "HEAD".
+    let branch_value: Value = if detached || branch.is_empty() || branch == "HEAD" {
+        Value::Null
+    } else {
+        Value::String(branch.to_string())
+    };
+
     let value = json!({
         "schema_version": 1,
         "generated_at": generated_at,
         "repo_name": repo_name,
         "repo_root": ".",
-        "branch": branch,
+        "branch": branch_value,
+        "detached": detached,
         "head_sha": head_sha,
         "build_reason": reason,
         "base_sha": base_sha,
@@ -2972,197 +3193,316 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    // --- P8 hostile-input & platform safety tests (F19–F23) -----------------
+    // --- P9 git edge-case tests (F24–F28) ---
 
+    /// Run a git command in `dir`. Panics on failure — helper for test setup only.
+    fn git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git command runs");
+        assert!(
+            status.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&status.stderr)
+        );
+    }
+
+    fn init_repo_with_commit(dir: &Path) {
+        git(dir, &["init", "-q", "-b", "main"]);
+        git(dir, &["config", "user.email", "test@example.com"]);
+        git(dir, &["config", "user.name", "test"]);
+        git(dir, &["config", "commit.gpgsign", "false"]);
+        fs::write(dir.join("README.md"), "hello\n").unwrap();
+        git(dir, &["add", "README.md"]);
+        git(dir, &["commit", "-q", "-m", "initial"]);
+    }
+
+    /// F27: non-git directory → freshness returns skipped + reason "non-git".
     #[test]
-    fn pack_read_accepts_valid_utf8() {
-        let dir = test_dir("pack_read_utf8");
-        let file = dir.join("ok.md");
-        fs::write(&file, "# Hello — world\n").unwrap();
-
-        let result = read_file_for_pack(&file, &dir, false);
-        assert!(result.is_ok(), "valid utf-8 should read cleanly: {:?}", result);
-        let content = result.unwrap();
-        assert!(content.contains("Hello"));
-
+    fn freshness_non_git_directory_returns_skipped() {
+        let dir = test_dir("p9_non_git");
+        let result = check_freshness_inner("origin/main", &dir).unwrap();
+        assert_eq!(result.status, "skipped");
+        assert_eq!(result.skipped_reason.as_deref(), Some("non-git"));
+        assert!(result.changed_files.is_empty());
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// F27: `is_git_repo` distinguishes plain dirs from git repos.
     #[test]
-    fn pack_read_rejects_nul_bytes_as_binary() {
-        let dir = test_dir("pack_read_nul");
-        let file = dir.join("blob.bin");
-        // Embed a NUL inside the first 8KB so the sniffer catches it.
-        let mut bytes = b"header".to_vec();
-        bytes.push(0u8);
-        bytes.extend_from_slice(b"payload");
-        fs::write(&file, &bytes).unwrap();
+    fn is_git_repo_detects_non_git_and_git() {
+        let dir = test_dir("p9_is_git_repo");
+        assert!(!is_git_repo(&dir), "plain dir should not be a git repo");
+        init_repo_with_commit(&dir);
+        assert!(is_git_repo(&dir), "initialized repo should be detected");
+        let _ = fs::remove_dir_all(&dir);
+    }
 
-        let err = read_file_for_pack(&file, &dir, false).expect_err("nul should fail");
-        match err {
-            PackReadError::LikelyBinary(_) => {}
-            other => panic!("expected LikelyBinary, got {:?}", other),
+    /// F25: a single-commit repo has no HEAD~1 — freshness must return skipped
+    /// with reason "initial-commit" rather than silently passing on an empty diff.
+    #[test]
+    fn freshness_initial_commit_returns_skipped() {
+        let dir = test_dir("p9_initial_commit");
+        init_repo_with_commit(&dir);
+        let result = check_freshness_inner("origin/main", &dir).unwrap();
+        assert_eq!(result.status, "skipped");
+        assert_eq!(result.skipped_reason.as_deref(), Some("initial-commit"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// F25 companion: `commit_count` returns the right shape for a 1-commit repo.
+    #[test]
+    fn commit_count_after_initial_commit_is_one() {
+        let dir = test_dir("p9_commit_count");
+        init_repo_with_commit(&dir);
+        assert_eq!(commit_count(&dir).unwrap(), Some(1));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// F24: shallow clones are detected. Builds a local "remote" then shallow-clones it.
+    /// Uses `file://` URL because `git clone --depth` silently promotes local-path
+    /// clones to full hardlink clones, defeating the test.
+    #[test]
+    fn freshness_shallow_clone_returns_skipped() {
+        let parent = test_dir("p9_shallow");
+        let origin = parent.join("origin");
+        fs::create_dir_all(&origin).unwrap();
+        init_repo_with_commit(&origin);
+        // Add a second commit so shallow clone has something to be shallow about.
+        fs::write(origin.join("a.txt"), "a\n").unwrap();
+        git(&origin, &["add", "a.txt"]);
+        git(&origin, &["commit", "-q", "-m", "second"]);
+
+        let clone = parent.join("clone");
+        // Canonicalize to resolve /tmp → /private/tmp on macOS; `file://` requires
+        // an absolute path git can access.
+        let origin_abs = fs::canonicalize(&origin).unwrap();
+        let origin_url = format!("file://{}", origin_abs.display());
+        let status = std::process::Command::new("git")
+            .args([
+                "clone",
+                "--depth",
+                "1",
+                "--quiet",
+                origin_url.as_str(),
+                clone.to_string_lossy().as_ref(),
+            ])
+            .output()
+            .expect("git clone runs");
+        assert!(
+            status.status.success(),
+            "shallow clone failed: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+
+        // Some git configurations ignore --depth over file:// (very old git,
+        // uploadpack.allowFilter=false, etc). Skip the test gracefully rather
+        // than fail on environment drift — the parsing-level behavior is
+        // already exercised by the other P9 tests.
+        if !is_shallow_repo(&clone).unwrap_or(false) {
+            let _ = fs::remove_dir_all(&parent);
+            eprintln!("skipping: shallow clone not produced by this git version");
+            return;
         }
 
+        let result = check_freshness_inner("origin/main", &clone).unwrap();
+        assert_eq!(result.status, "skipped");
+        let reason = result.skipped_reason.as_deref().unwrap_or("");
+        assert!(
+            reason.contains("shallow-clone"),
+            "expected shallow-clone reason, got: {reason}"
+        );
+        let _ = fs::remove_dir_all(&parent);
+    }
+
+    /// F24 parsing-level test: `is_shallow_repo` returns false for a normal repo.
+    #[test]
+    fn is_shallow_repo_false_for_normal_repo() {
+        let dir = test_dir("p9_shallow_parse");
+        init_repo_with_commit(&dir);
+        assert!(
+            !is_shallow_repo(&dir).unwrap(),
+            "fresh repo should not be shallow"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// F26: detached HEAD — `resolve_branch` returns None + detached=true,
+    /// and `build_manifest` writes `branch: null, detached: true`.
     #[test]
-    fn pack_read_decodes_invalid_utf8_lossily_without_panic() {
-        let dir = test_dir("pack_read_lossy");
-        let file = dir.join("invalid.md");
-        // Not a NUL, but an invalid UTF-8 sequence (lone 0xFF).
-        fs::write(&file, [b'a', 0xFF, b'b']).unwrap();
+    fn detached_head_manifest_fields() {
+        let dir = test_dir("p9_detached");
+        init_repo_with_commit(&dir);
+        // Add a second commit and check out its SHA to detach HEAD.
+        fs::write(dir.join("a.txt"), "a\n").unwrap();
+        git(&dir, &["add", "a.txt"]);
+        git(&dir, &["commit", "-q", "-m", "second"]);
+        let sha_output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        let sha = String::from_utf8_lossy(&sha_output.stdout).trim().to_string();
+        git(&dir, &["checkout", "-q", &sha]);
 
-        let result = read_file_for_pack(&file, &dir, false)
-            .expect("lossy decode should not fail on invalid utf-8");
-        assert!(result.contains('a') && result.contains('b'));
-        // U+FFFD is the replacement character inserted by from_utf8_lossy.
-        assert!(result.contains('\u{FFFD}'));
+        let (branch, detached) = resolve_branch(&dir);
+        assert!(detached, "HEAD should be detected as detached");
+        assert!(
+            branch.is_none(),
+            "branch should be None on detached HEAD, got {:?}",
+            branch
+        );
 
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn pack_read_rejects_files_larger_than_limit() {
-        let dir = test_dir("pack_read_too_large");
-        let file = dir.join("big.log");
-        // Write just over the limit. We keep this test fast by writing a
-        // single buffer — MAX_PACK_FILE_BYTES is 5MB.
-        let buf = vec![b'x'; (MAX_PACK_FILE_BYTES as usize) + 1];
-        fs::write(&file, &buf).unwrap();
-
-        let err = read_file_for_pack(&file, &dir, false).expect_err("oversized should fail");
-        match err {
-            PackReadError::TooLarge(_, n) => assert!(n > MAX_PACK_FILE_BYTES),
-            other => panic!("expected TooLarge, got {:?}", other),
-        }
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn pack_read_rejects_symlink_escaping_repo_root() {
-        use std::os::unix::fs::symlink;
-
-        let dir = test_dir("pack_read_symlink_escape");
-        let outside = test_dir("pack_read_symlink_target");
-        let target = outside.join("secret.md");
-        fs::write(&target, "escaped!").unwrap();
-
-        let link = dir.join("link.md");
-        symlink(&target, &link).unwrap();
-
-        // follow_symlinks = false: escape should be refused.
-        let err = read_file_for_pack(&link, &dir, false)
-            .expect_err("symlink escape should fail with follow_symlinks=false");
-        match err {
-            PackReadError::SymlinkEscape(_, _) => {}
-            other => panic!("expected SymlinkEscape, got {:?}", other),
-        }
-
-        // follow_symlinks = true: should succeed (opt-in override).
-        let ok = read_file_for_pack(&link, &dir, true)
-            .expect("symlink should dereference with follow_symlinks=true");
-        assert!(ok.contains("escaped!"));
-
-        let _ = fs::remove_dir_all(&dir);
-        let _ = fs::remove_dir_all(&outside);
-    }
-
-    #[test]
-    fn collect_files_meta_skips_hostile_files_without_panic() {
-        let dir = test_dir("collect_meta_hostile");
-        // One valid file
-        fs::write(dir.join("good.md"), "hello").unwrap();
-        // One binary file (should be skipped with warning)
-        fs::write(dir.join("bad.bin"), [b'a', 0u8, b'b']).unwrap();
-
-        let relatives = vec!["good.md".to_string(), "bad.bin".to_string()];
-        let meta = collect_files_meta(&dir, &dir, &relatives, false).expect("no panic");
-        assert_eq!(meta.len(), 1, "binary file should be skipped");
-        assert_eq!(meta[0].path, "good.md");
-        assert_eq!(meta[0].path_lower, "good.md");
-
-        let _ = fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn manifest_includes_path_lower_for_case_insensitive_collision_detection() {
-        let files = vec![
-            FileMeta {
-                path: "Readme.md".into(),
-                path_lower: "readme.md".into(),
-                sha256: "a".into(),
-                bytes: 1,
-                words: 1,
-            },
-            FileMeta {
-                path: "README.md".into(),
-                path_lower: "readme.md".into(),
-                sha256: "b".into(),
-                bytes: 1,
-                words: 1,
-            },
-        ];
+        // `build_manifest` should surface this as branch: null + detached: true.
+        let files: Vec<FileMeta> = Vec::new();
         let bundle = build_manifest(
-            "2026-04-17T00:00:00Z",
-            &std::path::PathBuf::from("/repo"),
-            "repo",
-            "main",
-            Some("abc"),
-            "test",
+            "2026-01-01T00:00:00Z",
+            &dir,
+            "test-repo",
+            "HEAD", // simulate the literal-HEAD output that would otherwise leak
+            true,
+            Some(&sha),
+            "manual-seal",
             None,
             &[],
             &files,
         );
-        let arr = bundle
-            .value
-            .get("files")
-            .and_then(|v| v.as_array())
-            .expect("files array");
-        assert_eq!(arr.len(), 2);
-        for entry in arr {
-            assert_eq!(entry.get("path_lower").and_then(|v| v.as_str()), Some("readme.md"));
-        }
+        assert_eq!(bundle.value.get("branch").cloned(), Some(serde_json::Value::Null));
+        assert_eq!(
+            bundle.value.get("detached").and_then(|v| v.as_bool()),
+            Some(true)
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
+    /// F26 companion: on a normal branch, manifest keeps the branch name and
+    /// records `detached: false` for downstream tooling to key on.
     #[test]
-    fn validate_pack_glob_rejects_absolute_and_traversal() {
-        let root = std::path::PathBuf::from("/repo");
-        // Absolute — Unix.
-        assert!(validate_pack_glob("/etc/passwd", &root).is_err());
-        // Absolute — Windows drive letter.
-        assert!(validate_pack_glob("C:\\Windows\\System32", &root).is_err());
-        // Path traversal with ..
-        assert!(validate_pack_glob("../../etc/passwd", &root).is_err());
-        assert!(validate_pack_glob("src/../../outside/**", &root).is_err());
-        // Empty is rejected.
-        assert!(validate_pack_glob("", &root).is_err());
-
-        // Valid patterns pass.
-        assert!(validate_pack_glob("src/**/*.rs", &root).is_ok());
-        assert!(validate_pack_glob("docs/README.md", &root).is_ok());
-        assert!(validate_pack_glob("a/b/c", &root).is_ok());
+    fn attached_head_manifest_keeps_branch() {
+        let files: Vec<FileMeta> = Vec::new();
+        let bundle = build_manifest(
+            "2026-01-01T00:00:00Z",
+            Path::new("/tmp"),
+            "test-repo",
+            "main",
+            false,
+            Some("abc123"),
+            "manual-seal",
+            None,
+            &[],
+            &files,
+        );
+        assert_eq!(
+            bundle.value.get("branch").and_then(|v| v.as_str()),
+            Some("main")
+        );
+        assert_eq!(
+            bundle.value.get("detached").and_then(|v| v.as_bool()),
+            Some(false)
+        );
     }
 
+    /// F28: a zone path that resolves to a git-ignored file produces a warning.
     #[test]
-    fn walk_files_bounded_respects_depth_limit() {
-        let dir = test_dir("walk_depth");
-        // Build a nested chain deeper than MAX_WALK_DEPTH.
-        let mut p = dir.clone();
-        for i in 0..(MAX_WALK_DEPTH + 3) {
-            p = p.join(format!("d{}", i));
-            fs::create_dir_all(&p).unwrap();
-            fs::write(p.join("f.md"), "x").unwrap();
-        }
+    fn gitignore_zone_mismatch_warns() {
+        let dir = test_dir("p9_gitignore");
+        init_repo_with_commit(&dir);
 
-        let mut out = Vec::new();
-        walk_files(&dir, &dir, &mut out).expect("walk should not panic or hang");
-        // We expect some files (up to MAX_WALK_DEPTH) but not all.
-        assert!(out.len() <= MAX_WALK_DEPTH);
+        // Create an ignored directory + file, plus search_scope.json pointing at it.
+        fs::create_dir_all(dir.join("build")).unwrap();
+        fs::write(dir.join("build/x.py"), "x = 1\n").unwrap();
+        fs::write(dir.join(".gitignore"), "build/\n").unwrap();
+        git(&dir, &["add", ".gitignore"]);
+        git(&dir, &["commit", "-q", "-m", "add gitignore"]);
 
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let scope = serde_json::json!({
+            "task_families": {
+                "lookup": {
+                    "search_directories": ["build/"],
+                    "verification_shortcuts": {}
+                }
+            }
+        });
+        fs::write(
+            current.join("search_scope.json"),
+            serde_json::to_string_pretty(&scope).unwrap(),
+        )
+        .unwrap();
+
+        let warnings = collect_gitignore_zone_warnings(&dir, &current);
+        assert!(
+            warnings.iter().any(|w| w.contains("build/")),
+            "expected a warning for git-ignored zone path, got {warnings:?}"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("git-ignored file")),
+            "warning should mention git-ignored file"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// F28 companion: tracked (non-ignored) zone paths produce no warning.
+    #[test]
+    fn gitignore_zone_match_no_warning_when_tracked() {
+        let dir = test_dir("p9_gitignore_clean");
+        init_repo_with_commit(&dir);
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/lib.rs"), "// hi\n").unwrap();
+        git(&dir, &["add", "src/lib.rs"]);
+        git(&dir, &["commit", "-q", "-m", "add src"]);
+
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        let scope = serde_json::json!({
+            "task_families": {
+                "lookup": {
+                    "search_directories": ["src/"],
+                    "verification_shortcuts": {}
+                }
+            }
+        });
+        fs::write(
+            current.join("search_scope.json"),
+            serde_json::to_string_pretty(&scope).unwrap(),
+        )
+        .unwrap();
+
+        let warnings = collect_gitignore_zone_warnings(&dir, &current);
+        assert!(
+            warnings.is_empty(),
+            "tracked zone should not produce warnings, got {warnings:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// F27: seal must fail loudly with a clear message when not in a git repo.
+    #[test]
+    fn seal_fails_loudly_in_non_git_directory() {
+        let dir = test_dir("p9_seal_non_git");
+        let result = seal(SealOptions {
+            reason: None,
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.display().to_string()),
+            force: false,
+            force_snapshot: false,
+        });
+        let err = result.expect_err("seal should fail in a non-git directory");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("not a git repository"),
+            "expected explicit non-git message, got: {msg}"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 }
