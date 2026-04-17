@@ -34,6 +34,13 @@ function parseArgs(argv) {
     // For now the flag is accepted but acts as a no-op on the Node side; CI
     // consumers should prefer the Rust binary when the JSON payload is required.
     suggestPatches: false,
+    // TODO(P6): implement --enforce-separate-commits parity here. The Rust
+    // reference is cli/src/agent_context.rs::check_separate_commits, which
+    // walks `base..HEAD` and fails when any commit touches both
+    // `.agent-context/**` and non-pack paths. Accept the flag for
+    // CLI-parity so shared CI templates can pass it, but prefer the Rust
+    // binary when the gate is enabled.
+    enforceSeparateCommits: false,
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -66,6 +73,10 @@ function parseArgs(argv) {
       case '--suggest-patches':
         // TODO(P3): wire through to a Node-side suggest_patches() helper.
         opts.suggestPatches = true;
+        break;
+      case '--enforce-separate-commits':
+        // TODO(P6): wire through to a Node-side check_separate_commits() helper.
+        opts.enforceSeparateCommits = true;
         break;
       default:
         break;
@@ -183,6 +194,29 @@ function commitCount(cwd) {
 }
 
 /**
+ * P6: persist the warn to `.agent-context/current/.last_freshness.json` so
+ * the pre-push hook can later detect a pack-only follow-up push. Mirrors the
+ * Rust-side `write_last_freshness_state` in cli/src/agent_context.rs.
+ * Best-effort: missing pack dir or write failure must not break verify.
+ */
+function writeLastFreshnessState(cwd, changedFiles, affectedSections) {
+  try {
+    const repoRoot = runGit(['rev-parse', '--show-toplevel'], cwd, true) || cwd;
+    const currentDir = path.join(repoRoot, '.agent-context', 'current');
+    if (!fs.existsSync(currentDir)) return;
+    const statePath = path.join(currentDir, '.last_freshness.json');
+    const payload = {
+      changed_files: changedFiles,
+      affected_sections: affectedSections || [],
+      timestamp: Math.floor(Date.now() / 1000),
+    };
+    fs.writeFileSync(statePath, JSON.stringify(payload, null, 2), 'utf8');
+  } catch (_err) {
+    // swallow — state-file failure is never fatal
+  }
+}
+
+/**
  * Run freshness check: detect context-relevant file changes since base ref.
  * Returns { status: 'pass'|'warn'|'skip'|'skipped', changedFiles: string[],
  *           packUpdated: boolean, skippedReason?: string }
@@ -277,6 +311,17 @@ if (require.main === module) {
     process.exit(1);
   }
 
+  if (opts.enforceSeparateCommits) {
+    // TODO(P6): port check_separate_commits from cli/src/agent_context.rs.
+    // Until then, surface the gap so parity-fixture CI runs don't get a
+    // silent false pass on the Node side.
+    console.error(
+      '[agent-context] verify --enforce-separate-commits is not yet implemented in the Node entrypoint; ' +
+        'use `chorus agent-context verify --ci --enforce-separate-commits` (Rust CLI) for now.'
+    );
+    process.exit(1);
+  }
+
   if (opts.ci) {
     // CI mode: JSON output combining integrity + freshness
     try {
@@ -285,6 +330,12 @@ if (require.main === module) {
 
       const integrityStatus = integrity.pass ? 'pass' : 'fail';
       const freshnessStatus = freshness.status;
+
+      // P6: persist the warn so the pre-push hook can detect pack-only
+      // follow-up pushes and report "warning appears addressed".
+      if (freshnessStatus === 'warn') {
+        writeLastFreshnessState(opts.cwd, freshness.changedFiles, freshness.affectedSections);
+      }
 
       const exitCode = (integrityStatus === 'fail' || freshnessStatus === 'warn') ? 1 : 0;
 

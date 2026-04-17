@@ -400,6 +400,12 @@ enum ContextPackCommand {
         /// agents to target which pack sections to patch.
         #[arg(long = "suggest-patches")]
         suggest_patches: bool,
+
+        /// P6: opt-in CI gate that fails when any commit in the PR range
+        /// mixes `.agent-context/**` with non-pack paths. Off by default; only
+        /// active under `--ci`.
+        #[arg(long = "enforce-separate-commits")]
+        enforce_separate_commits: bool,
     },
 
     /// Warn when context-relevant files changed without pack update
@@ -962,7 +968,16 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
         ContextPackCommand::Rollback { snapshot, pack_dir } => {
             agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
         }
-        ContextPackCommand::Verify { pack_dir, cwd, ci, base, repair, repair_yes, suggest_patches } => {
+        ContextPackCommand::Verify {
+            pack_dir,
+            cwd,
+            ci,
+            base,
+            repair,
+            repair_yes,
+            suggest_patches,
+            enforce_separate_commits,
+        } => {
             let target_cwd = effective_cwd(cwd);
             agent_context::verify(agent_context::VerifyOptions {
                 pack_dir,
@@ -972,6 +987,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 repair,
                 repair_yes,
                 suggest_patches,
+                enforce_separate_commits,
             })?;
         }
         ContextPackCommand::CheckFreshness { base, cwd } => {
