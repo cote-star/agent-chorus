@@ -293,6 +293,17 @@ if (require.main === module) {
         freshness: freshnessStatus,
         changed_files: freshness.changedFiles,
         pack_updated: freshness.packUpdated,
+        // TODO(P2): port the structural verifier from the Rust side
+        // (cli/src/agent_context.rs::run_structural_checks). Until then we
+        // emit `structural_warnings: []` so the CI JSON schema stays stable
+        // across tracks; CI consumers that need structural drift detection
+        // should prefer the Rust `chorus agent-context verify --ci` binary.
+        // The Rust reference runs: template-marker absence, contract-glob
+        // existence, look_for substring, routing file refs, and baseline
+        // drift vs P1 manifest fields (family_counts, declared_counts,
+        // shortcut_signatures, dependencies_snapshot,
+        // contractually_required_files).
+        structural_warnings: [],
         exit_code: exitCode,
       };
       if (freshness.skippedReason) {
@@ -307,6 +318,9 @@ if (require.main === module) {
         freshness: 'skip',
         changed_files: [],
         pack_updated: false,
+        // TODO(P2): mirror Rust's `structural_warnings[]` (see above). Emit
+        // an empty array on the error path to keep schema stable.
+        structural_warnings: [],
         exit_code: 1,
       };
       process.stdout.write(JSON.stringify(report) + '\n');
