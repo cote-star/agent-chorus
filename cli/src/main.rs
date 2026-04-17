@@ -367,6 +367,12 @@ enum ContextPackCommand {
         /// Skip the interactive confirmation prompt when running --repair.
         #[arg(long = "yes")]
         repair_yes: bool,
+
+        /// P3: emit a JSON payload with changed_files, pack_sections_to_update,
+        /// a capped diff excerpt, and a reserved baseline_drift array. Used by
+        /// agents to target which pack sections to patch.
+        #[arg(long = "suggest-patches")]
+        suggest_patches: bool,
     },
 
     /// Warn when context-relevant files changed without pack update
@@ -914,7 +920,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
         ContextPackCommand::Rollback { snapshot, pack_dir } => {
             agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
         }
-        ContextPackCommand::Verify { pack_dir, cwd, ci, base, repair, repair_yes } => {
+        ContextPackCommand::Verify { pack_dir, cwd, ci, base, repair, repair_yes, suggest_patches } => {
             let target_cwd = effective_cwd(cwd);
             agent_context::verify(agent_context::VerifyOptions {
                 pack_dir,
@@ -923,6 +929,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 base,
                 repair,
                 repair_yes,
+                suggest_patches,
             })?;
         }
         ContextPackCommand::CheckFreshness { base, cwd } => {

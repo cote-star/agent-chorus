@@ -1,0 +1,19 @@
+{
+  "include": ["**"],
+  "exclude": [
+    ".agent-context/**",
+    ".git/**",
+    "node_modules/**",
+    "target/**",
+    "dist/**",
+    "build/**",
+    "vendor/**",
+    "tmp/**"
+  ],
+  "zones": [
+    {"paths": ["study/**", "docs/methodology/**"], "affects": ["10_SYSTEM_OVERVIEW.md", "30_BEHAVIORAL_INVARIANTS.md"]},
+    {"paths": ["src/**", "cli/src/**"], "affects": ["20_CODE_MAP.md", "30_BEHAVIORAL_INVARIANTS.md"]},
+    {"paths": ["scripts/run_*.py", "scripts/**"], "affects": ["20_CODE_MAP.md", "40_OPERATIONS_AND_RELEASE.md"]},
+    {"paths": ["pyproject.toml", "Cargo.toml", "package.json", "cli/Cargo.toml"], "affects": ["40_OPERATIONS_AND_RELEASE.md"]}
+  ]
+}

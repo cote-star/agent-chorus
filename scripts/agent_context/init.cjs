@@ -52,7 +52,16 @@ function relPath(target, base) {
   return path.relative(base, target) || target;
 }
 
-function defaultRelevanceJson() {
+/**
+ * P3: produce the default relevance.json shipped by init, including a
+ * `zones[]` array so freshness can map changed files to pack sections.
+ * When `hasStudy` is true, include a `study/**` zone; otherwise fall back to
+ * a placeholder `docs/**` zone so the default file is always zone-map-valid.
+ */
+function defaultRelevanceJson(hasStudy = false) {
+  const studyZone = hasStudy
+    ? '    {"paths": ["study/**", "docs/methodology/**"], "affects": ["10_SYSTEM_OVERVIEW.md", "30_BEHAVIORAL_INVARIANTS.md"]},\n'
+    : '    {"paths": ["docs/**"], "affects": ["10_SYSTEM_OVERVIEW.md", "30_BEHAVIORAL_INVARIANTS.md"]},\n';
   return `{
   "include": ["**"],
   "exclude": [
@@ -64,6 +73,11 @@ function defaultRelevanceJson() {
     "build/**",
     "vendor/**",
     "tmp/**"
+  ],
+  "zones": [
+${studyZone}    {"paths": ["src/**", "cli/src/**"], "affects": ["20_CODE_MAP.md", "30_BEHAVIORAL_INVARIANTS.md"]},
+    {"paths": ["scripts/run_*.py", "scripts/**"], "affects": ["20_CODE_MAP.md", "40_OPERATIONS_AND_RELEASE.md"]},
+    {"paths": ["pyproject.toml", "Cargo.toml", "package.json", "cli/Cargo.toml"], "affects": ["40_OPERATIONS_AND_RELEASE.md"]}
   ]
 }
 `;
@@ -528,7 +542,11 @@ function main() {
   }
 
   if (!fs.existsSync(relevancePath) || opts.force) {
-    safeWriteText(relevancePath, defaultRelevanceJson());
+    // P3: when a `study/` directory exists at repo root, tailor the default
+    // zone map to include it so freshness surfaces the right pack sections.
+    const hasStudy = fs.existsSync(path.join(repoRoot, 'study')) &&
+      fs.statSync(path.join(repoRoot, 'study')).isDirectory();
+    safeWriteText(relevancePath, defaultRelevanceJson(hasStudy));
   }
 
   if (!fs.existsSync(guidePath) || opts.force) {

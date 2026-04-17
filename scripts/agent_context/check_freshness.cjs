@@ -102,9 +102,13 @@ function main() {
 
   const changedFiles = getChangedFiles(options.base, options.cwd);
   const config = relevance.loadRelevanceConfig(options.cwd);
+  // P3: optionally load the zone map so we can surface affected pack sections.
+  // Falls back to legacy include/exclude relevance when zones are absent.
+  const zoneMap = relevance.loadZoneMap(options.cwd);
 
   let packTouched = false;
   const relevant = [];
+  const affectedSet = new Set();
 
   for (const filePath of changedFiles) {
     if (filePath.startsWith('.agent-context/current/')) {
@@ -112,7 +116,13 @@ function main() {
       continue;
     }
 
-    if (relevance.isRelevant(filePath, config)) {
+    if (zoneMap && zoneMap.length > 0) {
+      const sections = relevance.resolveAffectedSections(filePath, zoneMap);
+      if (sections.length > 0) {
+        relevant.push(filePath);
+        for (const s of sections) affectedSet.add(s);
+      }
+    } else if (relevance.isRelevant(filePath, config)) {
       relevant.push(filePath);
     }
   }
@@ -132,6 +142,13 @@ function main() {
   );
   for (const filePath of relevant) {
     process.stdout.write(`  - ${filePath}\n`);
+  }
+  // P3: surface affected pack sections so agents know which files to patch.
+  if (affectedSet.size > 0) {
+    process.stdout.write('\nAffected pack sections:\n');
+    for (const s of [...affectedSet].sort()) {
+      process.stdout.write(`  - ${s}\n`);
+    }
   }
   process.stdout.write('\n');
   process.stdout.write(

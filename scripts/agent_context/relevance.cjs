@@ -328,4 +328,81 @@ function suggestPatterns(cwd) {
     return { suggestions };
 }
 
-module.exports = { loadRelevanceConfig, isRelevant, filterRelevantFiles, DEFAULT_CONFIG, listPatterns, testFile, suggestPatterns };
+// ---------------------------------------------------------------------------
+// P3: zone map API — Node parity for the Rust helpers in
+// cli/src/agent_context.rs::load_zone_map / resolve_affected_sections.
+// Only handles zone resolution; the JSON shape is the shared spec from the
+// P3 plan: { "zones": [{"paths": [...], "affects": [...]}] }.
+// ---------------------------------------------------------------------------
+
+/**
+ * Load the zone map from `<packRoot>/.agent-context/relevance.json`.
+ *
+ * Returns `null` when the file is missing, the JSON is invalid, or no
+ * `zones` key is present. Malformed entries are silently skipped.
+ *
+ * @param {string} packRoot  Absolute path to the repository root
+ * @returns {Array<{paths: string[], affects: string[]}>|null}
+ */
+function loadZoneMap(packRoot) {
+    const configPath = path.join(packRoot, '.agent-context', 'relevance.json');
+    let raw;
+    try {
+        raw = fs.readFileSync(configPath, 'utf8');
+    } catch (_err) {
+        return null;
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(raw);
+    } catch (_err) {
+        return null;
+    }
+    if (!Array.isArray(parsed.zones)) return null;
+    const zones = [];
+    for (const z of parsed.zones) {
+        if (!z || typeof z !== 'object') continue;
+        const paths = Array.isArray(z.paths) ? z.paths.filter((p) => typeof p === 'string') : [];
+        const affects = Array.isArray(z.affects) ? z.affects.filter((s) => typeof s === 'string') : [];
+        if (paths.length === 0 && affects.length === 0) continue;
+        zones.push({ paths, affects });
+    }
+    return zones;
+}
+
+/**
+ * Resolve a single changed file to the set of pack sections affected.
+ * Returns a deduplicated, sorted list of section filenames.
+ *
+ * @param {string} filePath  Repo-relative, forward-slash normalized
+ * @param {Array<{paths: string[], affects: string[]}>} zones
+ * @returns {string[]}
+ */
+function resolveAffectedSections(filePath, zones) {
+    const normalized = filePath.replace(/\\/g, '/');
+    const out = new Set();
+    for (const zone of zones) {
+        for (const pattern of zone.paths) {
+            if (matchGlob(normalized, pattern)) {
+                for (const section of zone.affects) {
+                    out.add(section);
+                }
+                break;
+            }
+        }
+    }
+    return [...out].sort();
+}
+
+module.exports = {
+    loadRelevanceConfig,
+    isRelevant,
+    filterRelevantFiles,
+    DEFAULT_CONFIG,
+    listPatterns,
+    testFile,
+    suggestPatterns,
+    // P3: zone map API
+    loadZoneMap,
+    resolveAffectedSections,
+};
