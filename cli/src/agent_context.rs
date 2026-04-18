@@ -1029,6 +1029,9 @@ pub fn seal(options: SealOptions) -> Result<()> {
         .cloned()
         .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
 
+    // P11-drift/F38: compute tool_hashes so verify can catch tampered scripts.
+    let tool_hashes = compute_tool_hashes(&current_dir);
+
     let mut manifest = build_manifest(
         &generated_at,
         &repo_root,
@@ -11660,6 +11663,7 @@ Current count is {{counts.files_py}}.\n";
             &Vec::new(),
             &files_meta,
             &baseline,
+            &std::collections::BTreeMap::new(),
         );
 
         assert!(
