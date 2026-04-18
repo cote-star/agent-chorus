@@ -18,7 +18,7 @@ chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
 chorus setup [--cwd=<path>] [--dry-run] [--force] [--agent-context] [--json]
 chorus doctor [--cwd=<path>] [--json]
-chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [...]
+chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify|check-tool-integrity> [...]
 chorus teardown [--cwd=<path>] [--dry-run] [--global] [--json]
 ```
 
@@ -283,6 +283,10 @@ chorus agent-context check-freshness --base origin/main
 #     (subagent reconciliation protocol)
 chorus agent-context diff --since-seal
 chorus agent-context diff --since-seal --format text
+
+# P11-drift / F38: re-hash shipped helper scripts under
+# .agent-context/current/tools/ and compare against manifest.tool_hashes
+chorus agent-context check-tool-integrity
 ```
 
 You can also bootstrap agent-context from setup:
@@ -356,6 +360,66 @@ The `--ci` JSON payload also carries the P7 subagent-reconciliation shape under
 `diff_since_seal` and the flat `acceptance_tests_invalidated` list. CI fails
 (`exit_code = 1`) when `acceptance_tests_invalidated` is non-empty AND the pack
 wasn't updated, so stale ground truth cannot pass the gate.
+
+### Tool integrity (P11-drift / F38)
+
+`verify --ci` also emits a `tool_integrity` object that re-hashes every
+regular file under `.agent-context/current/tools/` and compares against
+`manifest.tool_hashes` (written at `seal` time). Any mismatch flips
+`exit_code` to `1` so local tampering of shipped helper scripts such as
+`verify_context_pack.py` / `freshness.py` fails CI automatically.
+
+```json
+{
+  "tool_integrity": {
+    "status": "fail",
+    "mismatches": [
+      {"file": "verify_context_pack.py", "reason": "checksum mismatch"}
+    ],
+    "extra_files": []
+  }
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `status` | `"pass"` / `"fail"` | `"pass"` iff `mismatches` is empty |
+| `mismatches` | `[{file, reason}]` | Each tampered or missing helper; `reason` is `"checksum mismatch"`, `"file missing"`, or `"read error"` |
+| `extra_files` | `string[]` | Files under `tools/` not covered by the manifest (informational; never flips `status`) |
+
+Manifests sealed by an older chorus that predates the field produce an empty
+report and keep `verify --ci` green, so upgrading is non-breaking. Re-seal to
+populate `tool_hashes` going forward.
+
+## Tool Integrity Standalone Check
+
+```bash
+chorus agent-context check-tool-integrity
+chorus agent-context check-tool-integrity --pack-dir .agent-context
+```
+
+Runs the same re-hash check as `verify --ci` but as a focused command. Prints
+a human-readable report to stdout/stderr and exits non-zero on any mismatch.
+Useful as a fast pre-merge gate or a scheduled audit when you do not want to
+run the full `verify` pipeline.
+
+## Pre-push Hook Drift Detection (P11-drift / F37)
+
+`install-hooks` writes `.githooks/pre-push` with an `AGENT_CONTEXT_HOOK_SHA256=`
+tag near the top of the managed agent-chorus section and a drift-check
+preamble that re-computes the fingerprint on every push.
+
+- When the installed hook matches what `install-hooks` would produce today,
+  the check runs silently.
+- When it has drifted (local edits, stale after a chorus upgrade, etc.), the
+  hook prints to stderr:
+  `warning: pre-push hook has drifted from canonical source. Run 'chorus agent-context install-hooks' to refresh. Opt out with '# AGENT_CONTEXT_HOOK_CUSTOM' comment.`
+- Teams that deliberately hand-edit the managed section can insert
+  `# AGENT_CONTEXT_HOOK_CUSTOM` above the SHA tag to suppress the warning.
+
+The drift check scopes its comparison to the block between the
+`# --- agent-chorus:pre-push:start ---` / `:end ---` sentinels, so any
+customization outside that block never triggers a false positive.
 
 ## Context Pack Diff (Subagent Reconciliation)
 

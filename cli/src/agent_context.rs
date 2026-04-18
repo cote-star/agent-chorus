@@ -967,6 +967,11 @@ pub fn seal(options: SealOptions) -> Result<()> {
 
     let previous_manifest = read_json(&manifest_path)?;
 
+    // P11-drift / F38 — snapshot shipped helper scripts (if any) so
+    // `check-tool-integrity` has an authoritative baseline. Computed after
+    // file-content expansion so the hashes match what verify will see.
+    let tool_hashes = compute_tool_hashes(&current_dir);
+
     let manifest = build_manifest(
         &generated_at,
         &repo_root,
@@ -979,6 +984,7 @@ pub fn seal(options: SealOptions) -> Result<()> {
         &Vec::new(),
         &files_meta,
         &baseline,
+        &tool_hashes,
     );
 
     write_text_atomic(
@@ -1920,6 +1926,11 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     // verify behavior for already-sealed packs while making drift visible.
     let structural_warnings = run_structural_checks(&manifest, &repo_root, &current_dir);
 
+    // P11-drift / F38 — re-hash shipped helper scripts against the manifest's
+    // `tool_hashes` baseline. Produces an empty report for manifests that
+    // predate the field, so older packs keep verifying cleanly.
+    let tool_integrity = compute_tool_integrity_report(&manifest, &current_dir);
+
     if options.ci {
         // P7: compute the diff-since-seal payload so CI can surface acceptance
         // tests whose `invalidated_by` function signatures have drifted. When
@@ -1949,10 +1960,13 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         // P3: zone-map authoring bugs surface as freshness.status == "fail"
         // and must be treated as a hard failure alongside integrity/warn.
         // P7: gate on acceptance_tests_invalidated when the pack is stale.
+        // P11-drift / F38: tampered helper scripts are always a hard fail.
+        let tool_integrity_failing = !tool_integrity.mismatches.is_empty();
         let exit_code = if !integrity_passed
             || freshness.status == "warn"
             || freshness.status == "fail"
             || acceptance_gate_failing
+            || tool_integrity_failing
         {
             1
         } else {
@@ -1978,6 +1992,14 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         result_obj.insert(
             "structural_warnings".to_string(),
             structural_warnings_as_json(&structural_warnings),
+        );
+        // P11-drift / F38: emit tool_integrity so CI can surface tampering
+        // findings alongside the other gates. Shape is stable even when the
+        // manifest predates the field (mismatches[] empty, extra_files[]
+        // empty).
+        result_obj.insert(
+            "tool_integrity".to_string(),
+            tool_integrity_as_json(&tool_integrity),
         );
         result_obj.insert("exit_code".to_string(), json!(exit_code));
         println!("{}", serde_json::to_string_pretty(&Value::Object(result_obj))?);
@@ -2060,6 +2082,20 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
         }
     }
 
+    // P11-drift / F38 — surface tool-integrity mismatches in the human
+    // renderer too, so `verify` without `--ci` still flags tampered helpers.
+    // A clean report is implicit (no block printed); any mismatch is a hard
+    // fail so callers treat it the same as an integrity checksum miss.
+    if !tool_integrity.mismatches.is_empty() {
+        eprintln!(
+            "  Tool integrity: FAIL ({} file(s) differ from manifest)",
+            tool_integrity.mismatches.len()
+        );
+        for m in &tool_integrity.mismatches {
+            eprintln!("    FAIL  tools/{}  ({})", m.file, m.reason);
+        }
+    }
+
     // P3: zone-map validation failures are hard fails alongside integrity.
     if freshness.status == "fail" {
         let reason = freshness
@@ -2067,6 +2103,13 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             .clone()
             .unwrap_or_else(|| "zone map invalid".to_string());
         return Err(anyhow!("[agent-context] verify failed: {}", reason));
+    }
+
+    if !tool_integrity.mismatches.is_empty() {
+        return Err(anyhow!(
+            "[agent-context] verify failed: {} tool file(s) differ from manifest",
+            tool_integrity.mismatches.len()
+        ));
     }
 
     if !integrity_passed {
@@ -3557,6 +3600,216 @@ fn collect_semantic_baseline(repo_root: &Path, current_dir: &Path) -> SemanticBa
     }
 }
 
+/// P11-drift / F38 — snapshot SHA256 of every regular file under
+/// `<current_dir>/tools/`. Stored on the manifest at seal time so
+/// `check-tool-integrity` (and `verify --ci`) can detect local tampering of
+/// shipped helper scripts such as `verify_context_pack.py` and
+/// `freshness.py`.
+///
+/// Missing `tools/` directory → empty map (not an error). Binary or
+/// unreadable files are skipped silently so a transient read failure does
+/// not block the seal; the next seal will pick them back up.
+///
+/// Keys are relative to `tools/` (e.g. `"verify_context_pack.py"`) and sorted
+/// so the serialized JSON is deterministic across runs.
+fn compute_tool_hashes(current_dir: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let tools_dir = current_dir.join("tools");
+    if !tools_dir.exists() {
+        return out;
+    }
+    let entries = match fs::read_dir(&tools_dir) {
+        Ok(it) => it,
+        Err(_) => return out,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = match path.file_name().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let bytes = match fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        out.insert(name, sha256_hex(&bytes));
+    }
+    out
+}
+
+/// P11-drift / F38 — outcome of re-hashing the `tools/` directory against the
+/// manifest's `tool_hashes` field. `mismatches` names every shipped helper
+/// whose on-disk SHA256 diverges from the sealed value (or is missing
+/// entirely); `extra_files` names files present on disk that the manifest
+/// does not cover so callers can decide whether to treat them as drift.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ToolIntegrityReport {
+    /// Files whose hash differs from the manifest entry, or that the
+    /// manifest lists but are no longer present on disk.
+    pub mismatches: Vec<ToolIntegrityMismatch>,
+    /// Files in `tools/` not referenced by the manifest. Surfaced separately
+    /// from `mismatches` because a fresh helper landing between seals is not
+    /// necessarily tampering — but it is worth naming.
+    pub extra_files: Vec<String>,
+}
+
+/// P11-drift / F38 — one element of [`ToolIntegrityReport::mismatches`]. Used
+/// by the human renderer and by the CI JSON so the failure log always names
+/// the specific file that drifted.
+#[derive(Debug, Clone)]
+pub(crate) struct ToolIntegrityMismatch {
+    pub file: String,
+    /// Short description of the failure mode: `"checksum mismatch"` or
+    /// `"file missing"`.
+    pub reason: String,
+}
+
+/// P11-drift / F38 — re-hash every file under `<current_dir>/tools/` and
+/// compare against the manifest's `tool_hashes` field. Missing manifest or
+/// missing `tool_hashes` field → empty report (silent pass). A manifest that
+/// records a file which is absent on disk yields a `"file missing"`
+/// mismatch so tampering via deletion is caught.
+pub(crate) fn compute_tool_integrity_report(
+    manifest: &Value,
+    current_dir: &Path,
+) -> ToolIntegrityReport {
+    let mut report = ToolIntegrityReport::default();
+    let recorded = match manifest
+        .get("tool_hashes")
+        .and_then(|v| v.as_object())
+    {
+        Some(obj) => obj,
+        None => return report,
+    };
+
+    // Check every manifest-recorded tool against the filesystem.
+    let tools_dir = current_dir.join("tools");
+    for (file, expected_value) in recorded.iter() {
+        let expected = match expected_value.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+        let abs = tools_dir.join(file);
+        if !abs.exists() {
+            report.mismatches.push(ToolIntegrityMismatch {
+                file: file.clone(),
+                reason: "file missing".to_string(),
+            });
+            continue;
+        }
+        let actual = match fs::read(&abs) {
+            Ok(b) => sha256_hex(&b),
+            Err(_) => {
+                report.mismatches.push(ToolIntegrityMismatch {
+                    file: file.clone(),
+                    reason: "read error".to_string(),
+                });
+                continue;
+            }
+        };
+        if actual != expected {
+            report.mismatches.push(ToolIntegrityMismatch {
+                file: file.clone(),
+                reason: "checksum mismatch".to_string(),
+            });
+        }
+    }
+
+    // Surface extra (unsealed) files so CI consumers can decide policy.
+    if tools_dir.exists() {
+        if let Ok(entries) = fs::read_dir(&tools_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let name = match path.file_name().and_then(|s| s.to_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                if !recorded.contains_key(&name) {
+                    report.extra_files.push(name);
+                }
+            }
+        }
+    }
+    report.extra_files.sort();
+    report.mismatches.sort_by(|a, b| a.file.cmp(&b.file));
+    report
+}
+
+/// P11-drift / F38 — public entry point for `chorus agent-context
+/// check-tool-integrity`. Loads the manifest, runs the comparison, and prints
+/// a human-readable report. Exits with `Err` when any mismatch is present so
+/// callers (and CI) can treat a non-zero exit as a tampering signal.
+pub fn check_tool_integrity(cwd: &str, pack_dir: Option<&str>) -> Result<()> {
+    let cwd_path = PathBuf::from(cwd);
+    let repo_root = git_repo_root(&cwd_path).unwrap_or_else(|_| cwd_path.clone());
+    let pack_root = resolve_pack_root(&repo_root, pack_dir);
+    let current_dir = pack_root.join("current");
+    let manifest_path = current_dir.join("manifest.json");
+
+    if !manifest_path.exists() {
+        return Err(anyhow!(
+            "[agent-context] check-tool-integrity failed: manifest.json not found at {}",
+            manifest_path.display()
+        ));
+    }
+
+    let raw = fs::read_to_string(&manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let manifest: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
+
+    let report = compute_tool_integrity_report(&manifest, &current_dir);
+
+    if manifest.get("tool_hashes").is_none() {
+        println!(
+            "[agent-context] check-tool-integrity: manifest has no tool_hashes field (sealed by an older chorus); nothing to verify"
+        );
+        return Ok(());
+    }
+
+    let recorded_count = manifest
+        .get("tool_hashes")
+        .and_then(|v| v.as_object())
+        .map(|o| o.len())
+        .unwrap_or(0);
+
+    if report.mismatches.is_empty() {
+        println!(
+            "[agent-context] check-tool-integrity: PASS ({} tool file(s) verified)",
+            recorded_count
+        );
+        if !report.extra_files.is_empty() {
+            eprintln!(
+                "  note: {} file(s) under tools/ are not covered by the manifest:",
+                report.extra_files.len()
+            );
+            for f in &report.extra_files {
+                eprintln!("    - {}", f);
+            }
+            eprintln!("  (run `chorus agent-context seal` to pick them up)");
+        }
+        return Ok(());
+    }
+
+    eprintln!(
+        "[agent-context] check-tool-integrity: FAIL ({} tool file(s) drifted)",
+        report.mismatches.len()
+    );
+    for m in &report.mismatches {
+        eprintln!("  FAIL  tools/{}  ({})", m.file, m.reason);
+    }
+    Err(anyhow!(
+        "[agent-context] check-tool-integrity: {} tool file(s) differ from manifest",
+        report.mismatches.len()
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_manifest(
     generated_at: &str,
@@ -3570,6 +3823,7 @@ fn build_manifest(
     changed_files: &[String],
     files_meta: &[FileMeta],
     baseline: &SemanticBaseline,
+    tool_hashes: &std::collections::BTreeMap<String, String>,
 ) -> ManifestBundle {
     let pack_checksum_input = files_meta
         .iter()
@@ -3653,6 +3907,17 @@ fn build_manifest(
         Value::Object(map)
     };
 
+    // P11-drift / F38 — tool_hashes. One entry per regular file under
+    // `tools/`, keyed by filename. Empty when the pack does not ship any
+    // helper scripts (older installs, `init` without `--with-tools`).
+    let tool_hashes_value = {
+        let mut map = serde_json::Map::new();
+        for (k, v) in tool_hashes {
+            map.insert(k.clone(), Value::String(v.clone()));
+        }
+        Value::Object(map)
+    };
+
     // P1 — `head_sha_at_seal` is the new canonical name for the seal-time HEAD.
     // We keep `head_sha` populated for one release so readers pinned to the
     // older field continue to work. `post_commit_sha` is null at seal; the
@@ -3689,6 +3954,10 @@ fn build_manifest(
         "declared_counts": declared_counts_value,
         "shortcut_signatures": shortcut_signatures_value,
         "dependencies_snapshot": dependencies_snapshot_value,
+        // P11-drift / F38 — per-file SHA256 of shipped helper scripts under
+        // `.agent-context/current/tools/`. Consumed by
+        // `check-tool-integrity` and `verify --ci` to detect tampering.
+        "tool_hashes": tool_hashes_value,
     });
 
     ManifestBundle {
@@ -6064,7 +6333,120 @@ This guide tells AI agents how to fill in the context pack templates.
     .to_string()
 }
 
+/// P11-drift / F37 — tag line whose SHA256 value is the canonical fingerprint of
+/// the hook body below it. Callers embed this in the hook and the hook's own
+/// drift-check preamble re-computes the fingerprint at runtime, excluding this
+/// line itself. Kept as a constant so tests can anchor on it without
+/// re-deriving the string.
+const HOOK_SHA256_TAG: &str = "# AGENT_CONTEXT_HOOK_SHA256=";
+/// P11-drift / F37 — opt-out marker. A user who hand-edits the managed hook
+/// section deliberately can add this comment (anywhere before the SHA256 tag)
+/// to tell the runtime drift check to stay silent.
+///
+/// Kept as a constant so the hook body and the tests stay aligned on the
+/// exact literal. The Rust code only needs the shell-level string; tests
+/// assert on it, so `#[allow(dead_code)]` covers the non-test build.
+#[allow(dead_code)]
+const HOOK_CUSTOM_MARKER: &str = "# AGENT_CONTEXT_HOOK_CUSTOM";
+
+/// P11-drift / F37 — build the agent-chorus pre-push section as written inside
+/// `.githooks/pre-push`. The returned string begins with a SHA256 tag line
+/// followed by a runtime drift-check preamble; the embedded hash is the
+/// SHA256 of the section content *excluding* the tag line, so the at-runtime
+/// check can recompute it in place and warn when the installed copy has
+/// drifted from what `install-hooks` would produce today.
+///
+/// Contract:
+/// - Runs silently when the installed hook matches the canonical fingerprint.
+/// - Warns on stderr (non-fatal) when the hash differs.
+/// - Stays silent when the user has inserted the `HOOK_CUSTOM_MARKER`,
+///   acknowledging they own any future drift.
 fn build_pre_push_hook_section() -> String {
+    let body = build_pre_push_hook_body();
+    let preamble = build_hook_drift_check_preamble();
+    // The canonical bytes fingerprinted by `AGENT_CONTEXT_HOOK_SHA256=` are
+    // exactly what the runtime check sees *after* stripping the tag line and
+    // both sentinels: preamble followed by body, joined with a single
+    // newline. Keeping this computation here (rather than hashing the body
+    // alone) lets the shell reproducer use a grep-based filter without any
+    // further normalization.
+    let canonical = format!("{preamble}\n{body}");
+    let hash = sha256_hex(canonical.as_bytes());
+    // The SHA256 tag sits on the very first line so it is trivial to locate
+    // (and strip) when re-hashing at runtime. The preamble below assumes this
+    // ordering.
+    format!("{HOOK_SHA256_TAG}{hash}\n{canonical}")
+}
+
+/// P11-drift / F37 — shell preamble that detects drift between the installed
+/// hook section and the canonical body `install-hooks` would write today.
+///
+/// The check extracts the section between the agent-chorus sentinels from the
+/// currently-running hook file (`$0`), strips its `AGENT_CONTEXT_HOOK_SHA256=`
+/// line + the sentinels themselves, and recomputes SHA256. The tag's stored
+/// value is compared against the recomputed hash; mismatch emits the warning
+/// called out in the P11-drift spec. Presence of `AGENT_CONTEXT_HOOK_CUSTOM`
+/// before the tag suppresses the check entirely for teams that need to
+/// hand-edit the section.
+fn build_hook_drift_check_preamble() -> String {
+    r#"# P11-drift / F37 — detect when the managed agent-chorus section has
+# diverged from what `chorus agent-context install-hooks` would emit today.
+# The check only runs on the section between the sentinels so customizations
+# outside the managed block do not trigger false positives.
+_agent_context_hook_drift_check() {
+  local hook_file="${BASH_SOURCE[0]:-$0}"
+  [[ -r "$hook_file" ]] || return 0
+  # Extract the managed section including sentinels; bail quietly if either
+  # sentinel is missing (unexpected shape, can't do a meaningful comparison).
+  local section
+  section="$(awk '
+    /^# --- agent-chorus:pre-push:start ---$/ {capture=1}
+    capture {print}
+    /^# --- agent-chorus:pre-push:end ---$/ {capture=0}
+  ' "$hook_file" 2>/dev/null)" || return 0
+  [[ -n "$section" ]] || return 0
+  # Respect the opt-out marker: if the user has inserted
+  # `# AGENT_CONTEXT_HOOK_CUSTOM` above the SHA line, stay silent.
+  if printf '%s\n' "$section" | awk '
+    /^# AGENT_CONTEXT_HOOK_SHA256=/ {exit}
+    /^# AGENT_CONTEXT_HOOK_CUSTOM/ {found=1; exit}
+    END {exit !found}
+  '; then
+    return 0
+  fi
+  local embedded_hash
+  embedded_hash="$(printf '%s\n' "$section" \
+    | awk -F= '/^# AGENT_CONTEXT_HOOK_SHA256=/ {print $2; exit}')"
+  [[ -n "$embedded_hash" ]] || return 0
+  # Canonical body = section minus the SHA line and both sentinels. Strip a
+  # single trailing newline so the hash matches the Rust-side input exactly.
+  local canonical
+  canonical="$(printf '%s\n' "$section" \
+    | grep -v '^# AGENT_CONTEXT_HOOK_SHA256=' \
+    | grep -v '^# --- agent-chorus:pre-push:start ---$' \
+    | grep -v '^# --- agent-chorus:pre-push:end ---$')"
+  local computed=""
+  if command -v shasum >/dev/null 2>&1; then
+    computed="$(printf '%s' "$canonical" | shasum -a 256 | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    computed="$(printf '%s' "$canonical" | sha256sum | awk '{print $1}')"
+  fi
+  [[ -n "$computed" ]] || return 0
+  if [[ "$computed" != "$embedded_hash" ]]; then
+    printf 'warning: pre-push hook has drifted from canonical source. Run '"'"'chorus agent-context install-hooks'"'"' to refresh. Opt out with '"'"'# AGENT_CONTEXT_HOOK_CUSTOM'"'"' comment.\n' >&2
+  fi
+}
+_agent_context_hook_drift_check
+"#
+    .to_string()
+}
+
+/// P11-drift / F37 — canonical body of the agent-chorus pre-push section,
+/// excluding the SHA256 tag and drift-check preamble that wrap it. This is
+/// the exact string whose sha256 lives in the `AGENT_CONTEXT_HOOK_SHA256=`
+/// line, so the runtime check and the install-time hasher agree by
+/// construction.
+fn build_pre_push_hook_body() -> String {
     r#"remote_name="${1:-origin}"
 remote_url="${2:-unknown}"
 
@@ -6816,6 +7198,28 @@ fn structural_warnings_as_json(warnings: &[StructuralWarning]) -> Value {
     )
 }
 
+/// P11-drift / F38 — serialize the tool-integrity report into the CI JSON
+/// shape `{status, mismatches: [{file, reason}], extra_files: [..]}`. The
+/// `status` field is `"pass"` when no mismatches were found (even if extras
+/// exist — those are informational) and `"fail"` otherwise, so CI can gate
+/// without parsing the mismatch array.
+fn tool_integrity_as_json(report: &ToolIntegrityReport) -> Value {
+    let status = if report.mismatches.is_empty() {
+        "pass"
+    } else {
+        "fail"
+    };
+    json!({
+        "status": status,
+        "mismatches": report
+            .mismatches
+            .iter()
+            .map(|m| json!({"file": m.file, "reason": m.reason}))
+            .collect::<Vec<_>>(),
+        "extra_files": report.extra_files,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7061,6 +7465,8 @@ mod tests {
     fn build_manifest_records_current_chorus_version() {
         let files_meta: Vec<FileMeta> = Vec::new();
         let baseline = SemanticBaseline::default();
+        let tool_hashes: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         let bundle = build_manifest(
             "2026-04-17T00:00:00Z",
             Path::new("/tmp/unused"),
@@ -7073,6 +7479,7 @@ mod tests {
             &Vec::new(),
             &files_meta,
             &baseline,
+            &tool_hashes,
         );
 
         let schema = bundle
@@ -7601,6 +8008,8 @@ After cleanup there are 32 tests today.\n\
             .dependencies_snapshot
             .insert("pyproject".to_string(), "a".repeat(64));
 
+        let tool_hashes: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
         let bundle = build_manifest(
             "2026-04-17T00:00:00Z",
             Path::new("/tmp/unused"),
@@ -7613,6 +8022,7 @@ After cleanup there are 32 tests today.\n\
             &Vec::new(),
             &files_meta,
             &baseline,
+            &tool_hashes,
         );
 
         // All four semantic fields must be present with the right shape.
@@ -9213,5 +9623,456 @@ Current count is {{counts.files_py}}.\n";
         let drifts_none = vec![json!("unrelated_fn")];
         let hits3 = match_invalidated_tests(&drifts_none, &bindings);
         assert!(hits3.is_empty(), "unrelated drift must not match, got {hits3:?}");
+    }
+
+    // ========================================================================
+    // P11-drift / F37 — installed pre-push hook drift detection.
+    //
+    // These tests exercise the runtime drift-check preamble by wrapping the
+    // section content inside sentinels and running it via bash. The tests
+    // gate on `bash` + a SHA256 utility being available; platforms missing
+    // either skip silently rather than false-fail.
+    // ========================================================================
+
+    /// Return true when both `bash` and a SHA256 utility (`shasum` or
+    /// `sha256sum`) are on PATH. The drift preamble needs both to recompute
+    /// the installed fingerprint; without them, skip the test.
+    fn has_bash_and_shasum() -> bool {
+        let bash_ok = Command::new("bash").arg("-c").arg("exit 0").status().is_ok();
+        let shasum_ok = Command::new("bash")
+            .arg("-c")
+            .arg("command -v shasum >/dev/null 2>&1 || command -v sha256sum >/dev/null 2>&1")
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        bash_ok && shasum_ok
+    }
+
+    /// Wrap the canonical section between the production sentinels so the
+    /// drift preamble can locate its own block inside the file it reads. This
+    /// mirrors what `install_hooks_with_options` writes.
+    fn wrap_section_in_pre_push_file(section: &str) -> String {
+        format!(
+            "#!/usr/bin/env bash\nset -euo pipefail\n\n{}\n{}\n{}\n",
+            HOOK_SENTINEL_START, section, HOOK_SENTINEL_END
+        )
+    }
+
+    /// Write the generated hook to a temp file and run it under `bash`,
+    /// returning `(stdout, stderr, exit_status_success)`. The hook's normal
+    /// `while read` input is provided as an empty stdin so the main loop
+    /// terminates without touching git.
+    fn run_hook(dir: &Path, content: &str) -> (String, String, bool) {
+        let hook_path = dir.join("pre-push");
+        fs::write(&hook_path, content).expect("write hook");
+        let mut perms = fs::metadata(&hook_path).unwrap().permissions();
+        #[cfg(unix)]
+        perms.set_mode(0o755);
+        fs::set_permissions(&hook_path, perms).unwrap();
+
+        // Stdin is empty -> the main `while read` loop exits without iterating.
+        let output = Command::new("bash")
+            .arg(&hook_path)
+            .stdin(std::process::Stdio::null())
+            .current_dir(dir)
+            .output()
+            .expect("bash runs");
+        let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+        (stdout, stderr, output.status.success())
+    }
+
+    /// The generated hook must embed a SHA256 tag line at the top of the
+    /// managed section and must be deterministic — two calls with no code
+    /// changes produce identical content.
+    #[test]
+    fn p11_drift_hook_section_embeds_sha256_tag_and_is_deterministic() {
+        let a = build_pre_push_hook_section();
+        let b = build_pre_push_hook_section();
+        assert_eq!(a, b, "hook section must be deterministic across calls");
+        assert!(
+            a.lines().any(|l| l.starts_with(HOOK_SHA256_TAG)),
+            "hook section must start with an {HOOK_SHA256_TAG}<hash> line, got:\n{a}"
+        );
+        let tag_line = a
+            .lines()
+            .find(|l| l.starts_with(HOOK_SHA256_TAG))
+            .expect("tag line present");
+        let hash = tag_line.trim_start_matches(HOOK_SHA256_TAG);
+        assert_eq!(
+            hash.len(),
+            64,
+            "SHA256 tag value must be 64 hex chars, got {hash:?}"
+        );
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "SHA256 tag value must be hex, got {hash:?}"
+        );
+    }
+
+    /// A freshly installed, untouched hook must run silently — no "drifted"
+    /// warning on stderr. This is the base case: canonical bytes match the
+    /// embedded fingerprint.
+    #[test]
+    fn p11_drift_installed_hook_runs_silently_when_canonical() {
+        if !has_bash_and_shasum() {
+            eprintln!("skipping: bash / shasum unavailable in test environment");
+            return;
+        }
+        let dir = test_dir("p11_drift_canonical");
+        let section = build_pre_push_hook_section();
+        let content = wrap_section_in_pre_push_file(&section);
+        let (stdout, stderr, _ok) = run_hook(&dir, &content);
+        assert!(
+            !stderr.contains("drifted from canonical source"),
+            "canonical hook must not warn about drift.\nstdout:\n{stdout}\nstderr:\n{stderr}\nhook:\n{content}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A hook whose body was edited after install (without updating the
+    /// embedded hash) must warn on stderr so the user knows to refresh.
+    #[test]
+    fn p11_drift_installed_hook_warns_after_local_edit() {
+        if !has_bash_and_shasum() {
+            eprintln!("skipping: bash / shasum unavailable in test environment");
+            return;
+        }
+        let dir = test_dir("p11_drift_tampered");
+        let section = build_pre_push_hook_section();
+        let content = wrap_section_in_pre_push_file(&section);
+        // Tamper: insert an echo just before the closing sentinel. Use
+        // `rfind` so we only touch the final end-sentinel line and leave the
+        // preamble's `grep -v '^... end ---$'` literal intact.
+        let end_idx = content
+            .rfind(HOOK_SENTINEL_END)
+            .expect("end sentinel present in generated hook");
+        let mut tampered = String::with_capacity(content.len() + 32);
+        tampered.push_str(&content[..end_idx]);
+        tampered.push_str("echo local-edit-added\n");
+        tampered.push_str(&content[end_idx..]);
+        let (stdout, stderr, _ok) = run_hook(&dir, &tampered);
+        assert!(
+            stderr.contains("drifted from canonical source"),
+            "tampered hook must emit the drift warning.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("chorus agent-context install-hooks"),
+            "drift warning must point at the refresh command, got stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("AGENT_CONTEXT_HOOK_CUSTOM"),
+            "drift warning must surface the opt-out marker, got stderr:\n{stderr}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The opt-out marker silences the drift check even when the body has
+    /// been edited. Users who own their section can bypass the warning by
+    /// adding `# AGENT_CONTEXT_HOOK_CUSTOM` above the SHA tag.
+    #[test]
+    fn p11_drift_opt_out_marker_silences_warning() {
+        if !has_bash_and_shasum() {
+            eprintln!("skipping: bash / shasum unavailable in test environment");
+            return;
+        }
+        let dir = test_dir("p11_drift_optout");
+        let section = build_pre_push_hook_section();
+        // Prepend the opt-out marker inside the sentineled section (above
+        // the SHA tag) and tamper with the body. The preamble must short-
+        // circuit before hashing.
+        let tampered_section = section.replacen(
+            HOOK_SHA256_TAG,
+            &format!("{}\n{}", HOOK_CUSTOM_MARKER, HOOK_SHA256_TAG),
+            1,
+        );
+        let content = wrap_section_in_pre_push_file(&tampered_section);
+        let end_idx = content
+            .rfind(HOOK_SENTINEL_END)
+            .expect("end sentinel present in generated hook");
+        let mut tampered = String::with_capacity(content.len() + 32);
+        tampered.push_str(&content[..end_idx]);
+        tampered.push_str("echo custom-override\n");
+        tampered.push_str(&content[end_idx..]);
+        let (_stdout, stderr, _ok) = run_hook(&dir, &tampered);
+        assert!(
+            !stderr.contains("drifted from canonical source"),
+            "opt-out marker must silence the drift warning, got stderr:\n{stderr}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ========================================================================
+    // P11-drift / F38 — check-tool-integrity + manifest.tool_hashes.
+    // ========================================================================
+
+    /// `build_manifest` must record a `tool_hashes` object with one entry per
+    /// file under `<current_dir>/tools/`. Empty when the directory is
+    /// absent.
+    #[test]
+    fn p11_drift_build_manifest_records_tool_hashes() {
+        let files_meta: Vec<FileMeta> = Vec::new();
+        let baseline = SemanticBaseline::default();
+        let mut tool_hashes: std::collections::BTreeMap<String, String> =
+            std::collections::BTreeMap::new();
+        tool_hashes.insert(
+            "verify_context_pack.py".to_string(),
+            "a".repeat(64),
+        );
+        tool_hashes.insert("freshness.py".to_string(), "b".repeat(64));
+
+        let bundle = build_manifest(
+            "2026-04-17T00:00:00Z",
+            Path::new("/tmp/unused"),
+            "fixture-repo",
+            "main",
+            false,
+            Some("abcd1234"),
+            "test-seal",
+            None,
+            &Vec::new(),
+            &files_meta,
+            &baseline,
+            &tool_hashes,
+        );
+
+        let obj = bundle
+            .value
+            .get("tool_hashes")
+            .and_then(|v| v.as_object())
+            .expect("tool_hashes must be an object");
+        assert_eq!(
+            obj.get("verify_context_pack.py").and_then(|v| v.as_str()),
+            Some("a".repeat(64).as_str()),
+            "verify_context_pack.py entry must survive round-trip"
+        );
+        assert_eq!(
+            obj.get("freshness.py").and_then(|v| v.as_str()),
+            Some("b".repeat(64).as_str()),
+            "freshness.py entry must survive round-trip"
+        );
+    }
+
+    /// `compute_tool_hashes` walks `<current_dir>/tools/` and returns a
+    /// deterministic SHA256 map. Hashes must match what `verify` will compute
+    /// on the same bytes.
+    #[test]
+    fn p11_drift_compute_tool_hashes_reads_tools_dir() {
+        let dir = test_dir("p11_drift_compute_tool_hashes");
+        let tools = dir.join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        fs::write(tools.join("verify_context_pack.py"), b"print('verify')\n").unwrap();
+        fs::write(tools.join("freshness.py"), b"print('freshness')\n").unwrap();
+
+        let out = compute_tool_hashes(&dir);
+        assert_eq!(out.len(), 2, "expected two tool entries, got {out:?}");
+        assert_eq!(
+            out.get("verify_context_pack.py").map(|s| s.as_str()),
+            Some(sha256_hex(b"print('verify')\n").as_str())
+        );
+        assert_eq!(
+            out.get("freshness.py").map(|s| s.as_str()),
+            Some(sha256_hex(b"print('freshness')\n").as_str())
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Missing `tools/` directory → `compute_tool_hashes` returns an empty
+    /// map without erroring, so `build_manifest` still produces a valid
+    /// manifest for packs without helper scripts.
+    #[test]
+    fn p11_drift_compute_tool_hashes_missing_dir_is_empty() {
+        let dir = test_dir("p11_drift_no_tools_dir");
+        let out = compute_tool_hashes(&dir);
+        assert!(
+            out.is_empty(),
+            "missing tools/ must yield empty map, got {out:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// When on-disk hashes match `manifest.tool_hashes`,
+    /// `compute_tool_integrity_report` must return an empty mismatch list.
+    #[test]
+    fn p11_drift_integrity_report_passes_when_hashes_match() {
+        let dir = test_dir("p11_drift_integrity_pass");
+        let tools = dir.join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        let bytes = b"#!/usr/bin/env python3\nprint('ok')\n";
+        fs::write(tools.join("verify_context_pack.py"), bytes).unwrap();
+        let manifest = json!({
+            "tool_hashes": {
+                "verify_context_pack.py": sha256_hex(bytes),
+            }
+        });
+        let report = compute_tool_integrity_report(&manifest, &dir);
+        assert!(
+            report.mismatches.is_empty(),
+            "matching hashes must produce no mismatches, got {report:?}"
+        );
+        assert!(
+            report.extra_files.is_empty(),
+            "no unreported files present, got {report:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A tampered tool file must produce a mismatch naming the file. This is
+    /// the core F38 guarantee — the failure points at the specific helper.
+    #[test]
+    fn p11_drift_integrity_report_fails_with_specific_filename() {
+        let dir = test_dir("p11_drift_integrity_fail");
+        let tools = dir.join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        let original = b"#!/usr/bin/env python3\nprint('canonical')\n";
+        let tampered = b"#!/usr/bin/env python3\nprint('tampered')\n";
+        fs::write(tools.join("verify_context_pack.py"), tampered).unwrap();
+        let manifest = json!({
+            "tool_hashes": {
+                "verify_context_pack.py": sha256_hex(original),
+            }
+        });
+        let report = compute_tool_integrity_report(&manifest, &dir);
+        assert_eq!(
+            report.mismatches.len(),
+            1,
+            "expected one mismatch, got {report:?}"
+        );
+        assert_eq!(
+            report.mismatches[0].file, "verify_context_pack.py",
+            "mismatch must name the tampered file"
+        );
+        assert!(
+            report.mismatches[0].reason.contains("mismatch"),
+            "mismatch reason must flag checksum mismatch, got {:?}",
+            report.mismatches[0].reason
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A manifest that records a tool which is absent on disk must surface a
+    /// `"file missing"` mismatch so deletion is caught as tampering.
+    #[test]
+    fn p11_drift_integrity_report_flags_missing_file() {
+        let dir = test_dir("p11_drift_integrity_missing");
+        let tools = dir.join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        // Intentionally do not write verify_context_pack.py on disk.
+        let manifest = json!({
+            "tool_hashes": {
+                "verify_context_pack.py": "a".repeat(64),
+            }
+        });
+        let report = compute_tool_integrity_report(&manifest, &dir);
+        assert_eq!(report.mismatches.len(), 1);
+        assert_eq!(report.mismatches[0].file, "verify_context_pack.py");
+        assert!(
+            report.mismatches[0].reason.contains("missing"),
+            "missing-file reason expected, got {:?}",
+            report.mismatches[0].reason
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Manifests without `tool_hashes` (sealed by an older chorus) must
+    /// produce an empty report so `verify --ci` stays green on upgrade.
+    #[test]
+    fn p11_drift_integrity_report_empty_without_field() {
+        let dir = test_dir("p11_drift_no_field");
+        let manifest = json!({"files": []});
+        let report = compute_tool_integrity_report(&manifest, &dir);
+        assert!(
+            report.mismatches.is_empty() && report.extra_files.is_empty(),
+            "absent tool_hashes must yield empty report, got {report:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end: `check_tool_integrity` returns `Ok(())` when hashes match
+    /// and `Err(...)` with the specific filename when tampered.
+    #[test]
+    fn p11_drift_check_tool_integrity_public_api() {
+        let dir = test_dir("p11_drift_public_api");
+        let current = dir.join(".agent-context").join("current");
+        let tools = current.join("tools");
+        fs::create_dir_all(&tools).unwrap();
+        let bytes = b"print('helper')\n";
+        fs::write(tools.join("freshness.py"), bytes).unwrap();
+        let manifest = json!({
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "tool_hashes": {
+                "freshness.py": sha256_hex(bytes),
+            },
+            "files": [],
+        });
+        fs::write(
+            current.join("manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let cwd = dir.to_string_lossy().to_string();
+        // Pass case.
+        check_tool_integrity(&cwd, None).expect("matching hashes must return Ok");
+
+        // Tamper and re-run.
+        fs::write(tools.join("freshness.py"), b"print('tampered')\n").unwrap();
+        let err = check_tool_integrity(&cwd, None).expect_err("tamper must return Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("tool file(s) differ from manifest"),
+            "error should flag tampering, got: {msg}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `tool_integrity_as_json` must emit `status: "pass"` with empty arrays
+    /// for a clean report, and `status: "fail"` + the specific filename for
+    /// a mismatch. This is the shape `verify --ci` consumers read.
+    #[test]
+    fn p11_drift_tool_integrity_as_json_shape() {
+        let clean = ToolIntegrityReport::default();
+        let clean_json = tool_integrity_as_json(&clean);
+        assert_eq!(
+            clean_json.get("status").and_then(|v| v.as_str()),
+            Some("pass")
+        );
+        assert_eq!(
+            clean_json
+                .get("mismatches")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(0)
+        );
+        assert_eq!(
+            clean_json
+                .get("extra_files")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len()),
+            Some(0)
+        );
+
+        let failing = ToolIntegrityReport {
+            mismatches: vec![ToolIntegrityMismatch {
+                file: "freshness.py".to_string(),
+                reason: "checksum mismatch".to_string(),
+            }],
+            extra_files: vec![],
+        };
+        let failing_json = tool_integrity_as_json(&failing);
+        assert_eq!(
+            failing_json.get("status").and_then(|v| v.as_str()),
+            Some("fail")
+        );
+        let arr = failing_json
+            .get("mismatches")
+            .and_then(|v| v.as_array())
+            .expect("mismatches array");
+        assert_eq!(arr.len(), 1);
+        assert_eq!(
+            arr[0].get("file").and_then(|v| v.as_str()),
+            Some("freshness.py")
+        );
     }
 }
