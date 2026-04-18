@@ -60,6 +60,31 @@ pub struct InitOptions {
     /// P8/F20: when true, dereference symlinks whose canonical target escapes
     /// the repo root. Default false (safe).
     pub follow_symlinks: bool,
+    /// P13/F46: tiered adoption. Tier 1 = CODE_MAP + routes.json + manifest
+    /// only. Tier 2 = Tier 1 + BEHAVIORAL_INVARIANTS + completeness_contract.
+    /// Tier 3 = full pack (default, matches legacy behavior).
+    pub tier: InitTier,
+}
+
+/// P13/F46: adoption tier. Tier 3 (default) preserves the existing full-pack
+/// scaffolding. Tier 1 and Tier 2 scaffold a progressively smaller subset so
+/// teams adopting the skill can start with a narrow, high-signal core and
+/// expand later.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum InitTier {
+    /// Minimal: 20_CODE_MAP.md + routes.json only. Manifest is still written
+    /// at seal time.
+    One,
+    /// Tier 1 + 30_BEHAVIORAL_INVARIANTS.md + completeness_contract.json.
+    Two,
+    /// Full pack — same set as pre-P13 init.
+    Three,
+}
+
+impl Default for InitTier {
+    fn default() -> Self {
+        InitTier::Three
+    }
 }
 
 pub struct SealOptions {
@@ -501,12 +526,16 @@ pub fn build(options: BuildOptions) -> Result<()> {
     let current_dir = pack_root.join("current");
 
     if !current_dir.exists() || is_dir_empty(&current_dir)? {
-        // No pack yet: initialize templates.
+        // No pack yet: initialize templates. Tier 3 preserves the legacy
+        // full-pack behavior here; tiered adoption is only wired through the
+        // direct `agent-context init --tier <N>` entrypoint, not through the
+        // legacy `build` wrapper.
         return init(InitOptions {
             pack_dir: options.pack_dir,
             cwd: Some(cwd.display().to_string()),
             force: false,
             follow_symlinks: false,
+            tier: InitTier::Three,
         });
     }
 
@@ -577,26 +606,45 @@ pub fn init(options: InitOptions) -> Result<()> {
 
     let generated_at = now_stamp();
 
-    let templates = vec![
-        (
-            "00_START_HERE.md",
-            build_template_start_here(&repo_name, &branch, &head_sha, &generated_at),
-        ),
-        ("10_SYSTEM_OVERVIEW.md", build_template_system_overview()),
-        ("20_CODE_MAP.md", build_template_code_map()),
-        ("30_BEHAVIORAL_INVARIANTS.md", build_template_invariants()),
-        ("40_OPERATIONS_AND_RELEASE.md", build_template_operations()),
-        ("routes.json", build_routes_json()),
-        (
-            "completeness_contract.json",
-            build_completeness_contract_json(),
-        ),
-        ("reporting_rules.json", build_reporting_rules_json()),
-        ("search_scope.json", build_search_scope_json()),
-    ];
+    // P13/F46: pick the template set that matches the requested adoption tier.
+    // Tier 3 is the default and preserves legacy behavior (all files). Tier 2
+    // drops the optional markdown + structured files the team hasn't committed
+    // to yet; Tier 1 is the narrowest viable starting point.
+    let templates: Vec<(&str, String)> = match options.tier {
+        InitTier::One => vec![
+            ("20_CODE_MAP.md", build_template_code_map()),
+            ("routes.json", build_routes_json()),
+        ],
+        InitTier::Two => vec![
+            ("20_CODE_MAP.md", build_template_code_map()),
+            ("30_BEHAVIORAL_INVARIANTS.md", build_template_invariants()),
+            ("routes.json", build_routes_json()),
+            (
+                "completeness_contract.json",
+                build_completeness_contract_json(),
+            ),
+        ],
+        InitTier::Three => vec![
+            (
+                "00_START_HERE.md",
+                build_template_start_here(&repo_name, &branch, &head_sha, &generated_at),
+            ),
+            ("10_SYSTEM_OVERVIEW.md", build_template_system_overview()),
+            ("20_CODE_MAP.md", build_template_code_map()),
+            ("30_BEHAVIORAL_INVARIANTS.md", build_template_invariants()),
+            ("40_OPERATIONS_AND_RELEASE.md", build_template_operations()),
+            ("routes.json", build_routes_json()),
+            (
+                "completeness_contract.json",
+                build_completeness_contract_json(),
+            ),
+            ("reporting_rules.json", build_reporting_rules_json()),
+            ("search_scope.json", build_search_scope_json()),
+        ],
+    };
 
-    for (name, content) in templates {
-        write_text(&current_dir.join(name), &content)?;
+    for (name, content) in &templates {
+        write_text(&current_dir.join(name), content)?;
     }
 
     if !relevance_path.exists() || options.force {
@@ -967,7 +1015,21 @@ pub fn seal(options: SealOptions) -> Result<()> {
 
     let previous_manifest = read_json(&manifest_path)?;
 
-    let manifest = build_manifest(
+    // P13/F58 + F50 — carry forward the last-known-good pointer and the
+    // optional alias map from the previous manifest so re-seals don't wipe
+    // values that the team configured or that verify --ci promoted.
+    let carried_last_good = previous_manifest
+        .as_ref()
+        .and_then(|m| m.get("last_known_good_sha"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let carried_aliases = previous_manifest
+        .as_ref()
+        .and_then(|m| m.get("aliases"))
+        .cloned()
+        .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+
+    let mut manifest = build_manifest(
         &generated_at,
         &repo_root,
         &repo_name,
@@ -980,6 +1042,10 @@ pub fn seal(options: SealOptions) -> Result<()> {
         &files_meta,
         &baseline,
     );
+    if let Some(obj) = manifest.value.as_object_mut() {
+        obj.insert("last_known_good_sha".to_string(), carried_last_good);
+        obj.insert("aliases".to_string(), carried_aliases);
+    }
 
     write_text_atomic(
         &manifest_path,
@@ -1101,10 +1167,45 @@ pub fn sync_main(
     Ok(())
 }
 
+/// Legacy rollback entrypoint. Kept for internal callers / tests that still
+/// use the positional signature. New code should prefer
+/// [`rollback_with_options`] so `--latest-good` is always plumbable.
+#[allow(dead_code)]
 pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
+    rollback_with_options(RollbackOptions {
+        snapshot: snapshot.map(|s| s.to_string()),
+        pack_dir: pack_dir.map(|s| s.to_string()),
+        latest_good: false,
+    })
+}
+
+/// P13/F58: structured rollback options. Splits `latest_good` out from the
+/// snapshot ID so callers can't accidentally pass a literal "latest-good"
+/// string as a snapshot name.
+///
+/// TODO(P13-continuation): The items below are deliberately deferred from the
+/// P13 cut because they are each large enough to deserve their own package;
+/// they live in the plan under P13 but are scoped for a follow-up PR.
+///   - F48 — `explain-diff` subcommand.
+///   - F49 — monorepo multi-team mode.
+///   - F51 — canonical routing template (cross-track with team_skills).
+///   - F52 — scheduled re-run of acceptance tests.
+///   - F53 — cross-file integrity check.
+///   - F54 — difficulty floor for acceptance tests.
+///   - F59 — cryptographic history chain.
+///   - F45 — AUTHORING_TODO.md.
+pub struct RollbackOptions {
+    pub snapshot: Option<String>,
+    pub pack_dir: Option<String>,
+    /// When true, ignore `snapshot` and roll back to the snapshot whose
+    /// `head_sha` matches `manifest.json`'s `last_known_good_sha`.
+    pub latest_good: bool,
+}
+
+pub fn rollback_with_options(options: RollbackOptions) -> Result<()> {
     let cwd = env::current_dir().context("Failed to resolve current directory")?;
     let repo_root = git_repo_root(&cwd)?;
-    let pack_root = resolve_pack_root(&repo_root, pack_dir);
+    let pack_root = resolve_pack_root(&repo_root, options.pack_dir.as_deref());
     let current_dir = pack_root.join("current");
     let snapshots_dir = pack_root.join("snapshots");
     let lock_path = pack_root.join("seal.lock");
@@ -1127,9 +1228,38 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
         ));
     }
 
-    let target_snapshot = snapshot
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| snapshot_ids.last().cloned().unwrap_or_default());
+    // P13/F58: --latest-good reads the manifest's `last_known_good_sha`, then
+    // picks the snapshot whose history entry matches it. Fail loudly when
+    // the pointer is missing — silently falling back to "latest" would hide
+    // the very drift this flag is meant to surface.
+    let target_snapshot = if options.latest_good {
+        let manifest_path = current_dir.join("manifest.json");
+        let good_sha = read_json(&manifest_path)?
+            .as_ref()
+            .and_then(|m| m.get("last_known_good_sha"))
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| {
+                anyhow!(
+                    "[context-pack] rollback --latest-good failed: manifest.json has no \
+                     `last_known_good_sha` (run `verify --ci` on a green commit first)"
+                )
+            })?;
+
+        find_snapshot_for_head_sha(&pack_root, &good_sha)?.ok_or_else(|| {
+            anyhow!(
+                "[context-pack] rollback --latest-good failed: no snapshot matches \
+                 last_known_good_sha `{}`",
+                good_sha
+            )
+        })?
+    } else {
+        options
+            .snapshot
+            .clone()
+            .unwrap_or_else(|| snapshot_ids.last().cloned().unwrap_or_default())
+    };
 
     if !snapshot_ids.iter().any(|id| id == &target_snapshot) {
         // F55: if not found in the active snapshots directory, check the rotated
@@ -1163,6 +1293,90 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
         rel_path(&current_dir, &repo_root)
     );
     Ok(())
+}
+
+/// P13/F58: rewrite `manifest.json`'s `last_known_good_sha` field to the given
+/// SHA. Read -> mutate -> atomic write. Caller is expected to only invoke this
+/// when verify --ci has passed; silently returns an error to let callers
+/// treat the write as best-effort.
+fn update_last_known_good(manifest_path: &Path, sha: &str) -> Result<()> {
+    if !manifest_path.exists() {
+        return Err(anyhow!(
+            "manifest.json not found at {}",
+            manifest_path.display()
+        ));
+    }
+    let raw = fs::read_to_string(manifest_path)
+        .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
+    let mut value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("Failed to parse {}", manifest_path.display()))?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "last_known_good_sha".to_string(),
+            Value::String(sha.to_string()),
+        );
+    } else {
+        return Err(anyhow!("manifest root is not a JSON object"));
+    }
+    let serialized = serde_json::to_string_pretty(&value)?;
+    write_text_atomic(manifest_path, &format!("{serialized}\n"))?;
+    Ok(())
+}
+
+/// P13/F58: locate the snapshot whose history entry's `head_sha` matches
+/// `target_sha`. Scans `history.jsonl` first, then falls back to the rotated
+/// history index files. Returns `Ok(Some(snapshot_id))` when found. The match
+/// is exact — callers that want short-sha matching should normalize first.
+fn find_snapshot_for_head_sha(pack_root: &Path, target_sha: &str) -> Result<Option<String>> {
+    let scan_file = |path: &Path| -> Option<String> {
+        let raw = fs::read_to_string(path).ok()?;
+        // Scan newest-first: later entries overwrite earlier matches.
+        let mut best: Option<String> = None;
+        for line in raw.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let value: Value = match serde_json::from_str(trimmed) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let sha = value.get("head_sha").and_then(|v| v.as_str()).unwrap_or("");
+            if sha == target_sha {
+                if let Some(id) = value
+                    .get("snapshot_id")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                {
+                    best = Some(id);
+                }
+            }
+        }
+        best
+    };
+
+    let active = pack_root.join("history.jsonl");
+    if let Some(id) = scan_file(&active) {
+        return Ok(Some(id));
+    }
+
+    // Fall back to rotated archives named in `history_index.json`.
+    let index_path = pack_root.join("history_index.json");
+    if let Ok(Some(index)) = read_json(&index_path) {
+        if let Some(files) = index.get("files").and_then(|f| f.as_array()) {
+            for entry in files {
+                let name = match entry.get("name").and_then(|n| n.as_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                let rotated = pack_root.join(name);
+                if let Some(id) = scan_file(&rotated) {
+                    return Ok(Some(id));
+                }
+            }
+        }
+    }
+    Ok(None)
 }
 
 /// Check whether the requested snapshot ID appears in any rotated history file
@@ -1764,6 +1978,12 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
     let mut pass_count = 0usize;
     let mut fail_count = 0usize;
 
+    // P13/F50: read the manifest's `aliases` map (if present). Keys are the
+    // canonical filenames recorded in `files[]`; values are the on-disk name
+    // the team prefers. When the canonical path is missing, verify retries
+    // with the aliased name before flagging the file as missing.
+    let aliases = resolve_pack_aliases(&manifest);
+
     for file_entry in files_arr {
         let file_path_str = file_entry
             .get("path")
@@ -1773,7 +1993,8 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             .get("sha256")
             .and_then(|h| h.as_str())
             .unwrap_or("");
-        let actual_path = current_dir.join(file_path_str);
+        let (actual_path, alias_used) =
+            resolve_file_with_alias(&current_dir, file_path_str, &aliases);
 
         if !actual_path.exists() {
             if !options.ci {
@@ -1781,6 +2002,14 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             }
             fail_count += 1;
             continue;
+        }
+        if let Some(alias_name) = alias_used {
+            if !options.ci {
+                println!(
+                    "  NOTE  {} resolved via alias `{}`",
+                    file_path_str, alias_name
+                );
+            }
         }
 
         let actual_hash = match hash_file_stable(&actual_path) {
@@ -1980,6 +2209,26 @@ pub fn verify(options: VerifyOptions) -> Result<()> {
             structural_warnings_as_json(&structural_warnings),
         );
         result_obj.insert("exit_code".to_string(), json!(exit_code));
+
+        // P13/F58: promote the manifest's seal-time HEAD to `last_known_good_sha`
+        // when this CI run is fully green. Best-effort: a write failure does
+        // not flip the exit code or leak detail — CI already passed.
+        if exit_code == 0 {
+            let seal_sha = manifest
+                .get("head_sha_at_seal")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| {
+                    manifest
+                        .get("head_sha")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_string())
+                });
+            if let Some(sha) = seal_sha.filter(|s| !s.is_empty()) {
+                let _ = update_last_known_good(&manifest_path, &sha);
+            }
+        }
+
         println!("{}", serde_json::to_string_pretty(&Value::Object(result_obj))?);
         if exit_code != 0 {
             std::process::exit(exit_code);
@@ -2301,6 +2550,48 @@ fn resolve_pack_root(repo_root: &Path, pack_dir: Option<&str>) -> PathBuf {
     } else {
         repo_root.join(dir_path)
     }
+}
+
+/// P13/F50: read the manifest's `aliases` object (canonical -> alias)
+/// into a `BTreeMap` for deterministic iteration. Missing field, non-object,
+/// or non-string values degrade to an empty map so unmodified manifests
+/// continue to verify unchanged.
+fn resolve_pack_aliases(manifest: &Value) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    if let Some(obj) = manifest.get("aliases").and_then(|v| v.as_object()) {
+        for (canonical, alias_val) in obj {
+            if let Some(alias_str) = alias_val.as_str() {
+                if !alias_str.is_empty() {
+                    out.insert(canonical.to_string(), alias_str.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// P13/F50: resolve a canonical pack-file name against the on-disk layout,
+/// falling back to the aliased name when the canonical path is missing.
+/// Returns the resolved path and — when an alias was consulted — the alias
+/// name so callers can surface it in human output.
+fn resolve_file_with_alias(
+    current_dir: &Path,
+    canonical: &str,
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> (PathBuf, Option<String>) {
+    let direct = current_dir.join(canonical);
+    if direct.exists() {
+        return (direct, None);
+    }
+    if let Some(alias) = aliases.get(canonical) {
+        let aliased = current_dir.join(alias);
+        if aliased.exists() {
+            return (aliased, Some(alias.clone()));
+        }
+    }
+    // Fall back to the direct path so downstream "does not exist" branches
+    // still see the canonical name in error messages.
+    (direct, None)
 }
 
 fn ensure_dir(path: &Path) -> Result<()> {
@@ -3675,6 +3966,17 @@ fn build_manifest(
         "head_sha": head_sha,
         "head_sha_at_seal": head_sha_at_seal_value,
         "post_commit_sha": Value::Null,
+        // P13/F58: last-known-good pointer. Null at seal time; the verify path
+        // (under --ci when integrity+freshness pass) promotes the manifest's
+        // `head_sha_at_seal` into this field so `rollback --latest-good` has
+        // a stable target. Rebuilt manifests start null — a subsequent --ci
+        // verify seals the new last-good.
+        "last_known_good_sha": Value::Null,
+        // P13/F50: pack-file alias map. Keys are canonical filenames (e.g.
+        // `20_CODE_MAP.md`); values are the on-disk name the team prefers.
+        // The verifier accepts either name when resolving required files.
+        // Empty object = no aliases configured (the default).
+        "aliases": Value::Object(serde_json::Map::new()),
         "build_reason": reason,
         "base_sha": base_sha,
         "changed_files": changed_files,
@@ -5166,12 +5468,33 @@ fn has_structured_layer(current_dir: &Path) -> bool {
 }
 
 fn required_files_for_mode(current_dir: &Path) -> Vec<String> {
-    let mut files = REQUIRED_FILES
+    // P13/F46: tiered adoption writes a subset of REQUIRED_FILES at init time,
+    // so on a seal we only enforce the files the pack author actually
+    // scaffolded. The legacy Tier-3 pack (all REQUIRED_FILES present) keeps
+    // the strict check because every file is on disk; Tier 1/2 packs ship a
+    // smaller set and we don't want seal to reject them for a file the team
+    // explicitly opted out of.
+    let mut files: Vec<String> = REQUIRED_FILES
         .iter()
+        .filter(|name| current_dir.join(name).exists())
         .map(|value| value.to_string())
-        .collect::<Vec<_>>();
+        .collect();
+    if files.is_empty() {
+        // Fall back to the canonical set so seal still produces a helpful
+        // "missing file X" error when the pack is empty rather than a
+        // silent no-op.
+        files = REQUIRED_FILES
+            .iter()
+            .map(|value| value.to_string())
+            .collect();
+    }
     if has_structured_layer(current_dir) {
-        files.extend(STRUCTURED_FILES.iter().map(|value| value.to_string()));
+        files.extend(
+            STRUCTURED_FILES
+                .iter()
+                .filter(|name| current_dir.join(name).exists())
+                .map(|value| value.to_string()),
+        );
     }
     files
 }
@@ -5543,36 +5866,51 @@ fn validate_structured_layer(repo_root: &Path, current_dir: &Path) -> Result<()>
 }
 
 /// Build the routing block content for agent config files.
+///
+/// P13/F47: every block starts with a mandatory session-start freshness gate
+/// so agents compare `head_sha_at_seal` against `git rev-parse HEAD` before
+/// any reasoning. This catches the common failure mode where an agent trusts
+/// a stale pack after the underlying commit moved.
 fn build_context_pack_routing_block(agent_kind: &str) -> String {
+    // Shared freshness-gate preamble (F47). Kept identical across agents so
+    // every routing block carries the same contract.
+    let freshness_gate = "**Before any reasoning, check `.agent-context/current/manifest.json`'s `head_sha_at_seal` vs `git rev-parse HEAD`. If they diverge, warn the user.**";
+
     if agent_kind == "codex" {
-        "## Context Pack\n\
-         \n\
-         When asked to understand this repository:\n\
-         \n\
-         1. Read `.agent-context/current/00_START_HERE.md`.\n\
-         2. Read `.agent-context/current/routes.json`.\n\
-         3. Identify the active task type in `routes.json`.\n\
-         4. Read the matching entries in `completeness_contract.json`, `reporting_rules.json`, and `search_scope.json`.\n\
-         5. Search ONLY within the directories listed in `search_scope.json` for your task type.\n\
-         6. Use `verification_shortcuts` to check specific line ranges instead of reading full files.\n\
-         7. Do not enumerate files in directories marked `exclude_from_search`.\n\
-         8. Do not open repo files before those steps unless a referenced structured file is missing.\n\
-         \n\
-         If `.agent-context/current/routes.json` is missing, fall back to the markdown pack only."
-            .to_string()
+        format!(
+            "## Context Pack\n\
+             \n\
+             {freshness_gate}\n\
+             \n\
+             When asked to understand this repository:\n\
+             \n\
+             1. Read `.agent-context/current/00_START_HERE.md`.\n\
+             2. Read `.agent-context/current/routes.json`.\n\
+             3. Identify the active task type in `routes.json`.\n\
+             4. Read the matching entries in `completeness_contract.json`, `reporting_rules.json`, and `search_scope.json`.\n\
+             5. Search ONLY within the directories listed in `search_scope.json` for your task type.\n\
+             6. Use `verification_shortcuts` to check specific line ranges instead of reading full files.\n\
+             7. Do not enumerate files in directories marked `exclude_from_search`.\n\
+             8. Do not open repo files before those steps unless a referenced structured file is missing.\n\
+             \n\
+             If `.agent-context/current/routes.json` is missing, fall back to the markdown pack only."
+        )
     } else {
-        "## Context Pack\n\
-         \n\
-         **BEFORE starting any task**, read the context pack in this order:\n\
-         \n\
-         1. `.agent-context/current/00_START_HERE.md` — entrypoint, routing, stop rules\n\
-         2. `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md` — change checklists, file families, what NOT to do\n\
-         3. `.agent-context/current/20_CODE_MAP.md` — navigation index, tracing flows\n\
-         \n\
-         Read these three files BEFORE opening any repo source files. Then open only the files the pack identifies as relevant.\n\
-         \n\
-         For architecture questions, also read `10_SYSTEM_OVERVIEW.md`. For test/deploy questions, also read `40_OPERATIONS_AND_RELEASE.md`."
-            .to_string()
+        format!(
+            "## Context Pack\n\
+             \n\
+             {freshness_gate}\n\
+             \n\
+             **BEFORE starting any task**, read the context pack in this order:\n\
+             \n\
+             1. `.agent-context/current/00_START_HERE.md` — entrypoint, routing, stop rules\n\
+             2. `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md` — change checklists, file families, what NOT to do\n\
+             3. `.agent-context/current/20_CODE_MAP.md` — navigation index, tracing flows\n\
+             \n\
+             Read these three files BEFORE opening any repo source files. Then open only the files the pack identifies as relevant.\n\
+             \n\
+             For architecture questions, also read `10_SYSTEM_OVERVIEW.md`. For test/deploy questions, also read `40_OPERATIONS_AND_RELEASE.md`."
+        )
     }
 }
 
@@ -9213,5 +9551,329 @@ Current count is {{counts.files_py}}.\n";
         let drifts_none = vec![json!("unrelated_fn")];
         let hits3 = match_invalidated_tests(&drifts_none, &bindings);
         assert!(hits3.is_empty(), "unrelated drift must not match, got {hits3:?}");
+    }
+
+    // -------------------------------------------------------------------------
+    // P13 — Authoring ergonomics & lifecycle
+    // -------------------------------------------------------------------------
+
+    /// Bootstrap a minimal git repo so `init()` (which requires git) succeeds
+    /// under test. Returns the repo root path.
+    fn init_bare_git_repo(name: &str) -> PathBuf {
+        let dir = test_dir(name);
+        let run = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output()
+                .expect("git runs in test");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "test@example.com"]);
+        run(&["config", "user.name", "P13 Test"]);
+        run(&["config", "commit.gpgsign", "false"]);
+        fs::write(dir.join("README.md"), "initial\n").unwrap();
+        run(&["add", "README.md"]);
+        run(&["commit", "-q", "-m", "initial"]);
+        dir
+    }
+
+    #[test]
+    fn p13_init_tier_one_scaffolds_minimal_pack() {
+        let repo = init_bare_git_repo("p13_init_tier_one");
+        init(InitOptions {
+            pack_dir: None,
+            cwd: Some(repo.display().to_string()),
+            force: false,
+            follow_symlinks: false,
+            tier: InitTier::One,
+        })
+        .expect("tier-1 init succeeds");
+
+        let current = repo.join(".agent-context").join("current");
+        assert!(current.join("20_CODE_MAP.md").exists(), "tier 1 ships CODE_MAP");
+        assert!(current.join("routes.json").exists(), "tier 1 ships routes.json");
+
+        // Files intentionally excluded from tier 1.
+        for name in [
+            "00_START_HERE.md",
+            "10_SYSTEM_OVERVIEW.md",
+            "30_BEHAVIORAL_INVARIANTS.md",
+            "40_OPERATIONS_AND_RELEASE.md",
+            "completeness_contract.json",
+            "reporting_rules.json",
+            "search_scope.json",
+        ] {
+            assert!(
+                !current.join(name).exists(),
+                "tier 1 should NOT ship {name}"
+            );
+        }
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn p13_init_tier_two_scaffolds_tier_one_plus_invariants_and_contract() {
+        let repo = init_bare_git_repo("p13_init_tier_two");
+        init(InitOptions {
+            pack_dir: None,
+            cwd: Some(repo.display().to_string()),
+            force: false,
+            follow_symlinks: false,
+            tier: InitTier::Two,
+        })
+        .expect("tier-2 init succeeds");
+
+        let current = repo.join(".agent-context").join("current");
+        // Tier 1 core.
+        assert!(current.join("20_CODE_MAP.md").exists());
+        assert!(current.join("routes.json").exists());
+        // Tier 2 additions.
+        assert!(current.join("30_BEHAVIORAL_INVARIANTS.md").exists());
+        assert!(current.join("completeness_contract.json").exists());
+        // Still excluded in tier 2.
+        for name in [
+            "00_START_HERE.md",
+            "10_SYSTEM_OVERVIEW.md",
+            "40_OPERATIONS_AND_RELEASE.md",
+            "reporting_rules.json",
+            "search_scope.json",
+        ] {
+            assert!(
+                !current.join(name).exists(),
+                "tier 2 should NOT ship {name}"
+            );
+        }
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn p13_init_tier_three_scaffolds_full_pack() {
+        let repo = init_bare_git_repo("p13_init_tier_three");
+        init(InitOptions {
+            pack_dir: None,
+            cwd: Some(repo.display().to_string()),
+            force: false,
+            follow_symlinks: false,
+            tier: InitTier::Three,
+        })
+        .expect("tier-3 init succeeds");
+
+        let current = repo.join(".agent-context").join("current");
+        // Tier 3 must equal the pre-P13 full pack.
+        for name in [
+            "00_START_HERE.md",
+            "10_SYSTEM_OVERVIEW.md",
+            "20_CODE_MAP.md",
+            "30_BEHAVIORAL_INVARIANTS.md",
+            "40_OPERATIONS_AND_RELEASE.md",
+            "routes.json",
+            "completeness_contract.json",
+            "reporting_rules.json",
+            "search_scope.json",
+        ] {
+            assert!(
+                current.join(name).exists(),
+                "tier 3 must ship {name} to match legacy behavior"
+            );
+        }
+        let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn p13_routing_templates_include_session_start_freshness_gate() {
+        // F47 — every shipped routing block must start with the mandatory
+        // manifest/HEAD divergence check so agents cannot reason on a stale
+        // pack.
+        for agent in ["claude", "codex", "gemini"] {
+            let block = build_context_pack_routing_block(agent);
+            assert!(
+                block.contains("head_sha_at_seal"),
+                "{agent} routing block missing `head_sha_at_seal` reference: {block}"
+            );
+            assert!(
+                block.contains("git rev-parse HEAD"),
+                "{agent} routing block missing `git rev-parse HEAD` reference"
+            );
+            assert!(
+                block.contains("Before any reasoning"),
+                "{agent} routing block missing the freshness preamble"
+            );
+            assert!(
+                block.contains("warn the user"),
+                "{agent} routing block missing the `warn the user` escalation clause"
+            );
+        }
+    }
+
+    #[test]
+    fn p13_verify_accepts_aliased_pack_filename() {
+        // F50 — when the manifest carries an `aliases` map and the canonical
+        // file is missing but its alias exists on disk, resolve_file_with_alias
+        // should walk the alias.
+        let dir = test_dir("p13_verify_alias");
+        let current = dir.join("current");
+        fs::create_dir_all(&current).unwrap();
+        // Only the aliased on-disk file exists.
+        fs::write(current.join("20_architecture.md"), "aliased\n").unwrap();
+
+        let manifest = json!({
+            "aliases": { "20_CODE_MAP.md": "20_architecture.md" },
+        });
+        let aliases = resolve_pack_aliases(&manifest);
+        assert_eq!(
+            aliases.get("20_CODE_MAP.md"),
+            Some(&"20_architecture.md".to_string()),
+            "alias map must be parsed from manifest"
+        );
+
+        let (resolved, alias_used) =
+            resolve_file_with_alias(&current, "20_CODE_MAP.md", &aliases);
+        assert!(
+            resolved.ends_with("20_architecture.md"),
+            "resolved path must point at the alias target, got {resolved:?}"
+        );
+        assert_eq!(alias_used.as_deref(), Some("20_architecture.md"));
+
+        // Without an alias, a missing file falls back to the canonical path.
+        let empty_aliases = std::collections::BTreeMap::new();
+        let (fallback, no_alias) =
+            resolve_file_with_alias(&current, "40_OPERATIONS_AND_RELEASE.md", &empty_aliases);
+        assert!(fallback.ends_with("40_OPERATIONS_AND_RELEASE.md"));
+        assert!(no_alias.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p13_update_last_known_good_writes_sha_into_manifest() {
+        // F58 — the verify --ci success path promotes head_sha_at_seal into
+        // last_known_good_sha via this helper. The write must be atomic and
+        // must not clobber the rest of the manifest.
+        let dir = test_dir("p13_update_last_known_good");
+        let manifest_path = dir.join("manifest.json");
+        let initial = json!({
+            "schema_version": 1,
+            "head_sha_at_seal": "abc123",
+            "last_known_good_sha": null,
+            "aliases": {},
+            "files": [],
+        });
+        fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&initial).unwrap(),
+        )
+        .unwrap();
+
+        update_last_known_good(&manifest_path, "abc123").expect("update succeeds");
+
+        let after: Value =
+            serde_json::from_str(&fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        assert_eq!(
+            after.get("last_known_good_sha").and_then(|v| v.as_str()),
+            Some("abc123"),
+            "last_known_good_sha must be promoted"
+        );
+        assert_eq!(
+            after.get("head_sha_at_seal").and_then(|v| v.as_str()),
+            Some("abc123"),
+            "unrelated fields must be preserved"
+        );
+        assert!(
+            after.get("files").and_then(|v| v.as_array()).is_some(),
+            "files array must be preserved"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p13_rollback_latest_good_targets_matching_snapshot() {
+        // F58 — rollback --latest-good looks up the snapshot whose
+        // history.jsonl entry's head_sha matches the manifest's
+        // last_known_good_sha.
+        let dir = test_dir("p13_rollback_latest_good");
+        let pack_root = dir.join(".agent-context");
+        fs::create_dir_all(&pack_root).unwrap();
+
+        let history = pack_root.join("history.jsonl");
+        // Two snapshots: one with the "good" sha, a newer one with a different sha.
+        let good_entry = json!({
+            "snapshot_id": "20260401T120000Z_abc1234",
+            "generated_at": "2026-04-01T12:00:00Z",
+            "head_sha": "abc1234deadbeef",
+        });
+        let newer_entry = json!({
+            "snapshot_id": "20260402T120000Z_xyz5678",
+            "generated_at": "2026-04-02T12:00:00Z",
+            "head_sha": "xyz5678cafebabe",
+        });
+        fs::write(
+            &history,
+            format!(
+                "{}\n{}\n",
+                serde_json::to_string(&good_entry).unwrap(),
+                serde_json::to_string(&newer_entry).unwrap()
+            ),
+        )
+        .unwrap();
+
+        let resolved =
+            find_snapshot_for_head_sha(&pack_root, "abc1234deadbeef").expect("scan succeeds");
+        assert_eq!(
+            resolved.as_deref(),
+            Some("20260401T120000Z_abc1234"),
+            "latest-good lookup must return the snapshot matching the sha"
+        );
+
+        // Unknown sha → None, caller is expected to fail loudly.
+        let missing =
+            find_snapshot_for_head_sha(&pack_root, "0000000000000000").expect("scan succeeds");
+        assert!(missing.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn p13_manifest_carries_last_known_good_and_aliases_fields() {
+        // Ensure build_manifest emits the two new P13 fields with their
+        // default shapes so downstream consumers can rely on the schema.
+        let files_meta: Vec<FileMeta> = Vec::new();
+        let baseline = SemanticBaseline::default();
+        let bundle = build_manifest(
+            "2026-04-17T00:00:00Z",
+            Path::new("/tmp/unused"),
+            "fixture-repo",
+            "main",
+            false,
+            Some("abcd1234"),
+            "test-seal",
+            None,
+            &Vec::new(),
+            &files_meta,
+            &baseline,
+        );
+
+        assert!(
+            bundle.value.get("last_known_good_sha").is_some(),
+            "manifest must emit last_known_good_sha (null is fine)"
+        );
+        assert!(
+            bundle
+                .value
+                .get("last_known_good_sha")
+                .map(|v| v.is_null())
+                .unwrap_or(false),
+            "last_known_good_sha defaults to null at seal time"
+        );
+        assert!(
+            bundle
+                .value
+                .get("aliases")
+                .and_then(|v| v.as_object())
+                .map(|m| m.is_empty())
+                .unwrap_or(false),
+            "aliases defaults to empty object"
+        );
     }
 }

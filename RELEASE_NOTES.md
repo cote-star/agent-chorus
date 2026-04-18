@@ -1,5 +1,56 @@
 # Release Notes
 
+## Unreleased — agent-context P13
+
+### Added — authoring ergonomics & lifecycle (P13)
+
+- **F46 — Tiered adoption.** `agent-context init --tier <1|2|3>` lets teams
+  scaffold a narrower starting pack. Tier 1 ships
+  `20_CODE_MAP.md` + `routes.json` only; Tier 2 adds
+  `30_BEHAVIORAL_INVARIANTS.md` + `completeness_contract.json`; Tier 3 is
+  the full pack (default, identical to legacy behavior). Seal auto-detects
+  which files are actually present, so a Tier-1/2 pack does not fail
+  the required-files check. Node parity added to
+  `scripts/agent_context/init.cjs`.
+- **F50 — Pack-file alias support.** `manifest.json` gains an `aliases`
+  object mapping canonical filenames to on-disk names
+  (e.g. `{"20_CODE_MAP.md": "20_architecture.md"}`). Both `verify` and the
+  Node verifier retry with the aliased filename when the canonical one is
+  missing and surface a `NOTE` in human output so an author can see the
+  alias was consulted. `seal` carries the `aliases` map forward across
+  re-seals.
+- **F58 — Last-known-good pointer.** `manifest.json` gains
+  `last_known_good_sha`. `verify --ci` promotes the sealed HEAD into this
+  field on a fully green run. `agent-context rollback --latest-good`
+  resolves the pointer through `history.jsonl` (falling back to rotated
+  archives) and restores the matching snapshot. `--latest-good` and
+  `--snapshot` are mutually exclusive. Node parity added in
+  `scripts/agent_context/rollback.cjs` and `scripts/agent_context/verify.cjs`.
+- **F47 — Session-start freshness gate.** The routing blocks `init`
+  upserts into `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` now open with a
+  mandatory first-line instruction: agents must compare
+  `head_sha_at_seal` against `git rev-parse HEAD` before any reasoning
+  and warn the user when they diverge. The Rust and Node `init` flows
+  emit the identical preamble.
+
+### Deferred (TODO(P13-continuation))
+
+These items from the P13 plan are **intentionally deferred** and carry a
+`TODO(P13-continuation)` marker in the plan/code:
+
+- **F48** — `explain-diff` subcommand (new command surface).
+- **F49** — Monorepo multi-team mode (structural change).
+- **F51** — Canonical routing template (better coordinated via the
+  `team_skills` track).
+- **F52** — Scheduled job to re-run acceptance tests.
+- **F53** — Cross-file integrity check.
+- **F54** — Difficulty floor for acceptance tests.
+- **F59** — Cryptographic history chain.
+- **F45** — `AUTHORING_TODO.md`.
+
+These are tracked for a follow-up P13-continuation package; nothing in
+this release blocks on them.
+
 ## Unreleased — agent-context P6
 
 ### Added — hook intelligence + separate-commit enforcement (P6)

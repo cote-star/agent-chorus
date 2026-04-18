@@ -131,13 +131,33 @@ function verifyIntegrity(packDir, quiet) {
     throw new Error('[agent-context] verify failed: manifest has no \'files\' array');
   }
 
+  // P13/F50 — resolve the manifest's alias map (canonical -> on-disk filename)
+  // once. When a canonical file is missing we retry with its alias before
+  // flagging the file as missing.
+  const aliases =
+    manifest.aliases && typeof manifest.aliases === 'object' && !Array.isArray(manifest.aliases)
+      ? manifest.aliases
+      : {};
+
   let passCount = 0;
   let failCount = 0;
 
   for (const entry of files) {
     const filePath = entry.path || 'unknown';
     const expectedHash = entry.sha256 || '';
-    const actualPath = path.join(currentDir, filePath);
+    let actualPath = path.join(currentDir, filePath);
+
+    if (!fs.existsSync(actualPath)) {
+      // P13/F50 — canonical missing; try the alias once.
+      const aliasName = aliases[filePath];
+      if (aliasName && typeof aliasName === 'string') {
+        const aliasPath = path.join(currentDir, aliasName);
+        if (fs.existsSync(aliasPath)) {
+          if (!quiet) console.log(`  NOTE  ${filePath} resolved via alias \`${aliasName}\``);
+          actualPath = aliasPath;
+        }
+      }
+    }
 
     if (!fs.existsSync(actualPath)) {
       if (!quiet) console.error(`  FAIL  ${filePath}  (file missing)`);
@@ -338,6 +358,26 @@ if (require.main === module) {
       }
 
       const exitCode = (integrityStatus === 'fail' || freshnessStatus === 'warn') ? 1 : 0;
+
+      // P13/F58 — promote head_sha_at_seal to last_known_good_sha when this
+      // CI run is fully green. Mirrors the Rust-side `update_last_known_good`
+      // in cli/src/agent_context.rs. Best-effort: failures never flip the
+      // exit code.
+      if (exitCode === 0) {
+        try {
+          const manifestPath = path.join(resolvedPackDir, 'current', 'manifest.json');
+          if (fs.existsSync(manifestPath)) {
+            const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            const sealSha = m.head_sha_at_seal || m.head_sha || null;
+            if (sealSha) {
+              m.last_known_good_sha = sealSha;
+              fs.writeFileSync(manifestPath, `${JSON.stringify(m, null, 2)}\n`, 'utf8');
+            }
+          }
+        } catch (_err) {
+          // swallow — promotion is opportunistic
+        }
+      }
 
       const report = {
         integrity: integrityStatus,

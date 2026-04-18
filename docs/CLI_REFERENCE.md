@@ -276,6 +276,9 @@ chorus agent-context install-hooks
 # Restore latest local snapshot
 chorus agent-context rollback
 
+# P13/F58: restore the snapshot the manifest's last_known_good_sha points to
+chorus agent-context rollback --latest-good
+
 # Non-blocking warning check for stale pack updates
 chorus agent-context check-freshness --base origin/main
 
@@ -283,7 +286,41 @@ chorus agent-context check-freshness --base origin/main
 #     (subagent reconciliation protocol)
 chorus agent-context diff --since-seal
 chorus agent-context diff --since-seal --format text
+
+# P13/F46: tiered adoption — scaffold a narrower starting pack
+chorus agent-context init --tier 1   # CODE_MAP + routes.json only
+chorus agent-context init --tier 2   # + BEHAVIORAL_INVARIANTS + completeness_contract
+chorus agent-context init --tier 3   # full pack (default; existing behavior)
 ```
+
+### P13 — Authoring ergonomics (tiers, aliases, last-known-good)
+
+The init flow supports three adoption tiers. Tier 3 preserves legacy
+behavior; tiers 1 and 2 scaffold a narrower core so teams can adopt the
+skill without committing to the full pack upfront.
+
+| Tier | Files scaffolded |
+|---|---|
+| 1 | `20_CODE_MAP.md`, `routes.json` |
+| 2 | Tier 1 + `30_BEHAVIORAL_INVARIANTS.md`, `completeness_contract.json` |
+| 3 | Full pack (default — all nine files) |
+
+`manifest.json` gains two P13 fields that `seal` and `verify` carry
+forward between runs:
+
+- `aliases` — object mapping canonical filenames to the on-disk names the
+  team prefers. Example: `{"20_CODE_MAP.md": "20_architecture.md"}`.
+  `verify` accepts the aliased filename when the canonical one is missing.
+- `last_known_good_sha` — SHA promoted by `verify --ci` on a green run.
+  `rollback --latest-good` resolves this pointer to the matching snapshot
+  in `history.jsonl` and restores it, giving teams a one-command
+  "undo to last green".
+
+The routing blocks written to `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`
+at `init` time now start with a mandatory session-start freshness gate
+(F47): "Before any reasoning, check
+`.agent-context/current/manifest.json`'s `head_sha_at_seal` vs
+`git rev-parse HEAD`. If they diverge, warn the user."
 
 You can also bootstrap agent-context from setup:
 
