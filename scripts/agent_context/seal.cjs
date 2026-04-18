@@ -731,6 +731,13 @@ function buildManifest({
       head_sha: headSha || null,
       head_sha_at_seal: headSha || null,
       post_commit_sha: null,
+      // P13/F58 — initial value; the seal caller overwrites this with the
+      // previous manifest's value when re-sealing so verify --ci promotions
+      // survive.
+      last_known_good_sha: null,
+      // P13/F50 — alias map is preserved across re-seals. Empty object here;
+      // overwritten by the seal caller when a previous manifest carried one.
+      aliases: {},
       build_reason: reason,
       base_sha: baseSha || null,
       changed_files: [],
@@ -1232,6 +1239,18 @@ function main() {
     const previous = readJson(manifestPath);
     const previousStable = previous?.stable_checksum;
     const previousHead = previous?.head_sha;
+
+    // P13/F58 + F50 — carry forward the last-known-good pointer and the
+    // optional alias map from the previous manifest so re-seals don't wipe
+    // values that verify --ci promoted or that the team hand-configured.
+    if (previous) {
+      if (previous.last_known_good_sha !== undefined) {
+        manifest.value.last_known_good_sha = previous.last_known_good_sha;
+      }
+      if (previous.aliases !== undefined) {
+        manifest.value.aliases = previous.aliases;
+      }
+    }
 
     safeWriteTextAtomic(manifestPath, `${JSON.stringify(manifest.value, null, 2)}\n`);
 

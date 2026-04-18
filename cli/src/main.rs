@@ -366,6 +366,13 @@ enum ContextPackCommand {
         /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
         #[arg(long)]
         pack_dir: Option<String>,
+
+        /// P13/F58: roll back to the snapshot matching the manifest's
+        /// `last_known_good_sha` field. The pointer is promoted on
+        /// `verify --ci` success, so this gives teams a simple "undo to last
+        /// green" without knowing the snapshot ID. Conflicts with `--snapshot`.
+        #[arg(long = "latest-good")]
+        latest_good: bool,
     },
 
     /// Verify context pack integrity (checksums)
@@ -439,6 +446,13 @@ enum ContextPackCommand {
         /// the pack. Opt in only for repos that rely on out-of-tree sources.
         #[arg(long)]
         follow_symlinks: bool,
+
+        /// P13/F46: adoption tier for the scaffolded pack. Tier 1 ships just
+        /// `20_CODE_MAP.md` + `routes.json`. Tier 2 adds
+        /// `30_BEHAVIORAL_INVARIANTS.md` + `completeness_contract.json`. Tier
+        /// 3 (the default) scaffolds the full pack — existing behavior.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3), default_value_t = 3)]
+        tier: u8,
     },
 
     /// P7 — zone-grouped diff from the seal-time baseline to current HEAD.
@@ -1017,8 +1031,19 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
         ContextPackCommand::PostCommitReconcile { cwd, pack_dir } => {
             agent_context::post_commit_reconcile(cwd.as_deref(), pack_dir.as_deref())?;
         }
-        ContextPackCommand::Rollback { snapshot, pack_dir } => {
-            agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
+        ContextPackCommand::Rollback { snapshot, pack_dir, latest_good } => {
+            // P13/F58: --latest-good conflicts with an explicit --snapshot
+            // value. Fail loudly rather than silently picking one.
+            if latest_good && snapshot.is_some() {
+                return Err(anyhow::anyhow!(
+                    "[agent-context] rollback: --latest-good and --snapshot are mutually exclusive"
+                ));
+            }
+            agent_context::rollback_with_options(agent_context::RollbackOptions {
+                snapshot,
+                pack_dir,
+                latest_good,
+            })?;
         }
         ContextPackCommand::Verify {
             pack_dir,
@@ -1054,12 +1079,21 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             cwd,
             force,
             follow_symlinks,
+            tier,
         } => {
+            // P13/F46: map the numeric CLI flag to the internal tier enum.
+            // clap's range parser guarantees 1..=3 reaches us here.
+            let init_tier = match tier {
+                1 => agent_context::InitTier::One,
+                2 => agent_context::InitTier::Two,
+                _ => agent_context::InitTier::Three,
+            };
             agent_context::init(agent_context::InitOptions {
                 pack_dir,
                 cwd,
                 force,
                 follow_symlinks,
+                tier: init_tier,
             })?;
         }
         ContextPackCommand::Seal {

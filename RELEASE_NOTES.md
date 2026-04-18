@@ -1,51 +1,55 @@
 # Release Notes
 
-## Unreleased — agent-context P12
+## Unreleased — agent-context P13
 
-### Added — trust boundary & pack integrity (P12)
+### Added — authoring ergonomics & lifecycle (P13)
 
-- **F39 — HIGH_TRUST_DIFF labeling:** the shipped CI template
-  (`templates/ci-agent-context.yml`) now inspects the PR diff for prose
-  changes to `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md`,
-  `.agent-context/current/00_START_HERE.md`, and the routing files
-  `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`. When any of these change, the
-  job applies label `HIGH_TRUST_DIFF`, posts a PR comment, and exits
-  non-zero so branch-protection can require CODEOWNERS approval.
-- **F40 — Semantic `look_for`:** `search_scope.json` verification_shortcuts
-  strip source comments before matching `look_for` for Python (`#` line +
-  triple-quoted docstrings), Rust, and TypeScript/JavaScript (`//` +
-  `/* */`). A substring that only appears inside comments now fails as
-  `LOOK_FOR_MISSING: look_for matches only comments`. New optional
-  `look_for_regex` field accepts a lightweight regex (literals, char
-  classes, `\d \w \s`, `^ $`, repetition) for authors who need more than
-  substring match.
-- **F41 — Verified acceptance tests:** `acceptance_tests.md` schema gains
-  `verified: true|false` and `anchors: [{file, line, line_contains}]` per
-  test. Verify requires each anchor's `line_contains` to appear at the
-  named line (±3 lines tolerance). A pack is considered "ship-quality"
-  when at least 2 of N tests are verified; below that emits the non-fatal
-  warning `VERIFIED_COUNT_LOW`.
-- **F42 — Audit trail on `history.jsonl`:** seal now writes three
-  additional fields per entry: `sealed_by` (from `git config user.name` +
-  `user.email`), `prose_diff_sections` (list of H2 sections whose body
-  changed vs the previous snapshot, keyed `<file>#<heading>`), and
-  `seal_reason` (mirror of `reason`). Existing fields are unchanged; the
-  schema is additive.
-- **F44 — Hook shell hygiene:** the generated pre-push hook body now
-  declares `set -u` so unset variables fail fast, quotes every environment
-  interpolation, and passes user paths to `git diff` with a `--` separator
-  so paths beginning with `-` cannot be interpreted as flags.
+- **F46 — Tiered adoption.** `agent-context init --tier <1|2|3>` lets teams
+  scaffold a narrower starting pack. Tier 1 ships
+  `20_CODE_MAP.md` + `routes.json` only; Tier 2 adds
+  `30_BEHAVIORAL_INVARIANTS.md` + `completeness_contract.json`; Tier 3 is
+  the full pack (default, identical to legacy behavior). Seal auto-detects
+  which files are actually present, so a Tier-1/2 pack does not fail
+  the required-files check. Node parity added to
+  `scripts/agent_context/init.cjs`.
+- **F50 — Pack-file alias support.** `manifest.json` gains an `aliases`
+  object mapping canonical filenames to on-disk names
+  (e.g. `{"20_CODE_MAP.md": "20_architecture.md"}`). Both `verify` and the
+  Node verifier retry with the aliased filename when the canonical one is
+  missing and surface a `NOTE` in human output so an author can see the
+  alias was consulted. `seal` carries the `aliases` map forward across
+  re-seals.
+- **F58 — Last-known-good pointer.** `manifest.json` gains
+  `last_known_good_sha`. `verify --ci` promotes the sealed HEAD into this
+  field on a fully green run. `agent-context rollback --latest-good`
+  resolves the pointer through `history.jsonl` (falling back to rotated
+  archives) and restores the matching snapshot. `--latest-good` and
+  `--snapshot` are mutually exclusive. Node parity added in
+  `scripts/agent_context/rollback.cjs` and `scripts/agent_context/verify.cjs`.
+- **F47 — Session-start freshness gate.** The routing blocks `init`
+  upserts into `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` now open with a
+  mandatory first-line instruction: agents must compare
+  `head_sha_at_seal` against `git rev-parse HEAD` before any reasoning
+  and warn the user when they diverge. The Rust and Node `init` flows
+  emit the identical preamble.
 
-### Known limitations (agent-context P12)
+### Deferred (TODO(P13-continuation))
 
-- **F43 — `[skip ci]` bypass:** the PR gate runs on `pull_request` events,
-  so a merge with `[skip ci]` skips the PR check. Solutions:
-  1. Configure branch-protection rules to disallow `[skip ci]` on
-     protected branches (primary defense).
-  2. The shipped CI template now also runs
-     `chorus agent-context verify --ci` on push to `main` as a
-     belt-and-braces post-merge check, so drift lands as a red check on
-     the merged commit even if the PR gate was skipped.
+These items from the P13 plan are **intentionally deferred** and carry a
+`TODO(P13-continuation)` marker in the plan/code:
+
+- **F48** — `explain-diff` subcommand (new command surface).
+- **F49** — Monorepo multi-team mode (structural change).
+- **F51** — Canonical routing template (better coordinated via the
+  `team_skills` track).
+- **F52** — Scheduled job to re-run acceptance tests.
+- **F53** — Cross-file integrity check.
+- **F54** — Difficulty floor for acceptance tests.
+- **F59** — Cryptographic history chain.
+- **F45** — `AUTHORING_TODO.md`.
+
+These are tracked for a follow-up P13-continuation package; nothing in
+this release blocks on them.
 
 ## Unreleased — agent-context P6
 
