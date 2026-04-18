@@ -505,6 +505,21 @@ enum ContextPackCommand {
         #[arg(long)]
         follow_symlinks: bool,
     },
+
+    /// P11-drift / F38 — verify that shipped helper scripts under
+    /// `.agent-context/current/tools/` still match the SHA256 values recorded
+    /// on `manifest.json` at seal time. Exits non-zero on any mismatch so CI
+    /// can use it as a standalone tampering gate alongside `verify --ci`.
+    #[command(name = "check-tool-integrity")]
+    CheckToolIntegrity {
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+    },
 }
 
 #[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum, Debug)]
@@ -1095,6 +1110,10 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                     agent_context::render_diff_since_seal_text(&result.value);
                 }
             }
+        }
+        ContextPackCommand::CheckToolIntegrity { pack_dir, cwd } => {
+            let target_cwd = effective_cwd(cwd);
+            agent_context::check_tool_integrity(&target_cwd, pack_dir.as_deref())?;
         }
     }
     Ok(())

@@ -504,6 +504,38 @@ function p1DependenciesSnapshot(repoRoot) {
   return out;
 }
 
+// P11-drift / F38 — Node parity for `tool_hashes`. Snapshots SHA256 of every
+// regular file under `<currentDir>/tools/` so `check-tool-integrity` (Rust
+// side) has an authoritative baseline even when the pack was sealed by the
+// Node wrapper. Missing `tools/` → empty object (not an error). Keys are
+// sorted to keep the serialized JSON deterministic across runs.
+function p11ComputeToolHashes(currentDir) {
+  const out = {};
+  const toolsDir = path.join(currentDir, 'tools');
+  if (!fs.existsSync(toolsDir)) return out;
+  let entries;
+  try {
+    entries = fs.readdirSync(toolsDir, { withFileTypes: true });
+  } catch (_) {
+    return out;
+  }
+  const names = [];
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    names.push(entry.name);
+  }
+  names.sort();
+  for (const name of names) {
+    try {
+      const bytes = fs.readFileSync(path.join(toolsDir, name));
+      out[name] = sha256(bytes);
+    } catch (_) {
+      /* skip unreadable file; next seal will pick it up */
+    }
+  }
+  return out;
+}
+
 // ---- P5: count SSOT via seal-time template expansion ----------------------
 // Node parity: mirrors the Rust helpers in cli/src/agent_context.rs. Slug
 // derivation, handlebar expansion, and numeric-claim scanning must stay
@@ -680,6 +712,10 @@ function buildManifest({
   const declaredCounts = p1ExtractDeclaredCounts(currentDir);
   const shortcutSignatures = p1ShortcutSignatures(repoRoot, currentDir);
   const dependenciesSnapshot = p1DependenciesSnapshot(repoRoot);
+  // P11-drift / F38 — per-file SHA256 of shipped helper scripts under
+  // `.agent-context/current/tools/`. Empty object when the pack does not
+  // ship tools; `check-tool-integrity` treats that as "nothing to verify".
+  const toolHashes = p11ComputeToolHashes(currentDir);
 
   return {
     value: {
@@ -708,6 +744,7 @@ function buildManifest({
       declared_counts: declaredCounts,
       shortcut_signatures: shortcutSignatures,
       dependencies_snapshot: dependenciesSnapshot,
+      tool_hashes: toolHashes,
     },
     stable_checksum: stableChecksum,
     pack_checksum: packChecksum,
