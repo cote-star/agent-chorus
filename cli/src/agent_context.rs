@@ -1035,8 +1035,17 @@ pub fn seal(options: SealOptions) -> Result<()> {
             counter += 1;
         }
 
+        // P12 / F42 — compute the audit trail fields *before* copying the
+        // snapshot so the previous snapshot's markdown is still the correct
+        // baseline. `prose_diff_sections` records which H2 headings changed
+        // vs the most recent snapshot; empty on first-seal.
+        let prose_diff_sections = compute_prose_diff_sections(&snapshots_dir, &current_dir);
+        let sealed_by = git_committer_identity(&repo_root);
+
         copy_dir_recursive(&current_dir, &snapshot_dir)?;
 
+        // P12 / F42 — write the audit-trail fields alongside the existing
+        // history fields. Older readers keep working (additive schema).
         let history_entry = json!({
             "snapshot_id": snapshot_id,
             "generated_at": generated_at,
@@ -1046,6 +1055,10 @@ pub fn seal(options: SealOptions) -> Result<()> {
             "reason": reason,
             "changed_files": Vec::<String>::new(),
             "pack_checksum": manifest.pack_checksum,
+            // P12/F42 — audit trail.
+            "sealed_by": sealed_by,
+            "prose_diff_sections": prose_diff_sections,
+            "seal_reason": reason,
         });
         append_jsonl(&history_path, &history_entry)?;
 
@@ -3702,6 +3715,114 @@ fn build_manifest(
 const HISTORY_ROTATE_MAX_BYTES: u64 = 5 * 1024 * 1024;
 const HISTORY_ROTATE_MAX_ENTRIES: usize = 1000;
 
+/// P12 / F42 — resolve the git committer identity for `history.jsonl`'s
+/// `sealed_by` field. Uses `git config user.name` + `user.email` at the repo
+/// root so the audit trail records the person running `chorus agent-context
+/// seal`, not whatever shell user happens to own the process. Returns
+/// `"name <email>"` or an empty string when git isn't configured.
+fn git_committer_identity(repo_root: &Path) -> String {
+    let name = run_git(&["config", "user.name"], repo_root, true)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let email = run_git(&["config", "user.email"], repo_root, true)
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    match (name.is_empty(), email.is_empty()) {
+        (true, true) => String::new(),
+        (false, true) => name,
+        (true, false) => format!("<{email}>"),
+        (false, false) => format!("{name} <{email}>"),
+    }
+}
+
+/// P12 / F42 — compute the H2 section headings whose body changed vs the
+/// most recent snapshot's markdown files. Returns heading names prefixed by
+/// the file they live in (e.g. `"20_CODE_MAP.md#Contexts"`). Empty list on
+/// first seal (no previous snapshot) or when snapshots are unreadable.
+fn compute_prose_diff_sections(snapshots_dir: &Path, current_dir: &Path) -> Vec<String> {
+    let latest = match most_recent_snapshot_dir(snapshots_dir) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let mut changed: Vec<String> = Vec::new();
+    for file_name in REQUIRED_FILES {
+        let prev_path = latest.join(file_name);
+        let cur_path = current_dir.join(file_name);
+        let prev = fs::read_to_string(&prev_path).unwrap_or_default();
+        let cur = fs::read_to_string(&cur_path).unwrap_or_default();
+        if prev == cur {
+            continue;
+        }
+        let prev_sections = split_markdown_h2_sections(&prev);
+        let cur_sections = split_markdown_h2_sections(&cur);
+        // Union of headings, stable order via iteration over cur first.
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for (heading, body) in &cur_sections {
+            if prev_sections.get(heading) != Some(body) {
+                let key = format!("{}#{}", file_name, heading);
+                if seen.insert(key.clone()) {
+                    changed.push(key);
+                }
+            }
+        }
+        for (heading, _body) in &prev_sections {
+            if !cur_sections.contains_key(heading) {
+                let key = format!("{}#{}", file_name, heading);
+                if seen.insert(key.clone()) {
+                    changed.push(key);
+                }
+            }
+        }
+    }
+    changed
+}
+
+/// Walk `snapshots_dir` and return the most recent snapshot path by name
+/// (snapshot IDs are `<timestamp>_<sha>[-N]` so lexical sort == temporal
+/// sort). Returns `None` when the directory is absent or empty.
+fn most_recent_snapshot_dir(snapshots_dir: &Path) -> Option<PathBuf> {
+    let entries = fs::read_dir(snapshots_dir).ok()?;
+    let mut ids: Vec<PathBuf> = entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .map(|e| e.path())
+        .collect();
+    if ids.is_empty() {
+        return None;
+    }
+    ids.sort();
+    ids.pop()
+}
+
+/// Split markdown into `(heading, body)` pairs keyed by H2 heading text.
+/// H1 and H3+ headings are ignored. Used by
+/// [`compute_prose_diff_sections`] for the history audit trail.
+fn split_markdown_h2_sections(text: &str) -> std::collections::BTreeMap<String, String> {
+    let mut out: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut current_heading: Option<String> = None;
+    let mut body = String::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("## ") {
+            if let Some(h) = current_heading.take() {
+                out.insert(h, body.clone());
+            }
+            body.clear();
+            current_heading = Some(rest.trim().to_string());
+            continue;
+        }
+        if current_heading.is_some() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some(h) = current_heading.take() {
+        out.insert(h, body);
+    }
+    out
+}
+
 fn append_jsonl(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         ensure_dir(parent)?;
@@ -6065,7 +6186,15 @@ This guide tells AI agents how to fill in the context pack templates.
 }
 
 fn build_pre_push_hook_section() -> String {
-    r#"remote_name="${1:-origin}"
+    // P12 / F44 — shell hygiene:
+    //   - `set -u` so unset variables fail fast (the `${1:-origin}` default
+    //     style is what makes this safe even when git invokes the hook
+    //     without both positional args).
+    //   - Every `$VAR` interpolation is quoted.
+    //   - User-controlled paths pass through a `--` separator to `git diff`
+    //     so a path beginning with `-` cannot be interpreted as a flag.
+    r#"set -u
+remote_name="${1:-origin}"
 remote_url="${2:-unknown}"
 
 # P6: when the push range only touches `.agent-context/`, skip the freshness
@@ -6079,15 +6208,17 @@ remote_url="${2:-unknown}"
 # paths plausibly cover the affected_sections, prints
 # "warning appears addressed: sections [...]".
 pack_only_skip() {
-  local base="$1"
-  local head="$2"
+  local base="${1:-}"
+  local head="${2:-}"
 
   if [[ -z "$base" || -z "$head" || "$base" == "0000000000000000000000000000000000000000" ]]; then
     return 1
   fi
 
+  # P12/F44 — `--` separator ensures SHA/path values beginning with `-`
+  # cannot be parsed as git options.
   local changed
-  changed="$(git diff --name-only "${base}..${head}" 2>/dev/null || true)"
+  changed="$(git diff --name-only "${base}..${head}" -- 2>/dev/null || true)"
   if [[ -z "$changed" ]]; then
     return 1
   fi
@@ -6144,10 +6275,10 @@ except Exception:
 }
 
 run_context_sync() {
-  local local_ref="$1"
-  local local_sha="$2"
-  local remote_ref="$3"
-  local remote_sha="$4"
+  local local_ref="${1:-}"
+  local local_sha="${2:-}"
+  local remote_ref="${3:-}"
+  local remote_sha="${4:-}"
 
   if command -v chorus >/dev/null 2>&1; then
     chorus context-pack sync-main \
@@ -6389,13 +6520,154 @@ fn check_contract_files_exist(
     }
 }
 
-/// P2 check (c): every `search_scope.json` verification_shortcut with a
-/// `look_for` string must contain that substring in the referenced file.
+/// P12 / F40 — strip line and block comments from `text` based on the file
+/// extension. Called by [`check_verification_shortcuts_look_for`] before
+/// matching `look_for` so a string that only appears inside a comment is
+/// surfaced as drift rather than a spurious pass.
+///
+/// Language handling:
+/// - `.py`: `#...$` line comments and `"""..."""` / `'''...'''` docstrings
+/// - `.rs`: `//...$` line comments and `/*...*/` block comments
+/// - `.ts` / `.tsx` / `.js` / `.jsx`: `//...$` line comments and
+///   `/*...*/` block comments
+/// - Any other (or unknown) extension: returns `text` unchanged. Callers
+///   then fall back to the existing substring contract — consumers of older
+///   schemas with unusual extensions keep working.
+///
+/// This is a regex-free implementation: the nested docstring/block-comment
+/// contract is easier to reason about as a small state machine than as a
+/// multi-line regex, and it keeps us from pulling `regex` into the core
+/// structural-check path for a single feature.
+fn strip_source_comments(text: &str, extension: &str) -> String {
+    match extension {
+        "py" => strip_python_comments(text),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "cjs" | "mjs" => strip_c_style_comments(text),
+        _ => text.to_string(),
+    }
+}
+
+/// Python-specific variant: strip `#...$` line comments and `"""..."""` /
+/// `'''..'''` docstring-style triple-quoted string blocks. This is a
+/// best-effort scanner — it does not understand nested expressions inside
+/// f-strings, which is fine for look_for drift detection where we only care
+/// about surfacing comment-only matches, not exact lexing.
+fn strip_python_comments(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        // Triple-quoted block: consume until the matching closer.
+        if i + 2 < bytes.len() && (c == b'"' || c == b'\'')
+            && bytes[i + 1] == c
+            && bytes[i + 2] == c
+        {
+            let quote = c;
+            i += 3;
+            while i + 2 < bytes.len() {
+                if bytes[i] == quote && bytes[i + 1] == quote && bytes[i + 2] == quote {
+                    i += 3;
+                    break;
+                }
+                // Preserve newlines so line-anchored searches still work.
+                if bytes[i] == b'\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            // Reached EOF mid-docstring — stop consuming.
+            if i + 2 >= bytes.len() {
+                break;
+            }
+            continue;
+        }
+        // Line comment: drop everything up to the next newline.
+        if c == b'#' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
+/// C-family variant: strip `//...$` line comments and `/*...*/` block
+/// comments. Newlines inside block comments are preserved so line numbers
+/// downstream (if any) stay aligned. Does not track strings, which is safe
+/// for look_for drift detection since a `//` inside a string literal still
+/// represents "this substring appears in real code-ish context" — users who
+/// need perfect lexing can fall back to `look_for_regex`.
+fn strip_c_style_comments(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'/' && i + 1 < bytes.len() {
+            let next = bytes[i + 1];
+            if next == b'/' {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            if next == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() {
+                    if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                        i += 2;
+                        break;
+                    }
+                    if bytes[i] == b'\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+        }
+        out.push(c as char);
+        i += 1;
+    }
+    out
+}
+
+/// P12 / F40 — true when `extension` is one of the languages
+/// [`strip_source_comments`] actually trims. Used to decide whether a
+/// `look_for` failure should report "matches only comments" instead of the
+/// generic "string not found" message.
+fn extension_supports_comment_strip(extension: &str) -> bool {
+    matches!(
+        extension,
+        "py" | "rs" | "ts" | "tsx" | "js" | "jsx" | "cjs" | "mjs"
+    )
+}
+
+/// Extract a lowercase file extension (without the `.`) from a path string.
+/// Returns empty when no extension is present.
+fn path_extension(rel: &str) -> String {
+    Path::new(rel)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default()
+}
+
+/// P2 check (c) / P12 F40: every `search_scope.json` verification_shortcut
+/// with a `look_for` string (or new `look_for_regex`) must match inside the
+/// referenced file AFTER comments are stripped for supported languages.
 ///
 /// Handles both shortcut shapes:
-/// - team_skills: `verification_shortcuts: [{file, look_for}]`
+/// - team_skills: `verification_shortcuts: [{file, look_for, [look_for_regex]}]`
 /// - chorus default scaffold: `verification_shortcuts: { "path": "hint" }`
 ///   (no `look_for` — we silently skip; there's nothing to verify).
+///
+/// `look_for_regex` takes precedence over `look_for` when both are present.
+/// Invalid regex falls through to a dedicated warning so the author can fix
+/// the pattern without a mysterious "no match" error.
 fn check_verification_shortcuts_look_for(
     repo_root: &Path,
     current_dir: &Path,
@@ -6427,6 +6699,10 @@ fn check_verification_shortcuts_look_for(
                     .get("look_for")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
+                let look_for_regex = obj
+                    .get("look_for_regex")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let path = repo_root.join(rel);
                 if !path.exists() {
                     out.push(StructuralWarning {
@@ -6438,27 +6714,347 @@ fn check_verification_shortcuts_look_for(
                     });
                     continue;
                 }
-                if !look_for.is_empty() {
-                    let text = fs::read_to_string(&path).unwrap_or_default();
-                    if !text.contains(look_for) {
-                        out.push(StructuralWarning {
-                            kind: "LOOK_FOR_MISSING".to_string(),
-                            message: format!(
-                                "search_scope {family}: look_for string not found in {rel}: {look_for}"
-                            ),
-                            affected_pack_files: vec![
-                                "search_scope.json".to_string(),
-                                "20_CODE_MAP.md".to_string(),
-                            ],
-                        });
-                    }
+                if look_for.is_empty() && look_for_regex.is_empty() {
+                    continue;
                 }
+                let raw = fs::read_to_string(&path).unwrap_or_default();
+                let extension = path_extension(rel);
+                let stripped = strip_source_comments(&raw, &extension);
+
+                // look_for_regex takes precedence when present.
+                if !look_for_regex.is_empty() {
+                    match regex_lite_match(&stripped, look_for_regex) {
+                        Ok(true) => continue,
+                        Ok(false) => {
+                            out.push(StructuralWarning {
+                                kind: "LOOK_FOR_MISSING".to_string(),
+                                message: format!(
+                                    "search_scope {family}: look_for_regex did not match in {rel}: {look_for_regex}"
+                                ),
+                                affected_pack_files: vec![
+                                    "search_scope.json".to_string(),
+                                    "20_CODE_MAP.md".to_string(),
+                                ],
+                            });
+                        }
+                        Err(msg) => {
+                            out.push(StructuralWarning {
+                                kind: "LOOK_FOR_MISSING".to_string(),
+                                message: format!(
+                                    "search_scope {family}: look_for_regex invalid for {rel}: {msg}"
+                                ),
+                                affected_pack_files: vec!["search_scope.json".to_string()],
+                            });
+                        }
+                    }
+                    continue;
+                }
+
+                // Substring path.
+                if stripped.contains(look_for) {
+                    continue;
+                }
+                // Distinguish "only matches in comments" from "doesn't match at all"
+                // so authors can tell whether the pack pointer is stale or wrong.
+                let message = if extension_supports_comment_strip(&extension)
+                    && raw.contains(look_for)
+                {
+                    format!(
+                        "search_scope {family}: look_for matches only comments in {rel}: {look_for}"
+                    )
+                } else {
+                    format!(
+                        "search_scope {family}: look_for string not found in {rel}: {look_for}"
+                    )
+                };
+                out.push(StructuralWarning {
+                    kind: "LOOK_FOR_MISSING".to_string(),
+                    message,
+                    affected_pack_files: vec![
+                        "search_scope.json".to_string(),
+                        "20_CODE_MAP.md".to_string(),
+                    ],
+                });
             }
         }
         // Object form (chorus scaffold) — nothing to verify at `look_for` level,
         // but catching a missing file is still useful. We intentionally do not
         // emit a redundant existence error here because `validate_structured_layer`
         // already runs this check at seal time.
+    }
+}
+
+/// P12 / F40 — minimalist regex matcher used by `check_verification_shortcuts_look_for`.
+/// We intentionally avoid pulling a new `regex` dependency into the CLI crate
+/// for the single look_for_regex feature. The subset we need here covers
+/// literal characters, character classes `[...]`, escapes `\d \w \s \. \\`,
+/// anchors `^$`, and repetition `* + ? {n,m}`. We lean on the already-present
+/// `globset`-style semantics: any unsupported construct falls through to
+/// `Err` with a human-readable message so authors get a clear diagnostic.
+///
+/// For the P12 contract (comment-aware look_for match, regex upgrade path)
+/// this scope is sufficient — users who need full PCRE can still author
+/// the substring form. Returns `Ok(true)` on match, `Ok(false)` on clean
+/// non-match, `Err(msg)` when the pattern cannot be compiled.
+fn regex_lite_match(text: &str, pattern: &str) -> std::result::Result<bool, String> {
+    let compiled = compile_regex_lite(pattern)?;
+    Ok(regex_lite_search(&compiled, text))
+}
+
+#[derive(Debug, Clone)]
+enum RegexLiteTok {
+    /// Literal character run.
+    Literal(String),
+    /// Character class; `invert` flips ASCII range membership.
+    Class { chars: Vec<char>, ranges: Vec<(char, char)>, invert: bool },
+    /// Any char (.)
+    AnyChar,
+    /// Digit, word, whitespace shorthand classes.
+    Digit,
+    Word,
+    Space,
+    /// ^ / $ anchors.
+    LineStart,
+    LineEnd,
+}
+
+#[derive(Debug, Clone)]
+struct RegexLiteAtom {
+    tok: RegexLiteTok,
+    /// Minimum repetitions.
+    min: usize,
+    /// Maximum repetitions, `None` for unbounded.
+    max: Option<usize>,
+}
+
+fn compile_regex_lite(pattern: &str) -> std::result::Result<Vec<RegexLiteAtom>, String> {
+    let mut atoms: Vec<RegexLiteAtom> = Vec::new();
+    let bytes: Vec<char> = pattern.chars().collect();
+    let mut i = 0;
+    while i < bytes.len() {
+        let ch = bytes[i];
+        let tok = match ch {
+            '.' => {
+                i += 1;
+                RegexLiteTok::AnyChar
+            }
+            '^' => {
+                i += 1;
+                RegexLiteTok::LineStart
+            }
+            '$' => {
+                i += 1;
+                RegexLiteTok::LineEnd
+            }
+            '(' | ')' | '|' => {
+                return Err(format!("unsupported construct `{ch}` (grouping/alternation not implemented)"));
+            }
+            '[' => {
+                // Character class.
+                i += 1;
+                let mut invert = false;
+                if i < bytes.len() && bytes[i] == '^' {
+                    invert = true;
+                    i += 1;
+                }
+                let mut chars = Vec::new();
+                let mut ranges = Vec::new();
+                let mut closed = false;
+                while i < bytes.len() {
+                    if bytes[i] == ']' {
+                        closed = true;
+                        i += 1;
+                        break;
+                    }
+                    let c = if bytes[i] == '\\' && i + 1 < bytes.len() {
+                        i += 1;
+                        bytes[i]
+                    } else {
+                        bytes[i]
+                    };
+                    // Range like a-z.
+                    if i + 2 < bytes.len() && bytes[i + 1] == '-' && bytes[i + 2] != ']' {
+                        let end = if bytes[i + 2] == '\\' && i + 3 < bytes.len() {
+                            i += 1;
+                            bytes[i + 2]
+                        } else {
+                            bytes[i + 2]
+                        };
+                        ranges.push((c, end));
+                        i += 3;
+                    } else {
+                        chars.push(c);
+                        i += 1;
+                    }
+                }
+                if !closed {
+                    return Err("unterminated character class".to_string());
+                }
+                RegexLiteTok::Class { chars, ranges, invert }
+            }
+            '\\' => {
+                if i + 1 >= bytes.len() {
+                    return Err("trailing backslash".to_string());
+                }
+                let esc = bytes[i + 1];
+                i += 2;
+                match esc {
+                    'd' => RegexLiteTok::Digit,
+                    'w' => RegexLiteTok::Word,
+                    's' => RegexLiteTok::Space,
+                    '.' | '\\' | '(' | ')' | '[' | ']' | '{' | '}' | '+' | '*' | '?' | '|' | '^' | '$' => {
+                        RegexLiteTok::Literal(esc.to_string())
+                    }
+                    'n' => RegexLiteTok::Literal("\n".to_string()),
+                    't' => RegexLiteTok::Literal("\t".to_string()),
+                    other => return Err(format!("unsupported escape `\\{other}`")),
+                }
+            }
+            other => {
+                i += 1;
+                RegexLiteTok::Literal(other.to_string())
+            }
+        };
+
+        let (min, max, consumed) = parse_regex_quantifier(&bytes, i)?;
+        i += consumed;
+        atoms.push(RegexLiteAtom { tok, min, max });
+    }
+    Ok(atoms)
+}
+
+fn parse_regex_quantifier(
+    bytes: &[char],
+    i: usize,
+) -> std::result::Result<(usize, Option<usize>, usize), String> {
+    if i >= bytes.len() {
+        return Ok((1, Some(1), 0));
+    }
+    match bytes[i] {
+        '*' => Ok((0, None, 1)),
+        '+' => Ok((1, None, 1)),
+        '?' => Ok((0, Some(1), 1)),
+        '{' => {
+            // Parse {n} or {n,m}.
+            let mut j = i + 1;
+            let mut n_str = String::new();
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                n_str.push(bytes[j]);
+                j += 1;
+            }
+            if n_str.is_empty() {
+                return Err("empty {} quantifier".to_string());
+            }
+            let n: usize = n_str.parse().map_err(|_| "bad {} quantifier".to_string())?;
+            if j < bytes.len() && bytes[j] == '}' {
+                return Ok((n, Some(n), j + 1 - i));
+            }
+            if j < bytes.len() && bytes[j] == ',' {
+                j += 1;
+                let mut m_str = String::new();
+                while j < bytes.len() && bytes[j].is_ascii_digit() {
+                    m_str.push(bytes[j]);
+                    j += 1;
+                }
+                if j >= bytes.len() || bytes[j] != '}' {
+                    return Err("unterminated {} quantifier".to_string());
+                }
+                let max = if m_str.is_empty() {
+                    None
+                } else {
+                    Some(m_str.parse().map_err(|_| "bad {} quantifier".to_string())?)
+                };
+                return Ok((n, max, j + 1 - i));
+            }
+            Err("unterminated {} quantifier".to_string())
+        }
+        _ => Ok((1, Some(1), 0)),
+    }
+}
+
+fn regex_lite_search(atoms: &[RegexLiteAtom], text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    for start in 0..=chars.len() {
+        if regex_lite_match_at(atoms, 0, &chars, start).is_some() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Returns `Some(end_pos)` on match, `None` on no-match. Recursive matcher:
+/// enumerates greedy-first repetition counts and backtracks only when the
+/// rest of the pattern fails. Compact enough to stay readable for the P12
+/// scope; a future pass should replace this with the `regex` crate when we
+/// want broader pattern support.
+fn regex_lite_match_at(
+    atoms: &[RegexLiteAtom],
+    atom_idx: usize,
+    text: &[char],
+    pos: usize,
+) -> Option<usize> {
+    if atom_idx >= atoms.len() {
+        return Some(pos);
+    }
+    let atom = &atoms[atom_idx];
+    // Anchors do not consume characters.
+    if let RegexLiteTok::LineStart = atom.tok {
+        // Match at pos 0 or after a newline.
+        if pos == 0 || (pos > 0 && text[pos - 1] == '\n') {
+            return regex_lite_match_at(atoms, atom_idx + 1, text, pos);
+        }
+        return None;
+    }
+    if let RegexLiteTok::LineEnd = atom.tok {
+        if pos == text.len() || text[pos] == '\n' {
+            return regex_lite_match_at(atoms, atom_idx + 1, text, pos);
+        }
+        return None;
+    }
+    // Greedy: consume up to max, then try each fallback count down to min.
+    let mut count = 0;
+    let mut cursor = pos;
+    while cursor < text.len() && atom.max.map_or(true, |m| count < m)
+        && atom_matches_char(&atom.tok, text[cursor])
+    {
+        cursor += 1;
+        count += 1;
+    }
+    loop {
+        if count >= atom.min {
+            if let Some(end) = regex_lite_match_at(atoms, atom_idx + 1, text, cursor) {
+                return Some(end);
+            }
+        }
+        if count == 0 {
+            break;
+        }
+        count -= 1;
+        cursor -= 1;
+    }
+    None
+}
+
+fn atom_matches_char(tok: &RegexLiteTok, c: char) -> bool {
+    match tok {
+        RegexLiteTok::Literal(s) => s.chars().next().map_or(false, |lit| lit == c),
+        RegexLiteTok::AnyChar => c != '\n',
+        RegexLiteTok::Digit => c.is_ascii_digit(),
+        RegexLiteTok::Word => c.is_ascii_alphanumeric() || c == '_',
+        RegexLiteTok::Space => c.is_whitespace(),
+        RegexLiteTok::Class { chars, ranges, invert } => {
+            let mut hit = chars.contains(&c);
+            if !hit {
+                for (lo, hi) in ranges {
+                    if c >= *lo && c <= *hi {
+                        hit = true;
+                        break;
+                    }
+                }
+            }
+            if *invert { !hit } else { hit }
+        }
+        _ => false,
     }
 }
 
@@ -6795,7 +7391,281 @@ fn run_structural_checks(
     check_declared_counts_drift(manifest, repo_root, current_dir, &mut out);
     check_shortcut_signatures_drift(manifest, repo_root, current_dir, &mut out);
     check_dependencies_drift(manifest, repo_root, &mut out);
+    check_verified_acceptance_anchors(repo_root, current_dir, &mut out);
     out
+}
+
+// ============================================================================
+// P12 / F41 — Verified acceptance tests
+//
+// `acceptance_tests.md` gains an optional `verified: true|false` flag and an
+// `anchors: [{file, line, line_contains}]` list per test. When a test is
+// `verified: true`, each anchor's `line_contains` must literally appear at the
+// named line in the named file (±3 lines tolerance). A mismatch is a hard
+// structural warning — the test can only claim "verified" if the pointer
+// still resolves.
+//
+// Schema notes:
+// - `anchors` may be specified as `anchors: [file:line: substring]` bullet
+//   form (compact, human-friendly) OR as a YAML-lite block:
+//       anchors:
+//         - file: src/lib.rs
+//           line: 42
+//           line_contains: "fn compute"
+// - The compact form is what the team_skills fixtures use and is preserved
+//   across seals; we parse it as `<path>:<line>: <substring>` (first colon
+//   ends the path, second colon ends the line number).
+// - Fewer than 2 of N tests verified → emit a non-fatal `warning` (warn
+//   kind `VERIFIED_COUNT_LOW`) so pack authors see the signal without the
+//   pack being blocked from shipping.
+// ============================================================================
+
+/// One parsed acceptance-test record. `None` variants mean the block was
+/// parsed but the author omitted the field.
+#[derive(Debug, Clone)]
+struct ParsedAcceptanceTest {
+    id: String,
+    verified: bool,
+    anchors: Vec<ParsedAnchor>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedAnchor {
+    file: String,
+    line: usize,
+    line_contains: String,
+}
+
+/// Parse `acceptance_tests.md` into a structured list of tests. Skips blocks
+/// without an `### test:` header (or alt spellings); gracefully returns an
+/// empty vec when the file is missing, empty, or unparseable — callers treat
+/// that as "no verified-anchor contract to enforce".
+fn parse_acceptance_tests_with_anchors(current_dir: &Path) -> Vec<ParsedAcceptanceTest> {
+    let path = current_dir.join("acceptance_tests.md");
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ParsedAcceptanceTest> = Vec::new();
+    let mut current: Option<ParsedAcceptanceTest> = None;
+    let mut in_anchors_block = false;
+    let mut pending_anchor: Option<ParsedAnchor> = None;
+
+    // Inline "flush the pending YAML-lite anchor into the current test" step;
+    // written as a direct block rather than a closure because the borrow
+    // checker dislikes re-borrowing `current` through a closure while we also
+    // hold `t = current.as_mut()` in the same loop iteration.
+    macro_rules! flush_pending_anchor {
+        () => {{
+            if let (Some(t), Some(a)) = (current.as_mut(), pending_anchor.take()) {
+                if !a.file.is_empty() && !a.line_contains.is_empty() && a.line > 0 {
+                    t.anchors.push(a);
+                }
+            }
+        }};
+    }
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        // New test header. Finalize any pending anchor + test first.
+        if let Some(rest) = trimmed
+            .strip_prefix("### test:")
+            .or_else(|| trimmed.strip_prefix("### Test:"))
+            .or_else(|| trimmed.strip_prefix("###test:"))
+        {
+            flush_pending_anchor!();
+            if let Some(t) = current.take() {
+                out.push(t);
+            }
+            current = Some(ParsedAcceptanceTest {
+                id: rest.trim().to_string(),
+                verified: false,
+                anchors: Vec::new(),
+            });
+            in_anchors_block = false;
+            continue;
+        }
+
+        if current.is_none() {
+            continue;
+        }
+
+        // `verified: true`. Accept bullet or bare form.
+        let body = trimmed.trim_start_matches(['-', ' ', '*']);
+        if let Some(rest) = body
+            .strip_prefix("verified:")
+            .or_else(|| body.strip_prefix("verified :"))
+        {
+            if let Some(t) = current.as_mut() {
+                t.verified = matches!(rest.trim().to_ascii_lowercase().as_str(), "true" | "yes" | "1");
+            }
+            continue;
+        }
+
+        // Anchors block start.
+        if body.starts_with("anchors:") {
+            flush_pending_anchor!();
+            in_anchors_block = true;
+            // Inline compact form: `anchors: file.rs:42: fn foo`
+            let after = body.trim_start_matches("anchors:").trim();
+            if !after.is_empty() {
+                if let Some(anchor) = parse_anchor_compact(after) {
+                    if let Some(t) = current.as_mut() {
+                        t.anchors.push(anchor);
+                    }
+                }
+            }
+            continue;
+        }
+
+        if in_anchors_block {
+            // Bullet list under `anchors:` — supports either compact or YAML-lite.
+            if let Some(stripped) = trimmed.strip_prefix('-') {
+                flush_pending_anchor!();
+                let s = stripped.trim();
+                if let Some(anchor) = parse_anchor_compact(s) {
+                    if let Some(t) = current.as_mut() {
+                        t.anchors.push(anchor);
+                    }
+                    continue;
+                }
+                // Treat as start of a YAML-lite block. Expect `file: X` on this line.
+                if let Some(rest) = s.strip_prefix("file:") {
+                    pending_anchor = Some(ParsedAnchor {
+                        file: rest.trim().to_string(),
+                        line: 0,
+                        line_contains: String::new(),
+                    });
+                }
+                continue;
+            }
+            // Continuation field for an open pending_anchor.
+            if let Some(pending) = pending_anchor.as_mut() {
+                if let Some(rest) = body.strip_prefix("line:") {
+                    pending.line = rest.trim().parse().unwrap_or(0);
+                    continue;
+                }
+                if let Some(rest) = body.strip_prefix("line_contains:") {
+                    pending.line_contains = rest
+                        .trim()
+                        .trim_matches(|c: char| c == '"' || c == '\'')
+                        .to_string();
+                    continue;
+                }
+            }
+            // Non-anchor content terminates the block.
+            if trimmed.is_empty() || trimmed.starts_with("### ") {
+                flush_pending_anchor!();
+                in_anchors_block = false;
+            }
+        }
+    }
+    flush_pending_anchor!();
+    if let Some(t) = current.take() {
+        out.push(t);
+    }
+    out
+}
+
+/// Parse the compact anchor form `path:line: substring` into an anchor.
+/// Returns `None` when the path, line, or substring portion is missing.
+fn parse_anchor_compact(s: &str) -> Option<ParsedAnchor> {
+    // First `:` ends the path (no colons in paths are supported here — good
+    // enough for source files, which never have colons on Unix).
+    let first = s.find(':')?;
+    let (path_part, rest1) = s.split_at(first);
+    let rest1 = &rest1[1..]; // drop colon
+    // Second `:` ends the line number.
+    let second = rest1.find(':')?;
+    let (line_part, rest2) = rest1.split_at(second);
+    let rest2 = &rest2[1..];
+    let path = path_part.trim().to_string();
+    let line: usize = line_part.trim().parse().ok()?;
+    let line_contains = rest2
+        .trim()
+        .trim_matches(|c: char| c == '"' || c == '\'')
+        .to_string();
+    if path.is_empty() || line == 0 || line_contains.is_empty() {
+        return None;
+    }
+    Some(ParsedAnchor { file: path, line, line_contains })
+}
+
+/// P12 / F41: for every acceptance test with `verified: true`, each anchor's
+/// `line_contains` must literally appear at the named line (±3 lines). Emit
+/// `VERIFIED_ANCHOR_MISS` when a pointer fails to resolve and
+/// `VERIFIED_COUNT_LOW` when fewer than 2 tests claim `verified: true`.
+fn check_verified_acceptance_anchors(
+    repo_root: &Path,
+    current_dir: &Path,
+    out: &mut Vec<StructuralWarning>,
+) {
+    let tests = parse_acceptance_tests_with_anchors(current_dir);
+    if tests.is_empty() {
+        return;
+    }
+    let tolerance: isize = 3;
+    let mut verified_count = 0;
+    for test in &tests {
+        if !test.verified {
+            continue;
+        }
+        verified_count += 1;
+        for anchor in &test.anchors {
+            let path = repo_root.join(&anchor.file);
+            let raw = match fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(_) => {
+                    out.push(StructuralWarning {
+                        kind: "VERIFIED_ANCHOR_MISS".to_string(),
+                        message: format!(
+                            "acceptance_tests.md `{}`: anchor file missing or unreadable: {}",
+                            test.id, anchor.file
+                        ),
+                        affected_pack_files: vec!["acceptance_tests.md".to_string()],
+                    });
+                    continue;
+                }
+            };
+            let lines: Vec<&str> = raw.lines().collect();
+            let mid = anchor.line.saturating_sub(1) as isize;
+            let lo = (mid - tolerance).max(0) as usize;
+            let hi = ((mid + tolerance) as usize).min(lines.len().saturating_sub(1));
+            let mut found = false;
+            for idx in lo..=hi {
+                if let Some(line) = lines.get(idx) {
+                    if line.contains(&anchor.line_contains) {
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if !found {
+                out.push(StructuralWarning {
+                    kind: "VERIFIED_ANCHOR_MISS".to_string(),
+                    message: format!(
+                        "acceptance_tests.md `{}`: anchor `{}` not found within \u{00b1}3 lines of {}:{}",
+                        test.id, anchor.line_contains, anchor.file, anchor.line
+                    ),
+                    affected_pack_files: vec!["acceptance_tests.md".to_string()],
+                });
+            }
+        }
+    }
+
+    // Ship-quality bar: at least 2 of 4 (or more) tests should be verified.
+    // We warn below that, but only when there are at least 2 tests in the
+    // file — otherwise the pack just hasn't fleshed out acceptance tests yet.
+    if tests.len() >= 2 && verified_count < 2 {
+        out.push(StructuralWarning {
+            kind: "VERIFIED_COUNT_LOW".to_string(),
+            message: format!(
+                "acceptance_tests.md: only {} of {} tests are `verified: true` (ship-quality bar is \u{2265}2)",
+                verified_count,
+                tests.len()
+            ),
+            affected_pack_files: vec!["acceptance_tests.md".to_string()],
+        });
+    }
 }
 
 /// Serialize a `StructuralWarning` list into the CI JSON array shape defined
@@ -7877,6 +8747,570 @@ After cleanup there are 32 tests today.\n\
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // --- P12 / F40 — comment-aware look_for tests ---
+
+    /// When the only occurrence of the look_for substring is inside a Python
+    /// line comment, the comment-strip pass turns "match" into "no match"
+    /// and the warning must explicitly name the comment-only case.
+    #[test]
+    fn p12_look_for_rejects_comment_only_match_python() {
+        let dir = test_dir("p12_look_for_comment_py");
+        init_git(&dir);
+        let current = p2_init_pack(&dir);
+        // Python file where the string appears ONLY in a comment.
+        fs::write(
+            dir.join("calc.py"),
+            "# MIN_CELL_SIZE = 30 (stale doc comment)\n\
+             def compute_lift(data):\n    return 1\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": [
+                    {"file": "calc.py", "look_for": "MIN_CELL_SIZE = 30"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verification_shortcuts_look_for(&dir, &current, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "LOOK_FOR_MISSING"
+                && w.message.contains("matches only comments")
+                && w.message.contains("calc.py")),
+            "expected comment-only LOOK_FOR_MISSING, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Rust variant — `//` line comments and `/* */` blocks must be stripped
+    /// so a look_for that only appears inside them is flagged, matching the
+    /// Python behavior.
+    #[test]
+    fn p12_look_for_rejects_comment_only_match_rust() {
+        let dir = test_dir("p12_look_for_comment_rs");
+        init_git(&dir);
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("lib.rs"),
+            "// MIN_CELL_SIZE = 30 is a stale doc hint\n\
+             /* block: MIN_CELL_SIZE = 30 */\n\
+             pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": [
+                    {"file": "lib.rs", "look_for": "MIN_CELL_SIZE = 30"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verification_shortcuts_look_for(&dir, &current, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "LOOK_FOR_MISSING"
+                && w.message.contains("matches only comments")
+                && w.message.contains("lib.rs")),
+            "expected comment-only LOOK_FOR_MISSING for rust, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// TypeScript variant using `//` line comments.
+    #[test]
+    fn p12_look_for_rejects_comment_only_match_ts() {
+        let dir = test_dir("p12_look_for_comment_ts");
+        init_git(&dir);
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("svc.ts"),
+            "// MIN_CELL_SIZE = 30 (stale JSDoc hint)\n\
+             export function svc(): number { return 1; }\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": [
+                    {"file": "svc.ts", "look_for": "MIN_CELL_SIZE = 30"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verification_shortcuts_look_for(&dir, &current, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "LOOK_FOR_MISSING"
+                && w.message.contains("matches only comments")
+                && w.message.contains("svc.ts")),
+            "expected comment-only LOOK_FOR_MISSING for ts, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// When the look_for substring is present in real code (not just in a
+    /// comment) after comment-stripping, no warning should fire — the
+    /// comment-strip must not drop legitimate matches.
+    #[test]
+    fn p12_look_for_accepts_match_in_real_code() {
+        let dir = test_dir("p12_look_for_real_code");
+        init_git(&dir);
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("calc.py"),
+            "MIN_CELL_SIZE = 30\n\
+             def compute_lift(data):\n    return MIN_CELL_SIZE\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": [
+                    {"file": "calc.py", "look_for": "MIN_CELL_SIZE = 30"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verification_shortcuts_look_for(&dir, &current, &mut out);
+
+        assert!(
+            out.is_empty(),
+            "no warning expected when look_for appears in real code, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `look_for_regex` takes precedence over `look_for` when both are
+    /// present, and uses regex semantics against the comment-stripped source.
+    #[test]
+    fn p12_look_for_regex_matches_after_comment_strip() {
+        let dir = test_dir("p12_look_for_regex");
+        init_git(&dir);
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("calc.py"),
+            "# MIN_CELL_SIZE = 30\n\
+             MIN_CELL_SIZE = 42\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": [
+                    {"file": "calc.py", "look_for_regex": "MIN_CELL_SIZE = \\d+"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verification_shortcuts_look_for(&dir, &current, &mut out);
+
+        assert!(
+            out.is_empty(),
+            "look_for_regex should match MIN_CELL_SIZE = 42 after comment-strip, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// When the regex does not match, the warning must name the regex field
+    /// so authors can tell whether to update the pattern or the pack pointer.
+    #[test]
+    fn p12_look_for_regex_reports_no_match() {
+        let dir = test_dir("p12_look_for_regex_miss");
+        init_git(&dir);
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("calc.py"),
+            "def compute_lift(data):\n    return 1\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("search_scope.json"),
+            r#"{
+              "task_families": {
+                "lookup": {
+                  "verification_shortcuts": [
+                    {"file": "calc.py", "look_for_regex": "MAX_BATCH_SIZE = \\d+"}
+                  ]
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verification_shortcuts_look_for(&dir, &current, &mut out);
+
+        assert!(
+            out.iter().any(|w| w.kind == "LOOK_FOR_MISSING"
+                && w.message.contains("look_for_regex did not match")),
+            "expected look_for_regex no-match warning, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Direct unit test for the comment-strip helper — covers docstrings
+    /// (triple-quoted) and line comments for Python.
+    #[test]
+    fn p12_strip_python_comments_removes_docstrings() {
+        let src = "\"\"\"module docstring with MIN_CELL_SIZE = 30\"\"\"\n\
+                   # MIN_CELL_SIZE = 30 also here\n\
+                   def f():\n    pass\n";
+        let stripped = strip_source_comments(src, "py");
+        assert!(
+            !stripped.contains("MIN_CELL_SIZE = 30"),
+            "docstring and comment must be stripped, got {stripped:?}"
+        );
+        assert!(stripped.contains("def f()"), "code must remain after strip");
+    }
+
+    /// Unit test for the C-style strip covering both `//` and `/* */` cases.
+    #[test]
+    fn p12_strip_c_style_comments_removes_both_forms() {
+        let src = "// comment with TOKEN\n/* block TOKEN */\nfn real() {}\n";
+        let stripped = strip_source_comments(src, "rs");
+        assert!(
+            !stripped.contains("TOKEN"),
+            "both comment forms must be stripped, got {stripped:?}"
+        );
+        assert!(stripped.contains("fn real()"));
+    }
+
+    // --- P12 / F41 — verified acceptance tests + anchor tolerance ---
+
+    /// A `verified: true` test whose anchor points at an exact line that
+    /// contains the declared substring must pass the check.
+    #[test]
+    fn p12_verified_acceptance_anchor_passes_when_line_matches() {
+        let dir = test_dir("p12_verified_anchor_ok");
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("lib.rs"),
+            "line 1\nline 2\npub fn compute(x: i32) -> i32 { x }\nline 4\n",
+        )
+        .unwrap();
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "### test: smoke\n\
+             - verified: true\n\
+             - anchors: lib.rs:3: pub fn compute\n\n\
+             ### test: other\n\
+             - verified: true\n\
+             - anchors: lib.rs:3: pub fn compute\n",
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verified_acceptance_anchors(&dir, &current, &mut out);
+        assert!(
+            out.is_empty(),
+            "anchor at the exact line must pass, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Anchor tolerance is ±3 lines — a line_contains string found 2 lines
+    /// below the declared line still passes.
+    #[test]
+    fn p12_verified_acceptance_anchor_tolerates_small_drift() {
+        let dir = test_dir("p12_verified_anchor_tolerance");
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("lib.rs"),
+            "l1\nl2\nl3\nl4\npub fn compute(x: i32) -> i32 { x }\nl6\n",
+        )
+        .unwrap();
+        // Declared line is 3, actual is 5 → within ±3 tolerance.
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "### test: smoke\n\
+             - verified: true\n\
+             - anchors: lib.rs:3: pub fn compute\n\n\
+             ### test: other\n\
+             - verified: true\n\
+             - anchors: lib.rs:3: pub fn compute\n",
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verified_acceptance_anchors(&dir, &current, &mut out);
+        assert!(
+            out.is_empty(),
+            "2-line drift must be tolerated, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Anchor outside the ±3 tolerance window must fail with
+    /// VERIFIED_ANCHOR_MISS naming the line_contains substring.
+    #[test]
+    fn p12_verified_acceptance_anchor_fails_when_drift_exceeds_tolerance() {
+        let dir = test_dir("p12_verified_anchor_miss");
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("lib.rs"),
+            "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\npub fn compute(x: i32) -> i32 { x }\n",
+        )
+        .unwrap();
+        // Declared at line 2, actual at line 9 → exceeds ±3.
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "### test: smoke\n\
+             - verified: true\n\
+             - anchors: lib.rs:2: pub fn compute\n\n\
+             ### test: other\n\
+             - verified: true\n\
+             - anchors: lib.rs:2: pub fn compute\n",
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verified_acceptance_anchors(&dir, &current, &mut out);
+        assert!(
+            out.iter().any(|w| w.kind == "VERIFIED_ANCHOR_MISS"
+                && w.message.contains("pub fn compute")),
+            "expected VERIFIED_ANCHOR_MISS, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Fewer than 2 `verified: true` tests → emit VERIFIED_COUNT_LOW warning
+    /// but do NOT emit VERIFIED_ANCHOR_MISS (anchors are still intact on the
+    /// verified test that exists). The warning is advisory.
+    #[test]
+    fn p12_verified_count_low_emits_warning_not_failure() {
+        let dir = test_dir("p12_verified_count_low");
+        let current = p2_init_pack(&dir);
+        fs::write(
+            dir.join("lib.rs"),
+            "pub fn compute(x: i32) -> i32 { x }\n",
+        )
+        .unwrap();
+        // 4 tests, only 1 is verified.
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "### test: a\n\
+             - verified: true\n\
+             - anchors: lib.rs:1: pub fn compute\n\n\
+             ### test: b\n- verified: false\n\n\
+             ### test: c\n- verified: false\n\n\
+             ### test: d\n- verified: false\n",
+        )
+        .unwrap();
+
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verified_acceptance_anchors(&dir, &current, &mut out);
+        assert!(
+            out.iter().any(|w| w.kind == "VERIFIED_COUNT_LOW"
+                && w.message.contains("1 of 4")),
+            "expected VERIFIED_COUNT_LOW naming 1 of 4, got {out:?}"
+        );
+        assert!(
+            !out.iter().any(|w| w.kind == "VERIFIED_ANCHOR_MISS"),
+            "anchor was valid; no MISS expected, got {out:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // --- P12 / F42 — history.jsonl audit trail tests ---
+
+    /// On first seal (no previous snapshot), the audit helper must return
+    /// an empty diff vector rather than panic.
+    #[test]
+    fn p12_compute_prose_diff_sections_first_seal_is_empty() {
+        let dir = test_dir("p12_prose_diff_first");
+        let snapshots = dir.join("snapshots");
+        fs::create_dir_all(&snapshots).unwrap();
+        let current = dir.join("current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(current.join("20_CODE_MAP.md"), "## Intro\nhello\n").unwrap();
+
+        let diff = compute_prose_diff_sections(&snapshots, &current);
+        assert!(diff.is_empty(), "first seal must have empty diff, got {diff:?}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// When an H2 section body changes between snapshots, the helper must
+    /// report `<file>#<heading>` for that section.
+    #[test]
+    fn p12_compute_prose_diff_sections_names_changed_h2() {
+        let dir = test_dir("p12_prose_diff_h2");
+        let snapshots = dir.join("snapshots");
+        let prev = snapshots.join("20260101T000000Z_abc");
+        fs::create_dir_all(&prev).unwrap();
+        fs::write(prev.join("20_CODE_MAP.md"), "## Intro\nold body\n## Other\nunchanged\n")
+            .unwrap();
+        let current = dir.join("current");
+        fs::create_dir_all(&current).unwrap();
+        fs::write(
+            current.join("20_CODE_MAP.md"),
+            "## Intro\nnew body\n## Other\nunchanged\n",
+        )
+        .unwrap();
+
+        let diff = compute_prose_diff_sections(&snapshots, &current);
+        assert!(
+            diff.iter().any(|s| s == "20_CODE_MAP.md#Intro"),
+            "expected 20_CODE_MAP.md#Intro in diff, got {diff:?}"
+        );
+        assert!(
+            !diff.iter().any(|s| s == "20_CODE_MAP.md#Other"),
+            "unchanged section must not appear, got {diff:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// `git_committer_identity` must return "name <email>" when both are
+    /// configured. The test sets env locally (not the global user config).
+    #[test]
+    fn p12_git_committer_identity_formats_name_and_email() {
+        let dir = test_dir("p12_committer");
+        init_git(&dir);
+        // Local git config for this repo only.
+        let _ = Command::new("git")
+            .args(["config", "user.name", "Test User"])
+            .current_dir(&dir)
+            .output();
+        let _ = Command::new("git")
+            .args(["config", "user.email", "test@example.com"])
+            .current_dir(&dir)
+            .output();
+
+        let ident = git_committer_identity(&dir);
+        assert_eq!(ident, "Test User <test@example.com>");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// End-to-end: a full seal writes the new audit-trail fields on
+    /// `history.jsonl`. Verifies the JSON structure so readers can rely
+    /// on sealed_by/prose_diff_sections/seal_reason.
+    #[test]
+    fn p12_seal_history_entry_has_audit_trail_fields() {
+        let dir = test_dir("p12_seal_audit");
+        init_git(&dir);
+        // Local git identity so `sealed_by` is populated.
+        let _ = Command::new("git")
+            .args(["config", "user.name", "Audit Bot"])
+            .current_dir(&dir)
+            .output();
+        let _ = Command::new("git")
+            .args(["config", "user.email", "audit@example.com"])
+            .current_dir(&dir)
+            .output();
+
+        // Minimal pack with all required files.
+        let current = dir.join(".agent-context").join("current");
+        fs::create_dir_all(&current).unwrap();
+        for f in REQUIRED_FILES {
+            fs::write(current.join(f), format!("## Intro\n{f} body\n")).unwrap();
+        }
+
+        // Commit so HEAD exists.
+        let _ = Command::new("git").args(["add", "-A"]).current_dir(&dir).output();
+        let _ = Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(&dir)
+            .output();
+
+        seal(SealOptions {
+            reason: Some("p12-audit-seal".to_string()),
+            base: None,
+            head: None,
+            pack_dir: None,
+            cwd: Some(dir.display().to_string()),
+            force: false,
+            force_snapshot: false,
+            follow_symlinks: false,
+        })
+        .expect("seal should succeed");
+
+        let history = fs::read_to_string(dir.join(".agent-context/history.jsonl"))
+            .expect("history.jsonl present after seal");
+        let last_line = history.lines().last().expect("history has at least one line");
+        let entry: Value = serde_json::from_str(last_line).expect("valid jsonl entry");
+        assert_eq!(
+            entry.get("seal_reason").and_then(|v| v.as_str()),
+            Some("p12-audit-seal"),
+            "seal_reason must be populated"
+        );
+        assert!(
+            entry
+                .get("sealed_by")
+                .and_then(|v| v.as_str())
+                .map(|s| s.contains("Audit Bot") && s.contains("audit@example.com"))
+                .unwrap_or(false),
+            "sealed_by must reflect git identity, got {entry:?}"
+        );
+        assert!(
+            entry.get("prose_diff_sections").and_then(|v| v.as_array()).is_some(),
+            "prose_diff_sections must be an array, got {entry:?}"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Acceptance tests without anchors (or without `verified: true`) must
+    /// not produce any warnings — the feature is opt-in.
+    #[test]
+    fn p12_verified_acceptance_no_verified_tests_is_silent() {
+        let dir = test_dir("p12_verified_silent");
+        let current = p2_init_pack(&dir);
+        fs::write(
+            current.join("acceptance_tests.md"),
+            "### test: a\n- invalidated_by: compute\n",
+        )
+        .unwrap();
+        let mut out: Vec<StructuralWarning> = Vec::new();
+        check_verified_acceptance_anchors(&dir, &current, &mut out);
+        assert!(
+            out.is_empty(),
+            "un-verified tests must not produce warnings, got {out:?}"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn p2_routing_file_check_flags_missing_canonical_refs() {
         let dir = test_dir("p2_routing");
@@ -8490,6 +9924,60 @@ After cleanup there are 32 tests today.\n\
             hook.contains("warning appears addressed"),
             "hook must report when prior warning is addressed, got:\n{hook}"
         );
+    }
+
+    /// P12 / F44 — shell hygiene for the generated pre-push hook.
+    /// Verifies `set -u`, quoted env interpolations, and the `--` separator
+    /// in the git diff call. Uses `bash -n` to syntax-check the generated
+    /// body so authoring regressions land as test failures rather than at
+    /// install time.
+    #[test]
+    fn p12_pre_push_hook_has_set_u_quoted_interpolations_and_dashdash() {
+        let hook = build_pre_push_hook_section();
+        assert!(
+            hook.starts_with("set -u"),
+            "hook must start with `set -u` for fail-fast semantics, got:\n{hook}"
+        );
+        // `$remote_name`/`$remote_url` appear inside a double-quoted echo
+        // string, so they are implicitly quoted. Guard against a regression
+        // where someone unquotes them by looking for the classic bare-var
+        // form outside of quotes.
+        assert!(
+            !hook.contains(" $remote_name ") && !hook.contains(" $remote_url "),
+            "hook must not leave `$remote_name`/`$remote_url` unquoted bare, got:\n{hook}"
+        );
+        assert!(
+            hook.contains("git diff --name-only \"${base}..${head}\" --"),
+            "hook must pass `--` to git diff, got:\n{hook}"
+        );
+        // Also guard against regressions that might drop quotes around
+        // `$base` / `$head` (the classic `$var` → injection pitfall).
+        assert!(
+            !hook.contains("git diff --name-only $base..$head"),
+            "hook must not leave `$base..$head` unquoted"
+        );
+
+        // Static `bash -n` syntax check — fails loudly on quoting
+        // regressions that the substring asserts above would miss.
+        // Skip silently if `bash` is not on PATH (e.g. exotic CI).
+        if Command::new("bash").arg("--version").output().is_ok() {
+            let mut body = String::from("#!/usr/bin/env bash\n");
+            body.push_str(&hook);
+            body.push('\n');
+            let tmp = env::temp_dir().join("chorus_p12_hook_syntax_check.sh");
+            fs::write(&tmp, &body).unwrap();
+            let out = Command::new("bash")
+                .args(["-n"])
+                .arg(&tmp)
+                .output()
+                .expect("bash -n should run");
+            assert!(
+                out.status.success(),
+                "generated hook must parse cleanly under `bash -n`: stderr:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let _ = fs::remove_file(&tmp);
+        }
     }
 
     /// `check_separate_commits` is a no-op when the directory is not a git

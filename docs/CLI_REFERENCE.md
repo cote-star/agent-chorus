@@ -357,6 +357,65 @@ The `--ci` JSON payload also carries the P7 subagent-reconciliation shape under
 (`exit_code = 1`) when `acceptance_tests_invalidated` is non-empty AND the pack
 wasn't updated, so stale ground truth cannot pass the gate.
 
+### Trust boundary & pack integrity (P12)
+
+**Semantic `look_for` (F40):** `search_scope.json` verification_shortcuts now
+strip comments from the referenced file before matching the `look_for`
+substring. Supported extensions: `.py` (line `#` + `"""..."""` docstrings),
+`.rs` / `.ts` / `.tsx` / `.js` / `.jsx` / `.cjs` / `.mjs`
+(`//` line + `/* */` block). Other extensions fall back to the existing raw
+substring contract. A match that only appears inside comments surfaces as:
+
+```
+LOOK_FOR_MISSING: search_scope lookup: look_for matches only comments in calc.py: MIN_CELL_SIZE = 30
+```
+
+When authors want regex semantics, add `look_for_regex` alongside `look_for`:
+
+```json
+{
+  "file": "calc.py",
+  "look_for": "MIN_CELL_SIZE",
+  "look_for_regex": "MIN_CELL_SIZE\\s*=\\s*\\d+"
+}
+```
+
+`look_for_regex` takes precedence over `look_for` when both are present.
+
+**Verified acceptance tests (F41):** `acceptance_tests.md` tests may declare
+`verified: true` with a list of `anchors` pinning `{file, line, line_contains}`
+pointers into real code. On verify, each anchor's `line_contains` must appear
+at the named line (±3 lines tolerance); a miss emits
+`VERIFIED_ANCHOR_MISS` in `structural_warnings[]`. The pack is considered
+"ship-quality" when at least 2 of N tests are verified; fewer emits the
+non-fatal `VERIFIED_COUNT_LOW`.
+
+**Audit trail (F42):** `history.jsonl` entries now carry:
+
+| Field | Meaning |
+|---|---|
+| `sealed_by` | `"name <email>"` from `git config user.{name,email}`. |
+| `prose_diff_sections` | H2 sections whose body changed vs the previous snapshot, keyed `<file>#<heading>` (e.g. `20_CODE_MAP.md#Contexts`). Empty on first seal. |
+| `seal_reason` | Mirror of `reason` for explicit audit reads. |
+
+**HIGH_TRUST_DIFF labeling (F39):** the shipped CI workflow
+(`templates/ci-agent-context.yml`) applies label `HIGH_TRUST_DIFF` when a PR
+diff touches prose in `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md`,
+`.agent-context/current/00_START_HERE.md`, or any of `CLAUDE.md`/`AGENTS.md`/
+`GEMINI.md`. Branch protection should require CODEOWNERS approval on the label.
+
+**Known limitation — `[skip ci]` bypass (F43):** the PR gate runs on
+`pull_request` events, so a merge with `[skip ci]` will skip the PR check
+entirely. Solutions in order of strength:
+
+1. Configure branch-protection rules to disallow `[skip ci]` on protected
+   branches (the primary defense).
+2. The shipped CI template also runs `chorus agent-context verify --ci` on
+   push to `main`, so drift lands as a red check on the merged commit even
+   when the PR gate was skipped.
+3. Teams that want a stricter gate can require the post-merge verify
+   workflow to pass via branch protection.
+
 ## Context Pack Diff (Subagent Reconciliation)
 
 P7. Zone-grouped diff from the seal-time baseline to current HEAD. Intended for
