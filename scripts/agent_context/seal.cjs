@@ -849,6 +849,107 @@ function appendHistory(historyPath, entry) {
   appendJsonl(historyPath, entry);
 }
 
+// P12 / F42 — audit-trail helpers.
+
+// Resolve the git committer identity. Parity with Rust's
+// `git_committer_identity`. Returns `"name <email>"` or an empty string.
+function gitCommitterIdentity(repoRoot) {
+  let name = '';
+  let email = '';
+  try {
+    name = execFileSync('git', ['config', 'user.name'], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+  } catch (_e) {
+    name = '';
+  }
+  try {
+    email = execFileSync('git', ['config', 'user.email'], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim();
+  } catch (_e) {
+    email = '';
+  }
+  if (!name && !email) return '';
+  if (name && !email) return name;
+  if (!name && email) return `<${email}>`;
+  return `${name} <${email}>`;
+}
+
+// Split markdown into a map keyed by H2 heading; body text preserved so the
+// caller can compare two maps for changed sections.
+function splitMarkdownH2Sections(text) {
+  const out = new Map();
+  let heading = null;
+  let body = [];
+  for (const line of text.split('\n')) {
+    if (line.startsWith('## ')) {
+      if (heading != null) out.set(heading, body.join('\n') + '\n');
+      heading = line.slice(3).trim();
+      body = [];
+      continue;
+    }
+    if (heading != null) body.push(line);
+  }
+  if (heading != null) out.set(heading, body.join('\n') + '\n');
+  return out;
+}
+
+function mostRecentSnapshotDir(snapshotsDir) {
+  if (!fs.existsSync(snapshotsDir)) return null;
+  const names = fs
+    .readdirSync(snapshotsDir, { withFileTypes: true })
+    .filter((d) => d.isDirectory())
+    .map((d) => d.name)
+    .sort();
+  if (names.length === 0) return null;
+  return path.join(snapshotsDir, names[names.length - 1]);
+}
+
+// Compute the H2 section keys that changed vs the most recent snapshot.
+// Keys are prefixed by file (e.g. `20_CODE_MAP.md#Contexts`). Empty array on
+// first-seal or when snapshots are unreadable.
+function computeProseDiffSections(snapshotsDir, currentDir) {
+  const latest = mostRecentSnapshotDir(snapshotsDir);
+  if (!latest) return [];
+  const changed = [];
+  const seen = new Set();
+  for (const fileName of REQUIRED_FILES) {
+    const prevPath = path.join(latest, fileName);
+    const curPath = path.join(currentDir, fileName);
+    const prev = fs.existsSync(prevPath) ? fs.readFileSync(prevPath, 'utf8') : '';
+    const cur = fs.existsSync(curPath) ? fs.readFileSync(curPath, 'utf8') : '';
+    if (prev === cur) continue;
+    const prevSections = splitMarkdownH2Sections(prev);
+    const curSections = splitMarkdownH2Sections(cur);
+    for (const [heading, body] of curSections.entries()) {
+      if (prevSections.get(heading) !== body) {
+        const key = `${fileName}#${heading}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          changed.push(key);
+        }
+      }
+    }
+    for (const heading of prevSections.keys()) {
+      if (!curSections.has(heading)) {
+        const key = `${fileName}#${heading}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          changed.push(key);
+        }
+      }
+    }
+  }
+  return changed;
+}
+
 function copyDir(source, destination) {
   ensureDir(path.dirname(destination));
   fs.cpSync(source, destination, { recursive: true });
@@ -1150,6 +1251,14 @@ function main() {
         counter += 1;
       }
 
+      // P12 / F42 — audit trail. Parity with Rust: committer identity,
+      // the set of H2 sections whose prose changed vs the previous snapshot,
+      // and an explicit `seal_reason` mirror of `reason`. MUST be computed
+      // before copyDir below so mostRecentSnapshotDir returns the previous
+      // snapshot, not the freshly written one.
+      const proseDiffSections = computeProseDiffSections(snapshotsDir, currentDir);
+      const sealedBy = gitCommitterIdentity(repoRoot);
+
       copyDir(currentDir, snapshotDir);
 
       appendHistory(historyPath, {
@@ -1161,6 +1270,9 @@ function main() {
         reason: opts.reason,
         changed_files: [],
         pack_checksum: manifest.pack_checksum,
+        sealed_by: sealedBy,
+        prose_diff_sections: proseDiffSections,
+        seal_reason: opts.reason,
       });
 
       console.log(

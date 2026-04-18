@@ -1,5 +1,52 @@
 # Release Notes
 
+## Unreleased — agent-context P12
+
+### Added — trust boundary & pack integrity (P12)
+
+- **F39 — HIGH_TRUST_DIFF labeling:** the shipped CI template
+  (`templates/ci-agent-context.yml`) now inspects the PR diff for prose
+  changes to `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md`,
+  `.agent-context/current/00_START_HERE.md`, and the routing files
+  `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`. When any of these change, the
+  job applies label `HIGH_TRUST_DIFF`, posts a PR comment, and exits
+  non-zero so branch-protection can require CODEOWNERS approval.
+- **F40 — Semantic `look_for`:** `search_scope.json` verification_shortcuts
+  strip source comments before matching `look_for` for Python (`#` line +
+  triple-quoted docstrings), Rust, and TypeScript/JavaScript (`//` +
+  `/* */`). A substring that only appears inside comments now fails as
+  `LOOK_FOR_MISSING: look_for matches only comments`. New optional
+  `look_for_regex` field accepts a lightweight regex (literals, char
+  classes, `\d \w \s`, `^ $`, repetition) for authors who need more than
+  substring match.
+- **F41 — Verified acceptance tests:** `acceptance_tests.md` schema gains
+  `verified: true|false` and `anchors: [{file, line, line_contains}]` per
+  test. Verify requires each anchor's `line_contains` to appear at the
+  named line (±3 lines tolerance). A pack is considered "ship-quality"
+  when at least 2 of N tests are verified; below that emits the non-fatal
+  warning `VERIFIED_COUNT_LOW`.
+- **F42 — Audit trail on `history.jsonl`:** seal now writes three
+  additional fields per entry: `sealed_by` (from `git config user.name` +
+  `user.email`), `prose_diff_sections` (list of H2 sections whose body
+  changed vs the previous snapshot, keyed `<file>#<heading>`), and
+  `seal_reason` (mirror of `reason`). Existing fields are unchanged; the
+  schema is additive.
+- **F44 — Hook shell hygiene:** the generated pre-push hook body now
+  declares `set -u` so unset variables fail fast, quotes every environment
+  interpolation, and passes user paths to `git diff` with a `--` separator
+  so paths beginning with `-` cannot be interpreted as flags.
+
+### Known limitations (agent-context P12)
+
+- **F43 — `[skip ci]` bypass:** the PR gate runs on `pull_request` events,
+  so a merge with `[skip ci]` skips the PR check. Solutions:
+  1. Configure branch-protection rules to disallow `[skip ci]` on
+     protected branches (primary defense).
+  2. The shipped CI template now also runs
+     `chorus agent-context verify --ci` on push to `main` as a
+     belt-and-braces post-merge check, so drift lands as a red check on
+     the merged commit even if the PR gate was skipped.
+
 ## Unreleased — agent-context P6
 
 ### Added — hook intelligence + separate-commit enforcement (P6)
