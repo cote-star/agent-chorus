@@ -2,7 +2,7 @@
 
 ![CI Status](https://github.com/cote-star/agent-chorus/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.12.0-green.svg)
+![Version](https://img.shields.io/badge/version-0.12.1-green.svg)
 [![Star History](https://img.shields.io/github/stars/cote-star/agent-chorus?style=social)](https://github.com/cote-star/agent-chorus)
 
 **Let your AI agents talk about each other.**
