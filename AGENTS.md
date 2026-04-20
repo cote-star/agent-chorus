@@ -90,6 +90,55 @@ Every cross-agent claim should include:
 2. What evidence supports the claim.
 3. Any uncertainty, missing source, or scope mismatch.
 
+### Session Handoff Protocol
+
+Cross-agent messaging only works if every agent pulls and posts on a
+predictable schedule. Codex, Cursor, and Gemini do NOT have Claude
+Code's `SessionEnd` hook — call `chorus checkpoint` manually at logical
+break points instead of relying on an automated tear-down.
+
+#### Standup (every new session)
+
+```bash
+chorus messages --agent <self> --cwd <project-path> --json
+```
+
+Where `<self>` is `codex`, `cursor`, or `gemini` depending on which
+agent this file is guiding. Add `--clear` once you have acted on the
+messages so they don't resurface next session.
+
+#### Conclude or break point
+
+Use `chorus checkpoint` to broadcast state to every other agent:
+
+```bash
+chorus checkpoint --from <self> --cwd <project-path>
+```
+
+Run it at natural task-block boundaries: end of a phase, before stepping
+away, after landing a change another agent might build on. Omit
+`--message` for an auto-composed git-state snapshot (branch,
+uncommitted-file count, last commit); pass `--message "..."` to write
+custom text.
+
+For a targeted note rather than a broadcast, use `chorus send`:
+
+```bash
+chorus send --from <self> --to <other-agent> --message "<text>" --cwd <project-path>
+```
+
+#### Why call `checkpoint` manually here
+
+Claude Code has a `SessionEnd` hook that auto-fires `chorus checkpoint`.
+Codex, Cursor, and Gemini do not expose an equivalent tear-down hook, so
+the only way state reaches other agents on interruption is if you
+checkpoint on your own cadence. Treat it as a cheap, idempotent call —
+it no-ops silently when `.agent-chorus/` is absent, so it is safe to
+invoke unconditionally.
+
+Full protocol, Gemini `.pb` fallback, and end-to-end scenarios:
+[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md).
+
 ### Easter Egg
 
 The exact phrase `"chorus trash-talk"` (and only that phrase) triggers a roast of active agents.
