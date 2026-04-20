@@ -1,5 +1,21 @@
 # Release Notes
 
+## v0.12.1 — 2026-04-20
+
+Infrastructure fixes and supply-chain hygiene on top of v0.12.0. No user-facing behavior changes.
+
+### Fixed — `release.yml` binary upload path
+
+`package-rust` was uploading from `target/release/chorus` but the build step uses `cargo build --manifest-path cli/Cargo.toml --release`, which produces binaries at `cli/target/release/chorus`. Every release since v0.9.1 silently uploaded empty artifacts and the `create-release` job (landed in v0.11.0-era release-automation work) therefore had nothing to attach. v0.12.1 is the first release where the Rust binaries ship on the GitHub Release page automatically for both linux-x64 and macos-arm64.
+
+### Fixed — `basic-ftp` advisory (GHSA-6v7q-wjvx-w8wg / -chqc-8p9q-pq6q / -rp42-5vxx-qpwr)
+
+`npm audit` flagged three high-severity CVEs on `basic-ftp <=5.2.2`, a transitive devDependency via `puppeteer`. The vulnerability affects demo-recording tooling only — it is NOT shipped in the published npm tarball — but refreshing `package-lock.json` via `npm audit fix` removes it from contributor installs. Audit is clean on v0.12.1: `found 0 vulnerabilities`.
+
+### Also in this release
+
+- Branch protection on `main` is now enabled with force-push denied. No direct pushes to the released branch; every change must go through a reviewed PR.
+
 ## v0.12.0 — 2026-04-20
 
 Closes [#8](https://github.com/cote-star/agent-chorus/issues/8). Ships the session handoff protocol, interruption-resilience hook, and better error messages for two opaque-storage cases that previously returned bare `NOT_FOUND`.
