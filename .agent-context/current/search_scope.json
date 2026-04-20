@@ -6,6 +6,7 @@
       "search_directories": [
         "cli/src/",
         "scripts/",
+        "scripts/hooks/",
         "schemas/",
         "docs/"
       ],
@@ -17,7 +18,8 @@
       ],
       "verification_shortcuts": {
         "cli/src/main.rs": "top of file: Clap derive structs define all CLI commands and flags",
-        "cli/src/agents.rs": "fn redact_sensitive_text: all redaction regex patterns",
+        "cli/src/agents.rs": "fn redact_sensitive_text: all redaction regex patterns; detect_gemini_pb_fallback_hint + detect_cursor_vscdb_fallback_hint: NOT_FOUND enrichment probes",
+        "cli/src/checkpoint.rs": "fn run: checkpoint broadcast entry point; compose_state_message: default git-state message format",
         "scripts/read_session.cjs": "switch(command): all Node command handlers"
       }
     },

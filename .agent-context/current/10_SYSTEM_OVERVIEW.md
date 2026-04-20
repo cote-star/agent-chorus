@@ -1,8 +1,8 @@
 # System Overview
 
 ## Product Shape
-- npm package: `agent-chorus` v0.9.0 (binaries: `chorus`, `chorus-node`)
-- Rust crate: `agent-chorus` v0.9.0 (binary: `chorus`)
+- npm package: `agent-chorus` v0.12.2 (binaries: `chorus`, `chorus-node`)
+- Rust crate: `agent-chorus` v0.12.2 (binary: `chorus`)
 - ~130 tracked files across Node scripts, Rust source, schemas, fixtures, and docs
 - Ships as a global CLI tool (`npm install -g agent-chorus`)
 
@@ -22,19 +22,32 @@
 ## Command/API Surface
 | Command | Intent | Primary Source Files |
 | --- | --- | --- |
-| `chorus read` | Read a single agent session | `agents.rs`, `read_session.cjs` |
+| `chorus read` | Read a single agent session (supports `--tool-calls` surfacing, `--format markdown`, `--include-user` pairing — v0.11.0) | `agents.rs`, `read_session.cjs` |
 | `chorus list` | List sessions for an agent | `agents.rs`, `read_session.cjs` |
 | `chorus search` | Search session content | `agents.rs`, `read_session.cjs` |
 | `chorus compare` | Compare sessions across agents | `agents.rs`, `read_session.cjs` |
 | `chorus report` | Generate handoff coordinator report | `report.rs`, `read_session.cjs` |
 | `chorus diff` | Line-level diff between sessions | `diff.rs`, `read_session.cjs` |
+| `chorus summary` | Structured session digest (metadata-only, no LLM call) — v0.11.0 Node-only | `read_session.cjs` |
+| `chorus timeline` | Cross-agent chronological interleave — v0.11.0 Node-only | `read_session.cjs` |
 | `chorus relevance` | Inspect agent-context relevance patterns | `relevance.rs`, `relevance.cjs` |
 | `chorus send` / `messages` | Agent-to-agent messaging | `messaging.rs`, `read_session.cjs` |
+| `chorus checkpoint --from <agent>` | Broadcast git state to every other agent (v0.12.0) | `checkpoint.rs`, `read_session.cjs` |
 | `chorus setup` / `doctor` | Bootstrap and diagnose installation | `main.rs`, `read_session.cjs` |
 | `chorus teardown` | Cleanly reverse setup | `read_session.cjs` |
 | `chorus agent-context init/seal/build` | Init, seal, build context packs | `agent_context.rs`, `agent_context/*.cjs` |
 | `chorus agent-context verify` | Verify context pack completeness (interactive or `--ci` mode) | `agent_context.rs`, `scripts/agent_context/verify.cjs`, `templates/ci-agent-context.yml` |
 | `chorus trash-talk` | Roast agents (easter egg) | `read_session.cjs` |
+
+## Session Handoff (v0.12.0)
+- `chorus checkpoint --from <agent>` broadcasts a lightweight git-state message (branch / uncommitted count / last commit) to every other agent's inbox in one call. Guards on `.agent-chorus/` presence so it is safe to call unconditionally.
+- `scripts/hooks/chorus-session-end.sh` is a Claude Code `SessionEnd` hook wrapper. Installs via `~/.claude/settings.json`; hardened with `set -euo pipefail`, `realpath` canonicalization of `$CLAUDE_PROJECT_DIR`, and backgrounded+`disown` dispatch.
+- Full protocol, standup/conclude rituals, and interruption recovery: `docs/session-handoff-guide.md` (linked from `CLAUDE.md`, `AGENTS.md`, and the rewritten `GEMINI.md`).
+
+## Gemini / Cursor Fallback Detection (v0.12.0)
+- `chorus read --agent gemini` probes `~/.gemini/<profile>/conversations/*.pb` when JSONL lookup misses. If `.pb` files exist, the `NOT_FOUND` error names the count, the directory, and points at `--chats-dir` + the handoff guide instead of returning the bare message.
+- `chorus read --agent cursor` probes `User/workspaceStorage/<workspace-id>/state.vscdb` when file-based lookup misses. Mirror of the Gemini change. Full SQLite-backed reading is a follow-up; the probe alone turns opaque `NOT_FOUND` into actionable guidance.
+- Both probes live in `cli/src/agents.rs` as `detect_gemini_pb_fallback_hint` / `detect_cursor_vscdb_fallback_hint`; the bare messages are composed by `gemini_not_found_message` / `cursor_not_found_message`.
 
 ## Tracked Path Density
 | Directory | Files | Content |

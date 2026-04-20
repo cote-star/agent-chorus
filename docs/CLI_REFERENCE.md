@@ -785,4 +785,4 @@ Chorus checks for updates once per version.
 
 ## Parity Notes
 
-v0.11.0 features (`chorus summary`, `chorus timeline`, `--tool-calls`, `--format markdown`) are Node-only. Rust parity is planned for v0.12.0. Core commands (`read`, `list`, `search`, `compare`, `diff`, `send`, `messages`, `setup`, `doctor`, `teardown`, `agent-context`) have full Node/Rust parity with conformance-tested output contracts.
+v0.11.0 features (`chorus summary`, `chorus timeline`, `--tool-calls`, `--format markdown`) are Node-only. Rust parity is still pending and tracked on the roadmap. Core commands (`read`, `list`, `search`, `compare`, `diff`, `send`, `messages`, `setup`, `doctor`, `teardown`, `agent-context`) have full Node/Rust parity with conformance-tested output contracts.

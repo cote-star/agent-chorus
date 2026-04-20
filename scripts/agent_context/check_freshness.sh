@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Non-blocking freshness check for context-pack updates.
+# Non-blocking freshness check for agent-context updates (also serves the context-pack alias).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
