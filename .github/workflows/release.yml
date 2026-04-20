@@ -168,3 +168,49 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: cargo publish --manifest-path cli/Cargo.toml
+
+  create-release:
+    # Creates the GitHub Release for a tag push, attaching binaries from
+    # package-rust and using the matching RELEASE_NOTES.md section as the
+    # body. Runs last so earlier failures skip it cleanly.
+    needs: [verify, package-node, publish-github-package, package-rust, publish-crate]
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all release binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Extract release notes for tag
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Pull the section between "## $TAG" and the next top-level version
+          # header. Write to a file so multi-line output is preserved.
+          awk -v tag="$TAG" '
+            $0 ~ "^## "tag"( |$|[[:space:]])" { found=1; next }
+            found && /^## v[0-9]/ { exit }
+            found { print }
+          ' RELEASE_NOTES.md > release-body.md
+          if [ ! -s release-body.md ]; then
+            echo "No RELEASE_NOTES.md section found for ${TAG}; using a placeholder." >&2
+            printf "Release %s\n\nSee [RELEASE_NOTES.md](RELEASE_NOTES.md) for details.\n" "${TAG}" > release-body.md
+          fi
+          echo "body_path=release-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body_path: ${{ steps.notes.outputs.body_path }}
+          files: release-artifacts/**/*
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: false
