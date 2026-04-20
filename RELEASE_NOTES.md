@@ -122,6 +122,36 @@ The `chorus context-pack` subcommand has been renamed to `chorus agent-context` 
 
 ---
 
+## v0.9.1 — 2026-03-27
+
+### Fixed — P16 enforcement sweep: imperative routing in all locations
+
+Backfilled from git history; see commits `729dfeb`, `eaf897e`, `9e94c46`, `748d028`.
+
+- Routing blocks (`CLAUDE.md`, `AGENTS.md`, `GEMINI.md`) switched from suggestive ("you may want to read...") to imperative ("you MUST read... BEFORE opening source files"). Matches findings from real-world feedback that suggestive language was routinely ignored by agents.
+- `context-pack` read-order made imperative in the template preambles.
+- Full audit sweep: P16 added to design principles, all existing packs re-sealed, stale docs updated.
+
+### Shipped concurrently
+- Interactive HTML visualization of context-pack results.
+- Run 6 experimental validation (frontend, React/TS stress-test) — all success criteria passed.
+
+---
+
+## v0.9.0 — 2026-03-26
+
+### Added — three-layer context pack with `search_scope.json`
+
+Backfilled from git history; see commits `485ff0c`, `f59d03e`, `a6e9f3f`, `3055645`, `a1d2580`.
+
+- **Three-layer context pack architecture**: narrative prose (00–40 markdown) + authority JSON (routes, completeness_contract, reporting_rules) + new navigation layer (`search_scope.json`).
+- **`search_scope.json`**: structured constraint layer for search-first agents. Defines task families with bounded `search_directories`, `exclude_from_search`, and `verification_shortcuts` (file + look_for) to cut exploration cost on unfamiliar repos.
+- **Template additions**: Quick Lookup + Cross-Cutting Tracing sections added to pack templates (findings from Run 3).
+- **Fixes**: seal metadata drift resolved; `init` now wires agent config files (CLAUDE.md / AGENTS.md / GEMINI.md) on creation.
+- **Tests**: focused coverage for upsert, snapshot, init wiring, and seal sync.
+
+---
+
 ## v0.8.3 — 2026-03-23
 
 ### Changed — context-pack templates
