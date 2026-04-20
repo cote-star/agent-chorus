@@ -96,6 +96,33 @@ chorus teardown           # reverse setup for this project
 chorus teardown --global  # also remove ~/.cache/agent-chorus/
 ```
 
+### Claude Code integration (optional hook)
+
+Wire a `SessionEnd` hook so Claude Code automatically broadcasts its
+state to every other agent's inbox when a session ends — even on crash
+or force-close. Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [{
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash /absolute/path/to/agent-chorus/scripts/hooks/chorus-session-end.sh",
+          "timeout": 10
+        }
+      ]
+    }]
+  }
+}
+```
+
+The script delegates to `chorus checkpoint --from claude` and no-ops
+silently on projects without `.agent-chorus/`, so it is safe to install
+globally. Full wiring details:
+[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md).
+
 ### 3. Ask
 
 Tell any agent:
@@ -121,7 +148,7 @@ After `chorus setup`, provider instructions follow this behavior:
 ## How It Works
 
 1. **Ask naturally** - "What is Claude doing?" / "Did Gemini finish the API?"
-2. **Agent runs chorus** - Your agent calls `chorus summary`, `chorus read`, `chorus timeline`, `chorus compare`, `chorus search`, `chorus diff`, `chorus send`, `chorus messages`, etc. behind the scenes.
+2. **Agent runs chorus** - Your agent calls `chorus summary`, `chorus read`, `chorus timeline`, `chorus compare`, `chorus search`, `chorus diff`, `chorus send`, `chorus messages`, `chorus checkpoint`, etc. behind the scenes.
 3. **Evidence-backed answer** - Sources cited, divergences flagged, no hallucination.
 
 **Tenets:**
@@ -189,9 +216,24 @@ chorus send --from claude --to codex --message "auth module ready for review" --
 chorus messages --agent codex --cwd . --json
 ```
 
+### Session Handoff
+
+Broadcast where you left off to every other agent before ending a
+session. Auto-composes branch, uncommitted-file count, and last commit;
+override with `--message` when you want custom text.
+
+```bash
+chorus checkpoint --from claude --cwd .
+chorus checkpoint --from codex --message "auth refactor half-done; types still broken" --cwd .
+```
+
+Pair with `chorus messages --agent <self> --clear` at standup to read
+and drain the inbox other agents left you. Full protocol:
+[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md).
+
 ## Supported Agents
 
-Full multi-agent coverage. No other tool matches this breadth across 4 agents and 11 capabilities.
+Full multi-agent coverage. No other tool matches this breadth across 4 agents and 12 capabilities.
 
 | Feature               | Codex | Gemini | Claude | Cursor |
 | :-------------------- | :---: | :----: | :----: | :----: |
@@ -206,6 +248,7 @@ Full multi-agent coverage. No other tool matches this breadth across 4 agents an
 | **Session Diff**      |  Yes  |  Yes   |  Yes   |  Yes   |
 | **Redaction Audit**   |  Yes  |  Yes   |  Yes   |  Yes   |
 | **Messaging**         |  Yes  |  Yes   |  Yes   |  Yes   |
+| **Session Handoff**   |  Yes  |  Yes   |  Yes   |  Yes   |
 
 *\*New in v0.11.0. v0.11.0 features (Summary, Timeline, Tool Calls, Markdown output) are Node-only. Rust parity planned for v0.12.0.*
 
@@ -269,6 +312,29 @@ Agents leave messages for each other through a local JSONL queue.
 chorus send --from claude --to codex --message "auth module ready for review" --cwd .
 ```
 
+### Session Handoff Protocol
+
+Standup + conclude rituals so cross-agent messaging actually gets used.
+At standup, drain the inbox. At conclude, either `chorus send` a
+targeted note or `chorus checkpoint` a state broadcast to every other
+agent.
+
+```bash
+# At standup — read and drain
+chorus messages --agent claude --clear --cwd .
+
+# At conclude — broadcast state
+chorus checkpoint --from claude --cwd .
+```
+
+`chorus checkpoint` is idempotent and no-ops silently when
+`.agent-chorus/` is absent. For Claude Code, wire
+`scripts/hooks/chorus-session-end.sh` into `~/.claude/settings.json` so
+an abrupt session end still leaves a checkpoint. Gemini sessions stored
+as protobuf (`.pb`) fall back via `--chats-dir` — see
+[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md) for
+the full recipe.
+
 ### Relevance Introspection
 
 Inspect and test the agent-context filtering patterns that decide which files matter.
@@ -295,6 +361,7 @@ Full flag reference and JSON output schemas: [`docs/CLI_REFERENCE.md`](./docs/CL
 | **Cold-start solution** | Context Pack (5-doc briefing) | None | None |
 | **Language** | Node.js + Rust (conformance-tested) | Python or TypeScript | Single language |
 | **Agent messaging** | Built-in JSONL queue | Framework-specific | None |
+| **Session handoff protocol** | Built-in checkpoint + hook | None | None |
 | **Philosophy** | Visibility first, orchestration optional | Orchestration first | Task spawning |
 
 ## Architecture

@@ -107,6 +107,71 @@ If command syntax is unclear, run `chorus --help`.
 - "Any messages for me?" -> `chorus messages --agent claude --cwd <project-path> --json`
 - "Which files are relevant?" -> `chorus relevance --list --cwd <project-path> --json`
 
+## Session Handoff Protocol
+
+Cross-agent messaging only works if every agent participates on the same
+schedule. Run the standup ritual at the start of every Claude Code
+session, and the conclude ritual before you end it.
+
+### Standup (every new session)
+
+```bash
+chorus messages --agent claude --clear --cwd <project-path>
+```
+
+`--clear` drains the inbox after you read it so the same notes don't
+resurface next session. If you want to keep the messages for later
+review, omit `--clear`.
+
+### Conclude (before ending the session)
+
+Use both, in order — they serve different purposes:
+
+```bash
+# Targeted notes for specific agents
+chorus send --from claude --to codex --message "payment refactor done; tests red" --cwd <project-path>
+
+# State broadcast to every other agent
+chorus checkpoint --from claude --cwd <project-path>
+```
+
+`send` is for addressed notes ("Codex, look at this"). `checkpoint` is
+for state broadcasts ("I'm out, here's what I was on") — it writes a
+short message (branch, uncommitted-file count, last commit) to every
+other agent's inbox. Pass `--message "..."` to override the auto-composed
+body.
+
+### Interruption resilience
+
+Claude Code fires a `SessionEnd` hook before it tears down. Wire that
+hook to `scripts/hooks/chorus-session-end.sh`, which delegates to
+`chorus checkpoint --from claude` so the subcommand stays the single
+source of truth.
+
+Install by adding to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [{
+      "hooks": [
+        {
+          "type": "command",
+          "command": "bash /absolute/path/to/chorus-session-end.sh",
+          "timeout": 10
+        }
+      ]
+    }]
+  }
+}
+```
+
+The script guards on `.agent-chorus/` presence, so it no-ops cleanly on
+projects that don't use Chorus. Safe to install globally.
+
+Full protocol, Gemini `.pb` fallback, and mid-task checkpoint patterns:
+[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md).
+
 ## Easter Egg
 
 The exact phrase `"chorus trash-talk"` (and only that phrase) triggers a roast of active agents.
