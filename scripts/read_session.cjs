@@ -8,7 +8,7 @@ const { execFileSync } = require('child_process');
 const { getAdapter } = require('./adapters/registry.cjs');
 
 const rawArgs = process.argv.slice(2);
-const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'teardown', 'doctor', 'trash-talk', 'context-pack', 'agent-context', 'relevance', 'diff', 'send', 'messages', 'summary', 'timeline']);
+const commandNames = new Set(['read', 'compare', 'report', 'list', 'search', 'setup', 'teardown', 'doctor', 'trash-talk', 'context-pack', 'agent-context', 'relevance', 'diff', 'send', 'messages', 'checkpoint', 'summary', 'timeline']);
 const command = commandNames.has(rawArgs[0]) ? rawArgs[0] : 'read';
 const args = commandNames.has(rawArgs[0]) ? rawArgs.slice(1) : rawArgs;
 
@@ -45,6 +45,7 @@ function printHelp(topic = null) {
     '  report    Generate a coordinator report from a handoff JSON',
     '  send      Send a message from one agent to another',
     '  messages  Read messages for an agent',
+    '  checkpoint  Broadcast git state to every other agent\'s inbox',
     '  setup     Install cross-provider instruction scaffolding in this project',
     '  teardown  Reverse setup: remove managed blocks, scaffolding, and hooks',
     '  doctor    Check session paths and provider instruction wiring',
@@ -198,6 +199,13 @@ function printHelp(topic = null) {
     lines.push('messages options:');
     lines.push('  --agent <name>        Agent whose messages to read');
     lines.push('  --clear               Clear messages after reading');
+    lines.push('  --cwd <path>          Working directory');
+    lines.push('  --json                Emit structured JSON');
+  } else if (topic === 'checkpoint') {
+    lines.push('');
+    lines.push('checkpoint options:');
+    lines.push('  --from <agent>        Sending agent (claude|codex|gemini|cursor)');
+    lines.push('  --message <text>      Override the auto-composed state message');
     lines.push('  --cwd <path>          Working directory');
     lines.push('  --json                Emit structured JSON');
   } else if (topic === 'diff') {
@@ -2504,6 +2512,97 @@ function runMessages(inputArgs) {
   }
 }
 
+// chorus checkpoint — broadcast git state to every OTHER agent's inbox.
+// Mirrors cli/src/checkpoint.rs behavior: guards on .agent-chorus/, soft-fails
+// each git probe, honors a --message override.
+function gitFirstLine(cwd, args) {
+  const { spawnSync } = require('child_process');
+  try {
+    const out = spawnSync('git', args, { cwd, encoding: 'utf8' });
+    if (out.status !== 0) return null;
+    const first = (out.stdout || '').split('\n').find(l => l.trim()) || '';
+    return first.trim() || null;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function gitUncommittedCount(cwd) {
+  const { spawnSync } = require('child_process');
+  try {
+    const out = spawnSync('git', ['status', '--short'], { cwd, encoding: 'utf8' });
+    if (out.status !== 0) return null;
+    const n = (out.stdout || '').split('\n').filter(l => l.trim().length > 0).length;
+    return String(n);
+  } catch (_e) {
+    return null;
+  }
+}
+
+function composeCheckpointMessage(from, cwd) {
+  const branch = gitFirstLine(cwd, ['branch', '--show-current']) || 'unknown';
+  const uncommitted = gitUncommittedCount(cwd) || '0';
+  const lastCommit = gitFirstLine(cwd, ['log', '-1', '--format=%h %s']) || 'none';
+  return `${from} session ended. Branch: ${branch} | Uncommitted: ${uncommitted} | Last commit: ${lastCommit}`;
+}
+
+function runCheckpoint(inputArgs) {
+  const ALL_AGENTS = ['claude', 'codex', 'gemini', 'cursor'];
+  const from = getOptionValue(inputArgs, '--from', null);
+  if (!from) throw new Error('checkpoint requires --from');
+  const validAgents = new Set(require('./adapters/registry.cjs').listAdapters());
+  if (!validAgents.has(from)) {
+    throw new Error(`Unknown agent for --from: ${from}. Valid: ${[...validAgents].join(', ')}`);
+  }
+
+  const rawCwd = getOptionValue(inputArgs, '--cwd', null);
+  const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
+  const asJson = hasFlag(inputArgs, '--json');
+  const override = getOptionValue(inputArgs, '--message', null);
+
+  const guard = path.join(cwd, '.agent-chorus');
+  if (!fs.existsSync(guard)) {
+    if (asJson) {
+      console.log(JSON.stringify({
+        ok: true,
+        from,
+        recipients: [],
+        message: null,
+        note: 'No .agent-chorus/ present — checkpoint was a no-op.',
+      }, null, 2));
+    } else {
+      console.log(`No .agent-chorus/ directory in ${cwd} — checkpoint skipped.`);
+    }
+    return;
+  }
+
+  const message = override || composeCheckpointMessage(from, cwd);
+  const messagesDir = path.join(cwd, '.agent-chorus', 'messages');
+  fs.mkdirSync(messagesDir, { recursive: true });
+
+  const recipients = [];
+  for (const to of ALL_AGENTS) {
+    if (to === from) continue;
+    const msg = {
+      from,
+      to,
+      timestamp: new Date().toISOString(),
+      content: message,
+      cwd,
+    };
+    const filePath = path.join(messagesDir, `${to}.jsonl`);
+    fs.appendFileSync(filePath, JSON.stringify(msg) + '\n', 'utf8');
+    recipients.push(to);
+  }
+
+  if (asJson) {
+    console.log(JSON.stringify({ ok: true, from, recipients, message }, null, 2));
+  } else {
+    console.log(`Checkpoint from ${from} to ${recipients.length} recipient(s): ${recipients.join(', ')}`);
+    console.log(`  ${message}`);
+  }
+}
+
 function runDiff(inputArgs) {
   const agent = getOptionValue(inputArgs, '--agent', null);
   if (!agent) throw new Error('diff requires --agent=<codex|gemini|claude|cursor>');
@@ -3123,6 +3222,8 @@ try {
     runSend(args);
   } else if (command === 'messages') {
     runMessages(args);
+  } else if (command === 'checkpoint') {
+    runCheckpoint(args);
   } else if (command === 'diff') {
     runDiff(args);
   } else if (command === 'relevance') {
