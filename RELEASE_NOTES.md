@@ -1,5 +1,63 @@
 # Release Notes
 
+## v0.12.0 — 2026-04-20
+
+Closes [#8](https://github.com/cote-star/agent-chorus/issues/8). Ships the session handoff protocol, interruption-resilience hook, and better error messages for two opaque-storage cases that previously returned bare `NOT_FOUND`.
+
+### Added — `chorus checkpoint` subcommand
+
+A first-class state-broadcast command that sends current git state (branch, uncommitted file count, last commit hash + subject) to every other agent's inbox in one call. Works on any OS, fully tested, idempotent, guards on `.agent-chorus/` presence so it is safe to call unconditionally in hooks.
+
+```bash
+chorus checkpoint --from claude
+chorus checkpoint --from codex --message "Payment refactor half-done; types still broken" --json
+```
+
+Replaces the pattern of calling `chorus send` three times when you just want everyone to know where you left off. `chorus send` is still the right tool for targeted messages; `checkpoint` is a loud hello/goodbye for the whole room.
+
+### Added — `scripts/hooks/chorus-session-end.sh`
+
+Thin shell wrapper around `chorus checkpoint` designed for Claude Code's `SessionEnd` hook so agents broadcast their state on any exit — clean, crash, or closed window. Install via `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionEnd": [{
+      "hooks": [{ "type": "command", "command": "bash /path/to/scripts/hooks/chorus-session-end.sh", "timeout": 10 }]
+    }]
+  }
+}
+```
+
+Hardened with `set -euo pipefail`, `realpath` canonicalization of `$CLAUDE_PROJECT_DIR` (defeats env-var path traversal), and a backgrounded+`disown`ed dispatch so a hanging `chorus` binary cannot pin the CLI exit past the settings-json timeout. Gracefully no-ops when chorus is missing from PATH or when `.agent-chorus/` is not present.
+
+### Added — Session Handoff Protocol in all three provider files
+
+`CLAUDE.md`, `AGENTS.md`, and a fully rewritten `GEMINI.md` (10 → 137 lines, previously a context-pack stub) now carry an explicit **Session Handoff Protocol** section with standup / conclude / checkpoint rituals. The WHEN is spelled out, not just the WHAT. Codex and Gemini do not have Claude Code's `SessionEnd` hook — those rituals instruct the agent to call `chorus checkpoint` manually at task-block boundaries.
+
+### Added — `docs/session-handoff-guide.md`
+
+New standalone guide that walks through five scenarios end-to-end: clean handoff, interrupted handoff (Claude Code), mid-task checkpoint for agents without a hook system, Gemini protobuf fallback, and Cursor SQLite fallback. Linked from the three provider files and the CLI reference.
+
+### Improved — Gemini `NOT_FOUND` detects `.pb` files (F40)
+
+`chorus read --agent gemini` now probes `~/.gemini/<profile>/conversations/*.pb` when the JSONL search comes up empty. If protobuf files are present, the error message names the count, names the exact path, explains that Chorus does not parse the format yet, and points at `--chats-dir` plus the new guide. Verified against a live install with 4+ `.pb` files at `~/.gemini/antigravity/conversations/`.
+
+### Improved — Cursor `NOT_FOUND` detects `state.vscdb` files
+
+Mirror of the Gemini change for Cursor. Modern Cursor persists chat and composer data in SQLite `state.vscdb` files under `User/workspaceStorage/<workspace-id>/`; chorus's cursor reader currently only scans JSON/JSONL by filename. When the SQLite backend is in use the error now names the count, the `workspaceStorage/` path, and points at the guide. Verified against a live install with 8 `state.vscdb` files. Full `rusqlite`-backed reading is tracked as a follow-up.
+
+### Also in this release
+
+- **GitHub Releases are now automated.** Tag pushes on `v*` trigger `softprops/action-gh-release@v2` to create the GitHub Release with the matching `RELEASE_NOTES.md` section as the body and the built Rust binaries attached. Closed a gap where tags v0.8.0–v0.10.0 existed on the remote and had been published to npm / crates.io / GitHub Packages, but the GitHub Releases page still showed v0.7.0 because the workflow never created releases explicitly.
+- **`RELEASE_NOTES.md`** backfilled with entries for v0.9.0 (three-layer context pack + `search_scope.json`) and v0.9.1 (P16 imperative routing enforcement). Both versions existed as tags and npm/crates releases; their notes were previously missing.
+
+### Thanks
+
+Thanks to [@oloflun](https://github.com/oloflun) for the detailed report in issue #8 — the writeup identified four distinct gaps cleanly and made the shape of the fix obvious.
+
+---
+
 ## v0.11.0 — 2026-04-13
 
 ### Added — `--tool-calls` flag on `chorus read`

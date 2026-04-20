@@ -194,7 +194,7 @@ pub fn read_gemini_session(id: Option<&str>, cwd: &str, chats_dir: Option<&str>)
 pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Option<&str>, last_n: usize) -> Result<Session> {
     let dirs = resolve_gemini_chat_dirs(chats_dir, cwd)?;
     if dirs.is_empty() {
-        return Err(anyhow!("No Gemini session found. Searched chats directories:"));
+        return Err(anyhow!("{}", gemini_not_found_message("No Gemini session found. Searched chats directories:")));
     }
 
     let mut cross_project_warning: Option<String> = None;
@@ -213,10 +213,10 @@ pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Opt
             candidates.append(&mut files);
         }
         sort_files_by_mtime_desc(&mut candidates);
-        candidates
-            .first()
-            .map(|f| f.path.clone())
-            .context("No Gemini session found.")?
+        match candidates.first().map(|f| f.path.clone()) {
+            Some(path) => path,
+            None => return Err(anyhow!("{}", gemini_not_found_message("No Gemini session found."))),
+        }
     } else {
         let mut candidates = Vec::new();
         for dir in &dirs {
@@ -231,10 +231,10 @@ pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Opt
             candidates.append(&mut files);
         }
         sort_files_by_mtime_desc(&mut candidates);
-        candidates
-            .first()
-            .map(|f| f.path.clone())
-            .context("No Gemini session found.")?
+        match candidates.first().map(|f| f.path.clone()) {
+            Some(path) => path,
+            None => return Err(anyhow!("{}", gemini_not_found_message("No Gemini session found."))),
+        }
     };
 
     let parsed = parse_gemini_json(&target_file, last_n)?;
@@ -1863,12 +1863,12 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
         return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
     }
     if !base_dir.exists() {
-        return Err(anyhow!("No Cursor session found. Data directory not found: {}", base_dir.display()));
+        return Err(anyhow!(cursor_not_found_message(&format!("No Cursor session found. Data directory not found: {}", base_dir.display()))));
     }
 
     let workspaces_dir = base_dir.join("User").join("workspaceStorage");
     if !workspaces_dir.exists() {
-        return Err(anyhow!("No Cursor session found. Workspace storage not found: {}", workspaces_dir.display()));
+        return Err(anyhow!(cursor_not_found_message(&format!("No Cursor session found. Workspace storage not found: {}", workspaces_dir.display()))));
     }
 
     // Look for composer/chat state files in workspace storage
@@ -1880,7 +1880,7 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
     })?;
 
     if files.is_empty() {
-        return Err(anyhow!("No Cursor session found."));
+        return Err(anyhow!(cursor_not_found_message("No Cursor session found.")));
     }
 
     let target_file = files[0].path.clone();
@@ -2007,6 +2007,136 @@ fn gemini_tmp_base_dir() -> PathBuf {
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| expand_home("~/.gemini/tmp").unwrap_or_else(|| PathBuf::from("~/.gemini/tmp")))
+}
+
+/// Return the base directory that holds Gemini profile subdirectories.
+///
+/// Defaults to `~/.gemini`. Overridable via `CHORUS_GEMINI_BASE_DIR` for
+/// tests and non-standard installs.
+fn gemini_base_dir() -> PathBuf {
+    std::env::var("CHORUS_GEMINI_BASE_DIR")
+        .ok()
+        .and_then(|value| expand_home(&value))
+        .unwrap_or_else(|| expand_home("~/.gemini").unwrap_or_else(|| PathBuf::from("~/.gemini")))
+}
+
+/// Look for protobuf-format session files under `~/.gemini/<profile>/conversations/`
+/// and return a user-facing addendum naming the first directory containing `.pb`
+/// files plus the total count found. Returns `None` if no `.pb` files exist —
+/// in that case callers should keep the existing NOT_FOUND wording.
+pub(crate) fn detect_gemini_pb_fallback_hint() -> Option<String> {
+    let base = gemini_base_dir();
+    if !base.exists() {
+        return None;
+    }
+
+    let mut total_count = 0usize;
+    let mut first_dir: Option<PathBuf> = None;
+
+    let profiles = match fs::read_dir(&base) {
+        Ok(entries) => entries,
+        Err(_) => return None,
+    };
+
+    for entry in profiles.flatten() {
+        let profile_path = entry.path();
+        if !profile_path.is_dir() {
+            continue;
+        }
+        let conversations = profile_path.join("conversations");
+        if !conversations.is_dir() {
+            continue;
+        }
+        let inner = match fs::read_dir(&conversations) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for file_entry in inner.flatten() {
+            let file_path = file_entry.path();
+            if file_path.is_file() && has_extension(&file_path, "pb") {
+                total_count += 1;
+                if first_dir.is_none() {
+                    first_dir = Some(conversations.clone());
+                }
+            }
+        }
+    }
+
+    if total_count == 0 {
+        return None;
+    }
+
+    let dir_display = first_dir
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("{}/<profile>/conversations/", base.display()));
+    let noun = if total_count == 1 { "file" } else { "files" };
+    Some(format!(
+        "No JSONL Gemini session found. Detected {} protobuf (.pb) {} at {} — chorus does not yet parse this format.\nWorkarounds: (1) use `--chats-dir <path>` to point at a JSONL export, (2) see docs/session-handoff-guide.md \"Gemini protobuf fallback\".",
+        total_count, noun, dir_display
+    ))
+}
+
+/// Given a base NOT_FOUND message, return it verbatim when no `.pb` files
+/// are detected, or replace it with the richer protobuf hint otherwise.
+fn gemini_not_found_message(base_message: &str) -> String {
+    match detect_gemini_pb_fallback_hint() {
+        Some(hint) => hint,
+        None => base_message.to_string(),
+    }
+}
+
+/// Probe the Cursor workspace storage for SQLite `state.vscdb` files — the
+/// format used by modern Cursor (VS Code fork) to persist chat/composer data.
+/// chorus's current cursor reader only scans for JSON/JSONL files whose names
+/// match `chat|composer|conversation`, which never hits the SQLite rows, so
+/// a Cursor install with active chats still returns NOT_FOUND. When `.vscdb`
+/// files are present we return a richer hint so users know why.
+pub(crate) fn detect_cursor_vscdb_fallback_hint() -> Option<String> {
+    let base = cursor_base_dir();
+    if !base.exists() {
+        return None;
+    }
+    let workspaces = base.join("User").join("workspaceStorage");
+    if !workspaces.is_dir() {
+        return None;
+    }
+
+    let mut total_count = 0usize;
+
+    let entries = match fs::read_dir(&workspaces) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    for ws in entries.flatten() {
+        let path = ws.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // `state.vscdb` is the primary store; `state.vscdb-wal`/`-shm` are
+        // SQLite journal siblings we don't count.
+        if path.join("state.vscdb").is_file() {
+            total_count += 1;
+        }
+    }
+
+    if total_count == 0 {
+        return None;
+    }
+
+    let noun = if total_count == 1 { "file" } else { "files" };
+    Some(format!(
+        "No JSON/JSONL Cursor session found. Detected {} SQLite state.vscdb {} under {}/User/workspaceStorage/ — modern Cursor persists chat/composer data in SQLite and chorus does not yet parse this format.\nWorkaround: see docs/session-handoff-guide.md \"Cursor SQLite fallback\". Full SQLite reading is tracked as a follow-up.",
+        total_count, noun, base.display()
+    ))
+}
+
+/// Given a base NOT_FOUND message, return it verbatim when no `.vscdb` files
+/// are detected, or replace it with the richer SQLite hint otherwise.
+fn cursor_not_found_message(base_message: &str) -> String {
+    match detect_cursor_vscdb_fallback_hint() {
+        Some(hint) => hint,
+        None => base_message.to_string(),
+    }
 }
 
 // --- Trash Talk ---
@@ -2176,7 +2306,7 @@ pub fn trash_talk(cwd: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::redact_sensitive_text;
+    use super::{detect_cursor_vscdb_fallback_hint, detect_gemini_pb_fallback_hint, redact_sensitive_text};
 
     #[test]
     fn redacts_multiple_bearer_tokens() {
@@ -2324,5 +2454,157 @@ mod tests {
         let output = redact_sensitive_text(input);
         assert!(output.contains("[REDACTED]"), "got: {}", output);
         assert!(!output.contains("super-secret-123"), "got: {}", output);
+    }
+
+    // --- Gemini NOT_FOUND protobuf-detection tests ---
+
+    /// Guard around `CHORUS_GEMINI_BASE_DIR` so the env-mutating tests below
+    /// don't race with each other when cargo test runs them in parallel.
+    fn gemini_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn gemini_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_gemini_pb_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    #[test]
+    fn gemini_notfound_names_pb_files_when_present() {
+        let _guard = gemini_env_lock();
+        let fixture = gemini_fixture("names_pb");
+        let conversations = fixture.join("default").join("conversations");
+        std::fs::create_dir_all(&conversations).unwrap();
+        std::fs::write(conversations.join("a.pb"), b"pb1").unwrap();
+        std::fs::write(conversations.join("b.pb"), b"pb2").unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_BASE_DIR", &fixture);
+        let hint = detect_gemini_pb_fallback_hint();
+        std::env::remove_var("CHORUS_GEMINI_BASE_DIR");
+
+        let hint = hint.expect("expected a protobuf hint when .pb files are present");
+        assert!(hint.contains("protobuf (.pb)"), "hint missing protobuf (.pb) phrase: {}", hint);
+        assert!(hint.contains("2 protobuf (.pb) files"), "hint should name both files: {}", hint);
+        assert!(hint.contains("--chats-dir"), "hint should point at --chats-dir workaround: {}", hint);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn gemini_notfound_stays_generic_when_no_pb() {
+        let _guard = gemini_env_lock();
+        let fixture = gemini_fixture("no_pb");
+        // Create a profile + conversations/ dir but NO .pb files. Mix in an
+        // unrelated file so we're sure the probe doesn't false-positive.
+        let conversations = fixture.join("default").join("conversations");
+        std::fs::create_dir_all(&conversations).unwrap();
+        std::fs::write(conversations.join("readme.txt"), b"not protobuf").unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_BASE_DIR", &fixture);
+        let hint = detect_gemini_pb_fallback_hint();
+        std::env::remove_var("CHORUS_GEMINI_BASE_DIR");
+
+        assert!(hint.is_none(), "expected no hint when no .pb files exist: {:?}", hint);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn gemini_notfound_handles_missing_base_dir() {
+        let _guard = gemini_env_lock();
+        let fixture = gemini_fixture("missing_base");
+        let nonexistent = fixture.join("not-real");
+        // Don't create nonexistent — the probe should short-circuit cleanly.
+
+        std::env::set_var("CHORUS_GEMINI_BASE_DIR", &nonexistent);
+        let hint = detect_gemini_pb_fallback_hint();
+        std::env::remove_var("CHORUS_GEMINI_BASE_DIR");
+
+        assert!(hint.is_none(), "missing base dir should yield no hint");
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // --- Cursor NOT_FOUND vscdb-detection tests ---
+
+    fn cursor_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn cursor_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_cursor_vscdb_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    #[test]
+    fn cursor_notfound_names_vscdb_files_when_present() {
+        let _guard = cursor_env_lock();
+        let fixture = cursor_fixture("names_vscdb");
+        let ws = fixture.join("User").join("workspaceStorage");
+        let ws1 = ws.join("abc123");
+        let ws2 = ws.join("def456");
+        std::fs::create_dir_all(&ws1).unwrap();
+        std::fs::create_dir_all(&ws2).unwrap();
+        std::fs::write(ws1.join("state.vscdb"), b"sqlite1").unwrap();
+        std::fs::write(ws1.join("state.vscdb-wal"), b"journal").unwrap(); // sibling, ignored
+        std::fs::write(ws2.join("state.vscdb"), b"sqlite2").unwrap();
+
+        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        let hint = detect_cursor_vscdb_fallback_hint();
+        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+
+        let hint = hint.expect("expected a vscdb hint when state.vscdb files are present");
+        assert!(hint.contains("SQLite state.vscdb"), "hint missing SQLite phrase: {}", hint);
+        assert!(hint.contains("2 SQLite state.vscdb files"), "hint should count both workspaces: {}", hint);
+        assert!(hint.contains("workspaceStorage"), "hint should name workspaceStorage: {}", hint);
+        // -wal sibling must not inflate the count
+        assert!(!hint.contains("3 SQLite"), "sibling -wal file incorrectly counted: {}", hint);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn cursor_notfound_stays_generic_when_no_vscdb() {
+        let _guard = cursor_env_lock();
+        let fixture = cursor_fixture("no_vscdb");
+        // Realistic shape: Cursor data dir + User/workspaceStorage but no .vscdb
+        let ws = fixture.join("User").join("workspaceStorage").join("abc");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("workspace.json"), b"{}").unwrap();
+
+        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        let hint = detect_cursor_vscdb_fallback_hint();
+        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+
+        assert!(hint.is_none(), "expected no hint when no .vscdb files exist: {:?}", hint);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn cursor_notfound_handles_missing_base_dir() {
+        let _guard = cursor_env_lock();
+        let fixture = cursor_fixture("missing_base");
+        let nonexistent = fixture.join("not-real");
+
+        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &nonexistent);
+        let hint = detect_cursor_vscdb_fallback_hint();
+        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+
+        assert!(hint.is_none(), "missing base dir should yield no hint");
+
+        let _ = std::fs::remove_dir_all(&fixture);
     }
 }

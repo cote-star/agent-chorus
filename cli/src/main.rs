@@ -1,6 +1,7 @@
 mod adapters;
 mod agents;
 mod agent_context;
+mod checkpoint;
 pub mod diff;
 pub mod messaging;
 pub mod relevance;
@@ -268,6 +269,25 @@ enum Commands {
         json: bool,
     },
 
+    /// Broadcast current git state to every other agent's inbox
+    Checkpoint {
+        /// Sending agent (one of: codex, gemini, claude, cursor)
+        #[arg(long)]
+        from: String,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Override the auto-composed state message
+        #[arg(long)]
+        message: Option<String>,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
     #[cfg(feature = "update-check")]
     #[command(hide = true)]
     UpdateWorker,
@@ -494,6 +514,7 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::Relevance { json, .. } => *json,
         Commands::Send { json, .. } => *json,
         Commands::Messages { json, .. } => *json,
+        Commands::Checkpoint { json, .. } => *json,
         Commands::Teardown { json, .. } => *json,
         Commands::AgentContext { .. } | Commands::ContextPack { .. } => false,
         #[cfg(feature = "update-check")]
@@ -805,6 +826,41 @@ fn run(cli: Cli) -> Result<()> {
                 let count = messaging::clear_messages(&agent, &effective)?;
                 if !json {
                     println!("Cleared {} message(s).", count);
+                }
+            }
+        }
+        Commands::Checkpoint { from, cwd, message, json } => {
+            let effective = effective_cwd(cwd);
+            let outcome = checkpoint::run(&from, &effective, message.as_deref())?;
+            match outcome {
+                None => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&json!({
+                            "ok": true,
+                            "from": from,
+                            "recipients": Vec::<String>::new(),
+                            "message": null,
+                            "note": "No .agent-chorus/ present — checkpoint was a no-op.",
+                        }))?);
+                    } else {
+                        println!(
+                            "No .agent-chorus/ directory in {} — checkpoint skipped.",
+                            effective
+                        );
+                    }
+                }
+                Some(result) => {
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&result)?);
+                    } else {
+                        println!(
+                            "Checkpoint from {} to {} recipient(s): {}",
+                            result.from,
+                            result.recipients.len(),
+                            result.recipients.join(", ")
+                        );
+                        println!("  {}", result.message);
+                    }
                 }
             }
         }

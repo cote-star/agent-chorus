@@ -16,6 +16,7 @@ chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<p
 chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
 chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
+chorus checkpoint --from <agent> [--cwd=<path>] [--message=<text>] [--json]
 chorus setup [--cwd=<path>] [--dry-run] [--force] [--agent-context] [--json]
 chorus doctor [--cwd=<path>] [--json]
 chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [...]
@@ -459,6 +460,78 @@ Messages are stored in `.agent-chorus/messages/<target-agent>.jsonl` and never l
 
 Message schema: `schemas/message.schema.json`.
 
+## Session Checkpoint
+
+Emit a lightweight state-broadcast message to every other agent's inbox.
+Safe to call unconditionally — no-ops silently when `.agent-chorus/` is
+not present in the working directory. Designed for Claude Code's
+`SessionEnd` hook; works equally well for any agent as a manual
+break-point checkpoint.
+
+**Synopsis**
+
+```
+chorus checkpoint --from <agent> [--cwd PATH] [--message TEXT] [--json]
+```
+
+**Examples**
+
+```bash
+# Auto-composed message — captures branch, uncommitted-file count, last commit
+chorus checkpoint --from claude --cwd .
+
+# Custom message overrides the auto-compose
+chorus checkpoint --from codex --message "auth refactor half-done; types still broken" --cwd .
+
+# JSON output for scripting
+chorus checkpoint --from gemini --cwd . --json
+```
+
+**Flags**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--from` | Agent issuing the checkpoint (`claude`, `codex`, `gemini`, `cursor`) | required |
+| `--cwd` | Working directory containing `.agent-chorus/` | current directory |
+| `--message` | Override text; skips git-state auto-compose | auto-composed |
+| `--json` | Machine-readable output | off |
+
+**JSON output:**
+
+```json
+{
+  "ok": true,
+  "from": "claude",
+  "recipients": ["codex", "gemini", "cursor"],
+  "message": "claude session ended. Branch: main | Uncommitted: 3 | Last commit: abc123 fix auth bug"
+}
+```
+
+Each recipient receives an identical JSONL line in
+`.agent-chorus/messages/<recipient>.jsonl`. The message conforms to the
+same schema as `chorus send`.
+
+**Behaviour notes**
+
+- **Guard**: absence of `.agent-chorus/` in the resolved cwd is not an
+  error. The command exits 0 silently so it is safe to install as a
+  global hook.
+- **Git soft-failures**: missing git, no commits, detached HEAD — all
+  degrade to the string `unknown` in the composed message rather than
+  raising.
+- **Idempotency**: re-running the same checkpoint appends another JSONL
+  line. Recipients decide how to deduplicate.
+
+**Exit codes**
+
+| Code | Condition |
+|---|---|
+| `0` | Success, or silent no-op because `.agent-chorus/` is absent |
+| non-zero | `--from` missing or invalid agent name; `.agent-chorus/messages/` exists but is not writable |
+
+See also: `docs/session-handoff-guide.md` for end-to-end scenarios and
+the Claude Code `SessionEnd` hook wiring.
+
 ## Setup
 
 Wire Agent Chorus into a project. Creates provider scaffolding, injects managed blocks into agent instruction files, updates `.gitignore`, and auto-installs the Claude Code plugin if the `claude` CLI is present.
@@ -615,6 +688,56 @@ Override default paths using environment variables.
 | `CHORUS_GEMINI_TMP_DIR`      | Path to Gemini temp chats | `~/.gemini/tmp`                        |
 | `CHORUS_CLAUDE_PROJECTS_DIR` | Path to Claude projects   | `~/.claude/projects`                   |
 | `CHORUS_CURSOR_DATA_DIR`     | Path to Cursor data       | `~/Library/Application Support/Cursor` |
+
+## Agent-Specific Notes
+
+### Gemini: protobuf (`.pb`) fallback
+
+Recent Gemini CLI builds store session state as protobuf at
+`~/.gemini/<profile>/conversations/*.pb`. Chorus reads JSONL at
+`~/.gemini/tmp/<hash>/chats/session-*.json` and does NOT yet parse the
+protobuf form.
+
+When `chorus read --agent gemini` returns `NOT_FOUND` and the error
+message mentions "protobuf (.pb)", use one of these workarounds:
+
+```bash
+# Option 1: point Chorus at a known-good JSONL directory
+chorus read --agent gemini --chats-dir /path/to/jsonl-export --cwd .
+
+# Option 2: override discovery root for a long-running shell
+export CHORUS_GEMINI_TMP_DIR=/path/to/jsonl-root
+chorus read --agent gemini --cwd .
+```
+
+For the full workaround including a JSONL-stub recipe, see
+[`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
+4 — Gemini protobuf fallback".
+
+### Cursor: SQLite (`state.vscdb`) fallback
+
+Modern Cursor persists chat/composer data in SQLite
+`state.vscdb` files under
+`~/Library/Application Support/Cursor/User/workspaceStorage/<id>/` on
+macOS, and the equivalent paths on Linux/Windows. Chorus's cursor reader
+currently only scans JSON/JSONL files whose names contain `chat`,
+`composer`, or `conversation`, and does NOT yet parse the SQLite form.
+
+When `chorus read --agent cursor` returns `NOT_FOUND` and the error
+message mentions "SQLite state.vscdb", the install has migrated to the
+SQLite backend. There is no first-class workaround yet — Cursor does not
+offer a stable JSON export for chat history at time of writing.
+
+For inspection / debugging, you can dump the relevant rows manually:
+
+```bash
+DB=~/Library/Application\ Support/Cursor/User/workspaceStorage/<id>/state.vscdb
+sqlite3 "$DB" "SELECT key, length(value) FROM ItemTable WHERE key LIKE '%composer%';"
+```
+
+Full `rusqlite`-backed reading is tracked as a follow-up. See
+[`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
+5 — Cursor SQLite fallback" for the full context.
 
 ## Redaction
 
