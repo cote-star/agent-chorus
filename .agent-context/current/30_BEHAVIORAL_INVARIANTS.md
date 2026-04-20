@@ -7,9 +7,12 @@
 4. **Output boundary markers**: Text output must be wrapped in `--- BEGIN CHORUS OUTPUT ---` / `--- END CHORUS OUTPUT ---`. JSON output must include `chorus_output_version: 1`.
 5. **Backward-compatible env vars**: `CHORUS_*` env vars are canonical; `BRIDGE_*` fallbacks must continue to work.
 6. **Backward-compatible sentinels**: Hook management must detect both `agent-chorus:` and legacy `agent-bridge:` sentinel markers.
-7. **Read-only by default**: No command mutates agent session files. Only `send`, `messages --clear`, and context-pack writes modify local state.
+7. **Read-only by default**: No command mutates agent session files. Only `send`, `messages --clear`, `checkpoint`, and context-pack writes modify local state.
 8. **Fail-open hooks**: Pre-push hook context-pack errors must never block `git push`.
 9. **Context-pack backward compatibility**: Markdown-only packs (no structured artifacts) must remain fully functional. Structured validation is opt-in based on `routes.json` presence.
+10. **Checkpoint guard**: `chorus checkpoint` must exit 0 silently when `.agent-chorus/` does not exist in the target cwd. This is what makes `scripts/hooks/chorus-session-end.sh` safe to install globally — it no-ops on non-chorus projects.
+11. **Fallback-hint specificity**: The Gemini and Cursor `NOT_FOUND` enrichments only fire when their specific fallback file types are detected (`.pb` under `<profile>/conversations/` for Gemini, `state.vscdb` under `User/workspaceStorage/` for Cursor). Absent those files, the generic `NOT_FOUND` message must be preserved unchanged — the probes are additive.
+12. **Release gating**: Every `v*` tag push runs `scripts/release/verify_versions.sh`, which enforces `package.json.version === cli/Cargo.toml.version === tag[1:]` before any publish step executes. A mismatch fails the workflow before npm, crates.io, or GitHub Release jobs begin.
 
 ## Update Checklist Before Merging Behavior Changes
 

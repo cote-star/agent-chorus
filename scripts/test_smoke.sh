@@ -36,6 +36,8 @@ echo "=== CLI Smoke Tests ==="
 
 # Help
 smoke "help"           node "$ROOT/scripts/read_session.cjs" --help
+# The cp-* smokes exercise the `context-pack` CLI alias (deferred to v1.0.0 for removal
+# per research/rename-progress.md). Primary-name tests live in test_agent_context.sh.
 smoke "help-cp"        node "$ROOT/scripts/read_session.cjs" context-pack --help
 
 # Doctor (the critical regression test)

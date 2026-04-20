@@ -1,4 +1,4 @@
-# Agent Chorus Protocol v0.8.1
+# Agent Chorus Protocol v0.12.2
 
 ## Purpose
 Define a lightweight, local-first standard for reading and coordinating cross-agent session evidence across Codex, Gemini, Claude, and Cursor.

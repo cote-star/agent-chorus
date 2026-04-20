@@ -1,48 +1,48 @@
 {
   "schema_version": 1,
-  "generated_at": "2026-04-08T14:17:55.573Z",
-  "repo_name": "agent-chorus",
+  "generated_at": "2026-04-20T11:58:10.687Z",
+  "repo_name": "chorus-v0.12.2",
   "repo_root": ".",
-  "branch": "main",
-  "head_sha": "1487f29edadd2b286c3a4c3e8fa1facfaf6f4749",
-  "build_reason": "manual-seal",
+  "branch": "chore/v0.12.2-holistic-refresh",
+  "head_sha": "4505842d8a5ca449cc022dc633f07e178b01fa2a",
+  "build_reason": "v0.12.2 holistic refresh",
   "base_sha": null,
   "changed_files": [],
   "files_count": 8,
-  "words_total": 3186,
-  "bytes_total": 27719,
-  "pack_checksum": "b011deb8ef63787d00777a4e18b35162e144e1387eae98b6e8a0dfbbc115dacf",
-  "stable_checksum": "04334794c96a358c260fb7e1e4720eccbee70a912e1725875f2f4108ae58c29e",
+  "words_total": 3839,
+  "bytes_total": 33077,
+  "pack_checksum": "9fc3571a580ca53f96acfaf6698237212933fa3c15646b75910c432b672b9489",
+  "stable_checksum": "c778d1a8c1b62a103f7cb9a5ce8c8a72e7f648526d0d689bb0ef9689a95bc9ac",
   "files": [
     {
       "path": "00_START_HERE.md",
-      "sha256": "8b0fa65f79367abf36d587fc9c1dbcd25c981c8f5dcc9ed7eb7a4c4f7e6a5f74",
-      "bytes": 3281,
-      "words": 450
+      "sha256": "b125c4b840b3653ff7dd39463289dffaa40953578d65628490a6f73cf1ef3e37",
+      "bytes": 3528,
+      "words": 474
     },
     {
       "path": "10_SYSTEM_OVERVIEW.md",
-      "sha256": "0b5baa40533e034ddc359151db5cc410e02b7d2e73497d3f2e308dbccd68f186",
-      "bytes": 3639,
-      "words": 535
+      "sha256": "04dcaa6ceab84b9676d8ac6633f900b3dc4ca3643d0b1320bf93ceeb7211ec21",
+      "bytes": 5567,
+      "words": 767
     },
     {
       "path": "20_CODE_MAP.md",
-      "sha256": "ad9de47837070d3507072136b55d29bfdff5b8520974b05a7251d8b64fa7b8c6",
-      "bytes": 5243,
-      "words": 721
+      "sha256": "7747c986667c5d2ddef53498ca2d7a222ff88e316b9f836f6c4a9345a677fa26",
+      "bytes": 6201,
+      "words": 834
     },
     {
       "path": "30_BEHAVIORAL_INVARIANTS.md",
-      "sha256": "d80418acae69df5d5ebf9672876320b7abb3198502c97ab27d73eb8bbe46f8ab",
-      "bytes": 5095,
-      "words": 605
+      "sha256": "8f81a5ef7525de7fe8b36ae1d401c8ffd27023c4f4d9474dca642cb5388186d6",
+      "bytes": 5996,
+      "words": 718
     },
     {
       "path": "40_OPERATIONS_AND_RELEASE.md",
-      "sha256": "2500dd0526916c75d06a6978813e0bfd30a1bb71b7273c6aacd70cf1e23a0154",
-      "bytes": 1836,
-      "words": 251
+      "sha256": "76be46f2e9524e8f45f6d1eb82125da0707c6ef135ad83bda9f001c65b314de6",
+      "bytes": 3160,
+      "words": 422
     },
     {
       "path": "routes.json",

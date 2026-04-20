@@ -1,5 +1,44 @@
 # Release Notes
 
+## v0.12.2 — 2026-04-20
+
+**Docs + pack-freshness release. Zero code-behavior changes.**
+
+A holistic cleanup on top of v0.12.1 to match every surface of the repo to the actual v0.12.x feature set. The rapid v0.12.0 and v0.12.1 releases landed the new code but left stale traces in secondary surfaces; this release retires them.
+
+### Refreshed — the repo's own `.agent-context/` pack
+
+Was sealed 2026-04-08 at commit `1487f29`; 15 commits / 12 days behind `main`. Its `00_START_HERE.md` still claimed "Version: 0.9.1" and `10_SYSTEM_OVERVIEW.md` predated `chorus checkpoint`. Now re-sealed at the v0.12.2 HEAD with:
+
+- Product version updated in `00_START_HERE.md`
+- `chorus checkpoint`, `chorus summary`, `chorus timeline`, `--tool-calls`, `--format markdown`, `--include-user` documented in `10_SYSTEM_OVERVIEW.md`
+- `cli/src/checkpoint.rs`, `scripts/hooks/chorus-session-end.sh`, and the new Gemini/Cursor fallback helpers (`detect_gemini_pb_fallback_hint`, `detect_cursor_vscdb_fallback_hint`, etc.) added to `20_CODE_MAP.md`
+- Three new invariants in `30_BEHAVIORAL_INVARIANTS.md` covering the `chorus checkpoint` `.agent-chorus/` guard, Gemini/Cursor fallback-hint specificity, and the `verify_versions.sh` release gate
+- Automated GitHub Release flow + `NPM_TOKEN` rotation caveat documented in `40_OPERATIONS_AND_RELEASE.md`
+- `search_scope.json` extended with new probe helpers
+
+### Fixed — stale roadmap + protocol version claims
+
+- `README.md` lines 253 + 446: "Rust parity planned for v0.12.0" → "still pending". v0.12.0 shipped session handoff, not Rust parity for the v0.11.0 Node features; the old claim was literally false.
+- `docs/CLI_REFERENCE.md` line 788: same fix.
+- `PROTOCOL.md` header: `v0.8.1` → `v0.12.2` (four minor versions behind).
+
+### Archived — research + WIP artifacts for shipped work
+
+- `research/handoff-2026-03-{25,26,26-evening}.md` → `research/archive/2026-Q1/` (historical session handoff notes).
+- `wip/agent-context-skill/` → `research/archive/skill-development-log/` (skill shipped in v0.12.0 as `skills/agent-context/`; the WIP tree was now mis-labeled). New `wip/README.md` makes the convention explicit.
+- New `research/archive/README.md` explains the archive convention and the split between active research docs and historical ones.
+
+### Normalized — script help wording
+
+- `scripts/agent_context/check_freshness.sh`: comment now names `agent-context` (primary) instead of `context-pack` (deprecated alias, still shipped for back-compat until v1.0.0).
+- `scripts/test_smoke.sh`: added a clarifying comment so the intentional `context-pack` alias exercise is not mistaken for a drift-we-should-fix.
+- Node-facing `--context-pack` flag on `chorus setup` and the hook-sentinel marker names remain untouched (removing them is breaking; deferred to v1.0.0 per `research/rename-progress.md`).
+
+### Also landed
+
+- GitHub Actions `package-rust` step uploads binaries from the correct path (fix shipped in v0.12.1). v0.12.2 will be the second release to surface those binaries on the GitHub Releases page automatically.
+
 ## v0.12.1 — 2026-04-20
 
 Infrastructure fixes and supply-chain hygiene on top of v0.12.0. No user-facing behavior changes.

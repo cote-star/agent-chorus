@@ -22,8 +22,11 @@
 | `tests/behaviour/` | Agent behaviour experiments | Experiment protocol, ground truth, result schema | Validates context pack effectiveness | reference |
 | `PROTOCOL.md` | CLI contract specification | Canonical source of truth for behavior | Governs both implementations | authoritative |
 | `cli/src/diff.rs` | Session diff logic | LCS-based line comparison | Self-contained | authoritative |
-| `cli/src/messaging.rs` | Agent-to-agent messaging | JSONL message queue | Self-contained | authoritative |
+| `cli/src/messaging.rs` | Agent-to-agent messaging | JSONL message queue (`send_message`) — reused by checkpoint | Self-contained | authoritative |
+| `cli/src/checkpoint.rs` | `chorus checkpoint` broadcast (v0.12.0) | Composes git state + fans out via `send_message`; guards on `.agent-chorus/` | Self-contained; parity lives in `read_session.cjs` | authoritative |
 | `cli/src/relevance.rs` | Relevance introspection | Pattern matching and suggestions | Self-contained | authoritative |
+| `scripts/hooks/chorus-session-end.sh` | Claude Code `SessionEnd` hook wrapper (v0.12.0) | Thin shell around `chorus checkpoint --from claude`; backgrounded + `disown` | Hardening of env and timeouts matters — do not inline the message composition | authoritative |
+| `scripts/hooks/README.md` | Hook directory docs | Install snippet and security notes | reference |
 | `scripts/conformance.sh` | Conformance test runner | Validates Node/Rust parity | Gates all merges | reference |
 | `scripts/test_context_pack.sh` | Context-pack test runner | Validates init/seal/parity | Gates all merges | reference |
 
@@ -34,6 +37,8 @@
 | Node command handler | `scripts/read_session.cjs` | `case '<command>':` in the switch |
 | Output schema for a command | `schemas/<command>.json` | JSON Schema root |
 | Redaction patterns | `cli/src/agents.rs` | `fn redact_sensitive_text` |
+| Gemini `.pb` / Cursor `state.vscdb` probes | `cli/src/agents.rs` | `detect_gemini_pb_fallback_hint`, `detect_cursor_vscdb_fallback_hint`, `gemini_not_found_message`, `cursor_not_found_message`, `gemini_base_dir`, `cursor_base_dir` |
+| Checkpoint broadcast logic | `cli/src/checkpoint.rs` | `fn run`, `compose_state_message` |
 | Context-pack template content | `cli/src/agent_context.rs` | `fn build_template_*` functions |
 | Conformance test for a command | `scripts/conformance.sh` | `expect_success "<label>"` calls |
 
