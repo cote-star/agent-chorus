@@ -714,6 +714,31 @@ For the full workaround including a JSONL-stub recipe, see
 [`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
 4 — Gemini protobuf fallback".
 
+### Cursor: SQLite (`state.vscdb`) fallback
+
+Modern Cursor persists chat/composer data in SQLite
+`state.vscdb` files under
+`~/Library/Application Support/Cursor/User/workspaceStorage/<id>/` on
+macOS, and the equivalent paths on Linux/Windows. Chorus's cursor reader
+currently only scans JSON/JSONL files whose names contain `chat`,
+`composer`, or `conversation`, and does NOT yet parse the SQLite form.
+
+When `chorus read --agent cursor` returns `NOT_FOUND` and the error
+message mentions "SQLite state.vscdb", the install has migrated to the
+SQLite backend. There is no first-class workaround yet — Cursor does not
+offer a stable JSON export for chat history at time of writing.
+
+For inspection / debugging, you can dump the relevant rows manually:
+
+```bash
+DB=~/Library/Application\ Support/Cursor/User/workspaceStorage/<id>/state.vscdb
+sqlite3 "$DB" "SELECT key, length(value) FROM ItemTable WHERE key LIKE '%composer%';"
+```
+
+Full `rusqlite`-backed reading is tracked as a follow-up. See
+[`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
+5 — Cursor SQLite fallback" for the full context.
+
 ## Redaction
 
 Chorus automatically redacts sensitive data before output:

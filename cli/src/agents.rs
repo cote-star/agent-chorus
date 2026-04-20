@@ -1863,12 +1863,12 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
         return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
     }
     if !base_dir.exists() {
-        return Err(anyhow!("No Cursor session found. Data directory not found: {}", base_dir.display()));
+        return Err(anyhow!(cursor_not_found_message(&format!("No Cursor session found. Data directory not found: {}", base_dir.display()))));
     }
 
     let workspaces_dir = base_dir.join("User").join("workspaceStorage");
     if !workspaces_dir.exists() {
-        return Err(anyhow!("No Cursor session found. Workspace storage not found: {}", workspaces_dir.display()));
+        return Err(anyhow!(cursor_not_found_message(&format!("No Cursor session found. Workspace storage not found: {}", workspaces_dir.display()))));
     }
 
     // Look for composer/chat state files in workspace storage
@@ -1880,7 +1880,7 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
     })?;
 
     if files.is_empty() {
-        return Err(anyhow!("No Cursor session found."));
+        return Err(anyhow!(cursor_not_found_message("No Cursor session found.")));
     }
 
     let target_file = files[0].path.clone();
@@ -2085,6 +2085,60 @@ fn gemini_not_found_message(base_message: &str) -> String {
     }
 }
 
+/// Probe the Cursor workspace storage for SQLite `state.vscdb` files — the
+/// format used by modern Cursor (VS Code fork) to persist chat/composer data.
+/// chorus's current cursor reader only scans for JSON/JSONL files whose names
+/// match `chat|composer|conversation`, which never hits the SQLite rows, so
+/// a Cursor install with active chats still returns NOT_FOUND. When `.vscdb`
+/// files are present we return a richer hint so users know why.
+pub(crate) fn detect_cursor_vscdb_fallback_hint() -> Option<String> {
+    let base = cursor_base_dir();
+    if !base.exists() {
+        return None;
+    }
+    let workspaces = base.join("User").join("workspaceStorage");
+    if !workspaces.is_dir() {
+        return None;
+    }
+
+    let mut total_count = 0usize;
+
+    let entries = match fs::read_dir(&workspaces) {
+        Ok(e) => e,
+        Err(_) => return None,
+    };
+    for ws in entries.flatten() {
+        let path = ws.path();
+        if !path.is_dir() {
+            continue;
+        }
+        // `state.vscdb` is the primary store; `state.vscdb-wal`/`-shm` are
+        // SQLite journal siblings we don't count.
+        if path.join("state.vscdb").is_file() {
+            total_count += 1;
+        }
+    }
+
+    if total_count == 0 {
+        return None;
+    }
+
+    let noun = if total_count == 1 { "file" } else { "files" };
+    Some(format!(
+        "No JSON/JSONL Cursor session found. Detected {} SQLite state.vscdb {} under {}/User/workspaceStorage/ — modern Cursor persists chat/composer data in SQLite and chorus does not yet parse this format.\nWorkaround: see docs/session-handoff-guide.md \"Cursor SQLite fallback\". Full SQLite reading is tracked as a follow-up.",
+        total_count, noun, base.display()
+    ))
+}
+
+/// Given a base NOT_FOUND message, return it verbatim when no `.vscdb` files
+/// are detected, or replace it with the richer SQLite hint otherwise.
+fn cursor_not_found_message(base_message: &str) -> String {
+    match detect_cursor_vscdb_fallback_hint() {
+        Some(hint) => hint,
+        None => base_message.to_string(),
+    }
+}
+
 // --- Trash Talk ---
 
 struct ActiveAgent {
@@ -2252,7 +2306,7 @@ pub fn trash_talk(cwd: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_gemini_pb_fallback_hint, redact_sensitive_text};
+    use super::{detect_cursor_vscdb_fallback_hint, detect_gemini_pb_fallback_hint, redact_sensitive_text};
 
     #[test]
     fn redacts_multiple_bearer_tokens() {
@@ -2471,6 +2525,83 @@ mod tests {
         std::env::set_var("CHORUS_GEMINI_BASE_DIR", &nonexistent);
         let hint = detect_gemini_pb_fallback_hint();
         std::env::remove_var("CHORUS_GEMINI_BASE_DIR");
+
+        assert!(hint.is_none(), "missing base dir should yield no hint");
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // --- Cursor NOT_FOUND vscdb-detection tests ---
+
+    fn cursor_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn cursor_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_cursor_vscdb_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    #[test]
+    fn cursor_notfound_names_vscdb_files_when_present() {
+        let _guard = cursor_env_lock();
+        let fixture = cursor_fixture("names_vscdb");
+        let ws = fixture.join("User").join("workspaceStorage");
+        let ws1 = ws.join("abc123");
+        let ws2 = ws.join("def456");
+        std::fs::create_dir_all(&ws1).unwrap();
+        std::fs::create_dir_all(&ws2).unwrap();
+        std::fs::write(ws1.join("state.vscdb"), b"sqlite1").unwrap();
+        std::fs::write(ws1.join("state.vscdb-wal"), b"journal").unwrap(); // sibling, ignored
+        std::fs::write(ws2.join("state.vscdb"), b"sqlite2").unwrap();
+
+        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        let hint = detect_cursor_vscdb_fallback_hint();
+        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+
+        let hint = hint.expect("expected a vscdb hint when state.vscdb files are present");
+        assert!(hint.contains("SQLite state.vscdb"), "hint missing SQLite phrase: {}", hint);
+        assert!(hint.contains("2 SQLite state.vscdb files"), "hint should count both workspaces: {}", hint);
+        assert!(hint.contains("workspaceStorage"), "hint should name workspaceStorage: {}", hint);
+        // -wal sibling must not inflate the count
+        assert!(!hint.contains("3 SQLite"), "sibling -wal file incorrectly counted: {}", hint);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn cursor_notfound_stays_generic_when_no_vscdb() {
+        let _guard = cursor_env_lock();
+        let fixture = cursor_fixture("no_vscdb");
+        // Realistic shape: Cursor data dir + User/workspaceStorage but no .vscdb
+        let ws = fixture.join("User").join("workspaceStorage").join("abc");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("workspace.json"), b"{}").unwrap();
+
+        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        let hint = detect_cursor_vscdb_fallback_hint();
+        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+
+        assert!(hint.is_none(), "expected no hint when no .vscdb files exist: {:?}", hint);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn cursor_notfound_handles_missing_base_dir() {
+        let _guard = cursor_env_lock();
+        let fixture = cursor_fixture("missing_base");
+        let nonexistent = fixture.join("not-real");
+
+        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &nonexistent);
+        let hint = detect_cursor_vscdb_fallback_hint();
+        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
 
         assert!(hint.is_none(), "missing base dir should yield no hint");
 

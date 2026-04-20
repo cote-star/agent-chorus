@@ -174,6 +174,37 @@ content. This unblocks the read path for demos and smoke tests; it is not
 a replacement for real session data. Full `.pb` parsing is tracked as a
 separate piece of work.
 
+## Scenario 5 — Cursor SQLite fallback
+
+Modern versions of Cursor (the VS Code fork) persist chat and composer
+data in SQLite `state.vscdb` files under `~/Library/Application Support/
+Cursor/User/workspaceStorage/<workspace-id>/` on macOS, and the equivalent
+path on Linux/Windows. Chorus's current cursor reader only scans JSON and
+JSONL files whose names contain `chat`, `composer`, or `conversation`, so
+it returns `NOT_FOUND` on any install that has migrated to SQLite even
+when there is an active chat.
+
+Chorus detects this situation and produces a richer error message naming
+the workspace-storage path and the count of `.vscdb` files it found, so
+you can tell the "no sessions anywhere" case apart from the "sessions
+exist, just not in a format Chorus can read yet" case.
+
+There is no first-class workaround yet — Cursor does not (at time of
+writing) offer a stable JSON export for chat history. Options are:
+
+1. Dump one of the `state.vscdb` files yourself with the `sqlite3` CLI
+   and inspect the `ItemTable` / `cursorDiskKV` rows keyed on
+   `composer.composerData` and friends. Useful for one-off debugging,
+   not a long-term integration path.
+2. Wait on or help with full `rusqlite`-backed cursor reading — tracked
+   as a follow-up issue in the agent-chorus tracker. The `detect_*`
+   helper is already in place so the read path and the error path share
+   a single source of truth.
+
+Either way, `chorus checkpoint --from cursor` still works: the messaging
+side does not depend on being able to read cursor's own sessions, so
+cross-agent handoff rituals remain intact.
+
 ## How the pieces fit
 
 The protocol stacks in three layers: subcommands (`messages`, `send`,
