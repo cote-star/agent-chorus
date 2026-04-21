@@ -1,3 +1,4 @@
+use crate::adapters::ReadOptions;
 use crate::utils::{expand_home, hash_path, normalize_path};
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
@@ -78,6 +79,15 @@ pub fn read_codex_session(id: Option<&str>, cwd: &str) -> Result<Session> {
 }
 
 pub fn read_codex_session_with_last(id: Option<&str>, cwd: &str, last_n: usize) -> Result<Session> {
+    read_codex_session_with_options(id, cwd, last_n, ReadOptions::default())
+}
+
+pub fn read_codex_session_with_options(
+    id: Option<&str>,
+    cwd: &str,
+    last_n: usize,
+    opts: ReadOptions,
+) -> Result<Session> {
     let base_dir = codex_base_dir();
     if is_system_directory(&base_dir) {
         return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
@@ -113,7 +123,7 @@ pub fn read_codex_session_with_last(id: Option<&str>, cwd: &str, last_n: usize) 
         }
     };
 
-    let parsed = parse_codex_jsonl(&target_file, last_n)?;
+    let parsed = parse_codex_jsonl(&target_file, last_n, opts)?;
     warnings.extend(parsed.warnings);
 
     Ok(Session {
@@ -135,6 +145,15 @@ pub fn read_claude_session(id: Option<&str>, cwd: &str) -> Result<Session> {
 }
 
 pub fn read_claude_session_with_last(id: Option<&str>, cwd: &str, last_n: usize) -> Result<Session> {
+    read_claude_session_with_options(id, cwd, last_n, ReadOptions::default())
+}
+
+pub fn read_claude_session_with_options(
+    id: Option<&str>,
+    cwd: &str,
+    last_n: usize,
+    opts: ReadOptions,
+) -> Result<Session> {
     let base_dir = claude_base_dir();
     if is_system_directory(&base_dir) {
         return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
@@ -170,7 +189,7 @@ pub fn read_claude_session_with_last(id: Option<&str>, cwd: &str, last_n: usize)
         }
     };
 
-    let parsed = parse_claude_jsonl(&target_file, last_n)?;
+    let parsed = parse_claude_jsonl(&target_file, last_n, opts)?;
     warnings.extend(parsed.warnings);
 
     Ok(Session {
@@ -192,6 +211,16 @@ pub fn read_gemini_session(id: Option<&str>, cwd: &str, chats_dir: Option<&str>)
 }
 
 pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Option<&str>, last_n: usize) -> Result<Session> {
+    read_gemini_session_with_options(id, cwd, chats_dir, last_n, ReadOptions::default())
+}
+
+pub fn read_gemini_session_with_options(
+    id: Option<&str>,
+    cwd: &str,
+    chats_dir: Option<&str>,
+    last_n: usize,
+    opts: ReadOptions,
+) -> Result<Session> {
     let dirs = resolve_gemini_chat_dirs(chats_dir, cwd)?;
     if dirs.is_empty() {
         return Err(anyhow!("{}", gemini_not_found_message("No Gemini session found. Searched chats directories:")));
@@ -237,7 +266,7 @@ pub fn read_gemini_session_with_last(id: Option<&str>, cwd: &str, chats_dir: Opt
         }
     };
 
-    let parsed = parse_gemini_json(&target_file, last_n)?;
+    let parsed = parse_gemini_json(&target_file, last_n, opts)?;
 
     let mut warnings = parsed.warnings;
     if let Some(w) = cross_project_warning {
@@ -267,9 +296,10 @@ struct ParsedContent {
     messages_returned: usize,
 }
 
-fn parse_codex_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
+fn parse_codex_jsonl(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent> {
     let lines = read_jsonl_lines(path)?;
-    let mut messages: Vec<Value> = Vec::new();
+    let mut turns: Vec<ConversationTurn> = Vec::new();
+    let mut assistant_msgs: Vec<String> = Vec::new();
     let mut skipped = 0usize;
     let mut session_cwd: Option<String> = None;
     let mut session_id: Option<String> = None;
@@ -286,13 +316,38 @@ fn parse_codex_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
                     }
                 }
                 if json["type"] == "response_item" && json["payload"]["type"] == "message" {
-                    messages.push(json["payload"].clone());
+                    let payload = &json["payload"];
+                    let role = payload["role"].as_str().unwrap_or("").to_lowercase();
+                    if role == "assistant" || role == "user" {
+                        let raw_text = if opts.include_tool_calls {
+                            extract_text_with_tool_calls(&payload["content"])
+                        } else {
+                            extract_text(&payload["content"])
+                        };
+                        let text = if raw_text.is_empty() {
+                            "[No text content]".to_string()
+                        } else {
+                            raw_text
+                        };
+                        if role == "assistant" {
+                            assistant_msgs.push(text.clone());
+                        }
+                        turns.push(ConversationTurn { role, text });
+                    }
                 } else if json["type"] == "event_msg" && json["payload"]["type"] == "agent_message" {
                     let payload = &json["payload"];
-                    messages.push(serde_json::json!({
-                        "role": "assistant",
-                        "content": payload["message"].clone()
-                    }));
+                    let text = if let Some(s) = payload["message"].as_str() {
+                        s.to_string()
+                    } else {
+                        let extracted = extract_text(&payload["message"]);
+                        if extracted.is_empty() {
+                            "[No text content]".to_string()
+                        } else {
+                            extracted
+                        }
+                    };
+                    assistant_msgs.push(text.clone());
+                    turns.push(ConversationTurn { role: "assistant".to_string(), text });
                 }
             }
             Err(_) => skipped += 1,
@@ -308,28 +363,22 @@ fn parse_codex_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
         ));
     }
 
-    let message_count = messages.iter().filter(|m| {
-        m["role"].as_str().unwrap_or("").eq_ignore_ascii_case("assistant")
-    }).count();
-
+    let message_count = assistant_msgs.len();
     let timestamp = file_modified_iso(path);
 
     if session_id.is_none() {
         session_id = path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
     }
 
-    let assistant_msgs: Vec<&Value> = messages.iter().filter(|m| {
-        m["role"].as_str().unwrap_or("").eq_ignore_ascii_case("assistant")
-    }).collect();
-
-    if !messages.is_empty() {
-        if last_n > 1 && !assistant_msgs.is_empty() {
-            let selected: Vec<&Value> = assistant_msgs.iter().rev().take(last_n).rev().cloned().collect();
+    if !turns.is_empty() {
+        if opts.include_user && !assistant_msgs.is_empty() {
+            let selected = select_conversation_turns(&turns, last_n);
             let messages_returned = selected.len();
-            let content = selected.iter().map(|m| {
-                let text = extract_text(&m["content"]);
-                if text.is_empty() { "[No text content]".to_string() } else { text }
-            }).collect::<Vec<String>>().join("\n---\n");
+            let content = selected
+                .iter()
+                .map(|turn| format!("{}:\n{}", turn.role.to_uppercase(), turn.text))
+                .collect::<Vec<String>>()
+                .join("\n---\n");
             return Ok(ParsedContent {
                 content: redact_sensitive_text(&content),
                 warnings,
@@ -341,23 +390,40 @@ fn parse_codex_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
             });
         }
 
-        let selected = assistant_msgs.last().cloned().or_else(|| messages.last());
-        if let Some(message) = selected {
-            let text = extract_text(&message["content"]);
+        if last_n > 1 && !assistant_msgs.is_empty() {
+            let start = assistant_msgs.len().saturating_sub(last_n);
+            let selected: Vec<&String> = assistant_msgs[start..].iter().collect();
+            let messages_returned = selected.len();
+            let content = selected
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<&str>>()
+                .join("\n---\n");
             return Ok(ParsedContent {
-                content: if text.is_empty() {
-                    "[No text content]".to_string()
-                } else {
-                    redact_sensitive_text(&text)
-                },
+                content: redact_sensitive_text(&content),
                 warnings,
                 session_id,
                 cwd: session_cwd,
                 timestamp,
                 message_count,
-                messages_returned: 1,
+                messages_returned,
             });
         }
+
+        // last assistant message, else fall back to last turn text
+        let content = assistant_msgs
+            .last()
+            .cloned()
+            .unwrap_or_else(|| turns.last().map(|t| t.text.clone()).unwrap_or_default());
+        return Ok(ParsedContent {
+            content: redact_sensitive_text(&content),
+            warnings,
+            session_id,
+            cwd: session_cwd,
+            timestamp,
+            message_count,
+            messages_returned: 1,
+        });
     }
 
     Ok(ParsedContent {
@@ -383,9 +449,10 @@ fn parse_codex_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
     })
 }
 
-fn parse_claude_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
+fn parse_claude_jsonl(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent> {
     let lines = read_jsonl_lines(path)?;
     let mut messages: Vec<String> = Vec::new();
+    let mut turns: Vec<ConversationTurn> = Vec::new();
     let mut skipped = 0usize;
     let mut session_cwd: Option<String> = None;
 
@@ -404,24 +471,32 @@ fn parse_claude_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
                     &json
                 };
 
-                let is_assistant = json["type"] == "assistant"
-                    || message["role"]
-                        .as_str()
-                        .map(|role| role.eq_ignore_ascii_case("assistant"))
-                        .unwrap_or(false);
-
-                if !is_assistant {
+                // Match Node's adapter: accept either envelope type or message.role
+                let role_from_type = json["type"].as_str().unwrap_or("").to_lowercase();
+                let role_from_msg = message["role"].as_str().unwrap_or("").to_lowercase();
+                let role = if role_from_msg == "assistant" || role_from_msg == "user" {
+                    role_from_msg
+                } else if role_from_type == "assistant" || role_from_type == "user" {
+                    role_from_type
+                } else {
                     continue;
-                }
+                };
 
                 let content_field = if message.get("content").is_some() {
                     &message["content"]
                 } else {
                     &json["content"]
                 };
-                let text = extract_claude_text(content_field);
+                let text = if opts.include_tool_calls {
+                    extract_claude_content_with_tool_calls(content_field)
+                } else {
+                    extract_claude_text(content_field)
+                };
                 if !text.is_empty() {
-                    messages.push(text);
+                    if role == "assistant" {
+                        messages.push(text.clone());
+                    }
+                    turns.push(ConversationTurn { role, text });
                 }
             }
             Err(_) => skipped += 1,
@@ -442,8 +517,28 @@ fn parse_claude_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
     let session_id = path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
 
     if !messages.is_empty() {
+        if opts.include_user {
+            let selected = select_conversation_turns(&turns, last_n);
+            let messages_returned = selected.len();
+            let content = selected
+                .iter()
+                .map(|t| format!("{}:\n{}", t.role.to_uppercase(), t.text))
+                .collect::<Vec<String>>()
+                .join("\n---\n");
+            return Ok(ParsedContent {
+                content: redact_sensitive_text(&content),
+                warnings,
+                session_id,
+                cwd: session_cwd,
+                timestamp,
+                message_count,
+                messages_returned,
+            });
+        }
+
         if last_n > 1 {
-            let selected: Vec<&String> = messages.iter().rev().take(last_n).collect::<Vec<_>>().into_iter().rev().collect();
+            let start = messages.len().saturating_sub(last_n);
+            let selected: Vec<&String> = messages[start..].iter().collect();
             let messages_returned = selected.len();
             let content = selected.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n");
             return Ok(ParsedContent {
@@ -490,7 +585,7 @@ fn parse_claude_jsonl(path: &Path, last_n: usize) -> Result<ParsedContent> {
     })
 }
 
-fn parse_gemini_json(path: &Path, last_n: usize) -> Result<ParsedContent> {
+fn parse_gemini_json(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent> {
     let meta = fs::metadata(path)?;
     if meta.len() > MAX_FILE_SIZE {
         return Err(anyhow!(
@@ -508,29 +603,55 @@ fn parse_gemini_json(path: &Path, last_n: usize) -> Result<ParsedContent> {
     let timestamp = file_modified_iso(path);
 
     if let Some(messages) = session["messages"].as_array() {
-        let assistant_count = messages.iter().filter(|m| {
-            m["type"].as_str().map(|t| {
-                let lower = t.to_ascii_lowercase();
-                lower == "gemini" || lower == "assistant" || lower == "model"
-            }).unwrap_or(false)
-        }).count();
+        // Build turns array with user + assistant roles.
+        let mut turns: Vec<ConversationTurn> = Vec::new();
+        for msg in messages {
+            let type_str = msg["type"]
+                .as_str()
+                .or_else(|| msg["role"].as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let role = if type_str == "gemini" || type_str == "assistant" || type_str == "model" {
+                "assistant"
+            } else if type_str == "user" {
+                "user"
+            } else {
+                continue;
+            };
+            // Gemini CLI stores content as string; API shape uses parts array.
+            let text = if let Some(s) = msg["content"].as_str() {
+                s.to_string()
+            } else {
+                let extracted_content = extract_text(&msg["content"]);
+                if !extracted_content.is_empty() {
+                    extracted_content
+                } else {
+                    let from_parts = extract_text(&msg["parts"]);
+                    if from_parts.is_empty() {
+                        "[No text content]".to_string()
+                    } else {
+                        from_parts
+                    }
+                }
+            };
+            turns.push(ConversationTurn { role: role.to_string(), text });
+        }
 
-        let is_assistant_msg = |m: &&Value| {
-            m["type"].as_str().map(|t| {
-                let lower = t.to_ascii_lowercase();
-                lower == "gemini" || lower == "assistant" || lower == "model"
-            }).unwrap_or(false)
-        };
+        let assistant_msgs: Vec<String> = turns
+            .iter()
+            .filter(|t| t.role == "assistant")
+            .map(|t| t.text.clone())
+            .collect();
+        let assistant_count = assistant_msgs.len();
 
-        let assistant_msgs: Vec<&Value> = messages.iter().filter(is_assistant_msg).collect();
-
-        if last_n > 1 && !assistant_msgs.is_empty() {
-            let selected: Vec<&&Value> = assistant_msgs.iter().rev().take(last_n).collect::<Vec<_>>().into_iter().rev().collect();
+        if opts.include_user && !assistant_msgs.is_empty() {
+            let selected = select_conversation_turns(&turns, last_n);
             let messages_returned = selected.len();
-            let content = selected.iter().map(|m| {
-                let text = extract_text(&m["content"]);
-                if text.is_empty() { "[No text content]".to_string() } else { text }
-            }).collect::<Vec<String>>().join("\n---\n");
+            let content = selected
+                .iter()
+                .map(|t| format!("{}:\n{}", t.role.to_uppercase(), t.text))
+                .collect::<Vec<String>>()
+                .join("\n---\n");
             return Ok(ParsedContent {
                 content: redact_sensitive_text(&content),
                 warnings: Vec::new(),
@@ -542,34 +663,37 @@ fn parse_gemini_json(path: &Path, last_n: usize) -> Result<ParsedContent> {
             });
         }
 
-        let selected = messages.iter().rev().find(is_assistant_msg).or_else(|| messages.last());
-
-        if let Some(message) = selected {
+        if last_n > 1 && !assistant_msgs.is_empty() {
+            let start = assistant_msgs.len().saturating_sub(last_n);
+            let selected: Vec<&String> = assistant_msgs[start..].iter().collect();
+            let messages_returned = selected.len();
+            let content = selected.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n");
             return Ok(ParsedContent {
-                content: {
-                    let text = extract_text(&message["content"]);
-                    if text.is_empty() {
-                        "[No text content]".to_string()
-                    } else {
-                        redact_sensitive_text(&text)
-                    }
-                },
+                content: redact_sensitive_text(&content),
                 warnings: Vec::new(),
                 session_id,
                 cwd: None,
                 timestamp,
                 message_count: assistant_count,
-                messages_returned: 1,
+                messages_returned,
             });
         }
-        return Err(anyhow!("Gemini session has no messages."));
+
+        if assistant_msgs.is_empty() {
+            return Err(anyhow!("Gemini session has no assistant messages."));
+        }
+        return Ok(ParsedContent {
+            content: redact_sensitive_text(assistant_msgs.last().unwrap()),
+            warnings: Vec::new(),
+            session_id,
+            cwd: None,
+            timestamp,
+            message_count: assistant_count,
+            messages_returned: 1,
+        });
     }
 
     if let Some(history) = session["history"].as_array() {
-        let assistant_count = history.iter().filter(|t| {
-            !t["role"].as_str().map(|r| r.eq_ignore_ascii_case("user")).unwrap_or(false)
-        }).count();
-
         let extract_turn_text = |turn: &Value| -> String {
             let parts = &turn["parts"];
             if let Some(arr) = parts.as_array() {
@@ -581,16 +705,32 @@ fn parse_gemini_json(path: &Path, last_n: usize) -> Result<ParsedContent> {
             }
         };
 
-        let is_not_user = |t: &&Value| {
-            !t["role"].as_str().map(|role| role.eq_ignore_ascii_case("user")).unwrap_or(false)
-        };
+        let mut turns: Vec<ConversationTurn> = Vec::new();
+        for t in history {
+            let role = if t["role"].as_str().map(|r| r.eq_ignore_ascii_case("user")).unwrap_or(false) {
+                "user"
+            } else {
+                "assistant"
+            };
+            let text = extract_turn_text(t);
+            turns.push(ConversationTurn { role: role.to_string(), text });
+        }
 
-        let assistant_turns: Vec<&Value> = history.iter().filter(is_not_user).collect();
+        let assistant_turns: Vec<String> = turns
+            .iter()
+            .filter(|t| t.role == "assistant")
+            .map(|t| t.text.clone())
+            .collect();
+        let assistant_count = assistant_turns.len();
 
-        if last_n > 1 && !assistant_turns.is_empty() {
-            let selected: Vec<&&Value> = assistant_turns.iter().rev().take(last_n).collect::<Vec<_>>().into_iter().rev().collect();
+        if opts.include_user && !assistant_turns.is_empty() {
+            let selected = select_conversation_turns(&turns, last_n);
             let messages_returned = selected.len();
-            let content = selected.iter().map(|t| extract_turn_text(t)).collect::<Vec<String>>().join("\n---\n");
+            let content = selected
+                .iter()
+                .map(|t| format!("{}:\n{}", t.role.to_uppercase(), t.text))
+                .collect::<Vec<String>>()
+                .join("\n---\n");
             return Ok(ParsedContent {
                 content: redact_sensitive_text(&content),
                 warnings: Vec::new(),
@@ -602,21 +742,34 @@ fn parse_gemini_json(path: &Path, last_n: usize) -> Result<ParsedContent> {
             });
         }
 
-        let selected = history.iter().rev().find(is_not_user).or_else(|| history.last());
-        if let Some(turn) = selected {
-            let text = extract_turn_text(turn);
+        if last_n > 1 && !assistant_turns.is_empty() {
+            let start = assistant_turns.len().saturating_sub(last_n);
+            let selected: Vec<&String> = assistant_turns[start..].iter().collect();
+            let messages_returned = selected.len();
+            let content = selected.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n");
             return Ok(ParsedContent {
-                content: redact_sensitive_text(&text),
+                content: redact_sensitive_text(&content),
                 warnings: Vec::new(),
                 session_id,
                 cwd: None,
                 timestamp,
                 message_count: assistant_count,
-                messages_returned: 1,
+                messages_returned,
             });
         }
 
-        return Err(anyhow!("Gemini history is empty."));
+        if assistant_turns.is_empty() {
+            return Err(anyhow!("Gemini history is empty."));
+        }
+        return Ok(ParsedContent {
+            content: redact_sensitive_text(assistant_turns.last().unwrap()),
+            warnings: Vec::new(),
+            session_id,
+            cwd: None,
+            timestamp,
+            message_count: assistant_count,
+            messages_returned: 1,
+        });
     }
 
     Err(anyhow!(
@@ -666,6 +819,154 @@ pub(crate) fn extract_claude_text(value: &Value) -> String {
     }
 
     String::new()
+}
+
+/// Claude content extraction that preserves tool_use/tool_result blocks as
+/// bracketed sections, mirroring Node's `extractClaudeContentWithToolCalls`.
+pub(crate) fn extract_claude_content_with_tool_calls(value: &Value) -> String {
+    if let Some(raw) = value.as_str() {
+        return raw.to_string();
+    }
+
+    let Some(parts) = value.as_array() else {
+        return String::new();
+    };
+
+    parts
+        .iter()
+        .filter_map(|part| {
+            let ty = part["type"].as_str().unwrap_or("");
+            match ty {
+                "text" => {
+                    let txt = part["text"].as_str().unwrap_or("");
+                    if txt.is_empty() {
+                        None
+                    } else {
+                        Some(txt.to_string())
+                    }
+                }
+                "tool_use" => {
+                    let name = part["name"].as_str().unwrap_or("unknown");
+                    let input_str = serde_json::to_string_pretty(&part["input"])
+                        .unwrap_or_else(|_| part["input"].to_string());
+                    Some(format!("[TOOL: {}]\n{}\n[/TOOL]", name, input_str))
+                }
+                "tool_result" => {
+                    let tool_id = part["tool_use_id"].as_str().unwrap_or("");
+                    let content = if let Some(s) = part["content"].as_str() {
+                        s.to_string()
+                    } else if let Some(arr) = part["content"].as_array() {
+                        arr.iter()
+                            .map(|c| c["text"].as_str().unwrap_or(""))
+                            .collect::<Vec<&str>>()
+                            .join("")
+                    } else {
+                        String::new()
+                    };
+                    Some(format!("[TOOL_RESULT: {}]\n{}\n[/TOOL_RESULT]", tool_id, content))
+                }
+                _ => None,
+            }
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// Generic (non-Claude) content extraction that preserves function_call /
+/// tool_use blocks. Mirrors Node's `extractContentWithToolCalls`.
+pub(crate) fn extract_text_with_tool_calls(value: &Value) -> String {
+    if let Some(raw) = value.as_str() {
+        return raw.to_string();
+    }
+
+    let Some(parts) = value.as_array() else {
+        return String::new();
+    };
+
+    parts
+        .iter()
+        .filter_map(|part| {
+            if let Some(raw) = part.as_str() {
+                return Some(raw.to_string());
+            }
+            if let Some(txt) = part["text"].as_str() {
+                return Some(txt.to_string());
+            }
+            let ty = part["type"].as_str().unwrap_or("");
+            if ty == "function_call" {
+                let name = part["name"].as_str().unwrap_or("unknown");
+                let arg_str = if let Some(s) = part["arguments"].as_str() {
+                    s.to_string()
+                } else {
+                    serde_json::to_string_pretty(&part["arguments"])
+                        .unwrap_or_else(|_| part["arguments"].to_string())
+                };
+                return Some(format!("[TOOL: {}]\n{}\n[/TOOL]", name, arg_str));
+            }
+            if ty == "tool_use" {
+                let name = part["name"].as_str().unwrap_or("unknown");
+                let input_str = serde_json::to_string_pretty(&part["input"])
+                    .unwrap_or_else(|_| part["input"].to_string());
+                return Some(format!("[TOOL: {}]\n{}\n[/TOOL]", name, input_str));
+            }
+            None
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// A single turn in a reconstructed conversation, used by `--include-user`
+/// interleaving.  Role is always "user" or "assistant".
+#[derive(Debug, Clone)]
+pub(crate) struct ConversationTurn {
+    pub role: String,
+    pub text: String,
+}
+
+/// Select user+assistant turns for rendering `--include-user`: for each of the
+/// last `last_n` assistant turns, include the most recent preceding user turn
+/// (bounded by the previous assistant's position). Mirrors the Node per-agent
+/// `selectConversationTurns` helpers.
+pub(crate) fn select_conversation_turns(
+    turns: &[ConversationTurn],
+    last_n: usize,
+) -> Vec<ConversationTurn> {
+    let assistant_indexes: Vec<usize> = turns
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.role == "assistant")
+        .map(|(i, _)| i)
+        .collect();
+
+    if assistant_indexes.is_empty() {
+        return Vec::new();
+    }
+
+    let n = last_n.max(1);
+    let start = assistant_indexes.len().saturating_sub(n);
+    let chosen = &assistant_indexes[start..];
+
+    let mut selected: Vec<ConversationTurn> = Vec::new();
+    let mut lower_bound = 0usize;
+    for &assistant_index in chosen {
+        // Walk back from `assistant_index - 1` down to `lower_bound` inclusive,
+        // matching Node's `for (i = assistantIndex - 1; i >= lowerBound; i -= 1)`.
+        let mut user_index: Option<usize> = None;
+        let mut i = assistant_index;
+        while i > lower_bound {
+            i -= 1;
+            if turns[i].role == "user" {
+                user_index = Some(i);
+                break;
+            }
+        }
+        if let Some(ui) = user_index {
+            selected.push(turns[ui].clone());
+        }
+        selected.push(turns[assistant_index].clone());
+        lower_bound = assistant_index + 1;
+    }
+    selected
 }
 
 fn file_modified_iso(path: &Path) -> Option<String> {
@@ -1857,7 +2158,17 @@ fn cursor_base_dir() -> PathBuf {
         })
 }
 
-pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
+#[allow(dead_code)]
+pub fn read_cursor_session(id: Option<&str>, cwd: &str) -> Result<Session> {
+    read_cursor_session_with_options(id, cwd, 1, ReadOptions::default())
+}
+
+pub fn read_cursor_session_with_options(
+    id: Option<&str>,
+    _cwd: &str,
+    last_n: usize,
+    opts: ReadOptions,
+) -> Result<Session> {
     let base_dir = cursor_base_dir();
     if is_system_directory(&base_dir) {
         return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
@@ -1885,42 +2196,89 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
 
     let target_file = files[0].path.clone();
 
-    // Try JSON first, then JSONL
+    // Gather turns (user + assistant) and assistant-only messages. Both JSON
+    // and JSONL shapes supported; mirror Node's cursor adapter.
     let content_str = fs::read_to_string(&target_file)?;
-    let content = if let Ok(json) = serde_json::from_str::<Value>(&content_str) {
-        // Extract text from JSON structure
+    let mut turns: Vec<ConversationTurn> = Vec::new();
+    let mut parsed_as_json = false;
+
+    if let Ok(json) = serde_json::from_str::<Value>(&content_str) {
+        parsed_as_json = true;
         if let Some(messages) = json.get("messages").and_then(|m| m.as_array()) {
-            let assistant_msgs: Vec<String> = messages.iter()
-                .filter(|m| m["role"].as_str().map(|r| r == "assistant").unwrap_or(false))
-                .filter_map(|m| m["content"].as_str().map(|s| s.to_string()))
-                .collect();
-            if let Some(last) = assistant_msgs.last() {
-                last.clone()
-            } else {
-                "[No assistant messages found]".to_string()
+            for m in messages {
+                let role = m["role"].as_str().unwrap_or("").to_string();
+                if role != "assistant" && role != "user" {
+                    continue;
+                }
+                let text = if let Some(s) = m["content"].as_str() {
+                    s.to_string()
+                } else {
+                    serde_json::to_string(&m["content"]).unwrap_or_default()
+                };
+                turns.push(ConversationTurn { role, text });
             }
         } else if let Some(text) = json.get("content").and_then(|c| c.as_str()) {
-            text.to_string()
+            // Single-content shape — treat as a lone assistant message.
+            turns.push(ConversationTurn { role: "assistant".to_string(), text: text.to_string() });
         } else {
-            json.to_string()
+            // Unknown JSON shape — fall back to whole-doc as raw.
+            let raw = json.to_string();
+            return Ok(Session {
+                agent: "cursor",
+                content: redact_sensitive_text(&raw),
+                source: target_file.to_string_lossy().to_string(),
+                warnings: vec![cursor_warning()],
+                session_id: target_file.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
+                cwd: None,
+                timestamp: file_modified_iso(&target_file),
+                message_count: 1,
+                messages_returned: 1,
+            });
         }
     } else {
         // JSONL format
-        let mut messages = Vec::new();
         for line in content_str.lines().filter(|l| !l.is_empty()) {
             if let Ok(json) = serde_json::from_str::<Value>(line) {
-                if json["role"].as_str().map(|r| r == "assistant").unwrap_or(false) {
-                    if let Some(text) = json["content"].as_str() {
-                        messages.push(text.to_string());
-                    }
+                let role = json["role"].as_str().unwrap_or("").to_string();
+                if (role == "assistant" || role == "user") && json["content"].is_string() {
+                    turns.push(ConversationTurn {
+                        role,
+                        text: json["content"].as_str().unwrap().to_string(),
+                    });
                 }
             }
         }
-        if let Some(last) = messages.last() {
-            last.clone()
-        } else {
-            content_str.lines().rev().take(20).collect::<Vec<&str>>().into_iter().rev().collect::<Vec<&str>>().join("\n")
-        }
+    }
+
+    let assistant_msgs: Vec<String> = turns
+        .iter()
+        .filter(|t| t.role == "assistant")
+        .map(|t| t.text.clone())
+        .collect();
+    let message_count = assistant_msgs.len();
+
+    let (content, messages_returned) = if opts.include_user && !assistant_msgs.is_empty() {
+        let selected = select_conversation_turns(&turns, last_n);
+        let n = selected.len();
+        let rendered = selected
+            .iter()
+            .map(|t| format!("{}:\n{}", t.role.to_uppercase(), t.text))
+            .collect::<Vec<String>>()
+            .join("\n---\n");
+        (rendered, n)
+    } else if last_n > 1 && !assistant_msgs.is_empty() {
+        let start = assistant_msgs.len().saturating_sub(last_n);
+        let sel: Vec<&String> = assistant_msgs[start..].iter().collect();
+        let n = sel.len();
+        (sel.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n"), n)
+    } else if let Some(last) = assistant_msgs.last() {
+        (last.clone(), 1)
+    } else if parsed_as_json {
+        ("[No assistant messages found]".to_string(), 0)
+    } else {
+        // JSONL fallback: last 20 raw lines
+        let tail: Vec<&str> = content_str.lines().rev().take(20).collect::<Vec<&str>>().into_iter().rev().collect();
+        (tail.join("\n"), 0)
     };
 
     let session_id = target_file.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
@@ -1930,15 +2288,17 @@ pub fn read_cursor_session(id: Option<&str>, _cwd: &str) -> Result<Session> {
         agent: "cursor",
         content: redact_sensitive_text(&content),
         source: target_file.to_string_lossy().to_string(),
-        warnings: vec![
-            "Warning: Cursor sessions have no project scoping. Results may include sessions from unrelated projects.".to_string(),
-        ],
+        warnings: vec![cursor_warning()],
         session_id,
         cwd: None,
         timestamp,
-        message_count: 1,
-        messages_returned: 1,
+        message_count,
+        messages_returned,
     })
+}
+
+fn cursor_warning() -> String {
+    "Warning: Cursor sessions have no project scoping. Results may include sessions from unrelated projects.".to_string()
 }
 
 pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
@@ -2606,5 +2966,355 @@ mod tests {
         assert!(hint.is_none(), "missing base dir should yield no hint");
 
         let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // ============================================================
+    // ReadOptions flag tests: --include-user, --tool-calls
+    // ============================================================
+
+    use crate::adapters::ReadOptions;
+    use super::{
+        extract_claude_content_with_tool_calls, extract_text_with_tool_calls,
+        read_claude_session_with_options, read_codex_session_with_options,
+        read_gemini_session_with_options, read_cursor_session_with_options,
+        select_conversation_turns, ConversationTurn,
+    };
+    use serde_json::json;
+
+    fn claude_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn codex_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn gemini_read_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn cursor_read_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn claude_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_claude_opts_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn codex_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_codex_opts_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn gemini_fixture_read(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_gemini_opts_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn cursor_fixture_read(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_cursor_opts_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // --- select_conversation_turns pure unit test ---
+
+    #[test]
+    fn select_conversation_turns_pairs_user_with_assistant() {
+        let turns = vec![
+            ConversationTurn { role: "user".into(), text: "Q1".into() },
+            ConversationTurn { role: "assistant".into(), text: "A1".into() },
+            ConversationTurn { role: "user".into(), text: "Q2".into() },
+            ConversationTurn { role: "assistant".into(), text: "A2".into() },
+        ];
+        let out = select_conversation_turns(&turns, 1);
+        let text: Vec<(&str, &str)> = out.iter().map(|t| (t.role.as_str(), t.text.as_str())).collect();
+        assert_eq!(text, vec![("user", "Q2"), ("assistant", "A2")]);
+
+        let out2 = select_conversation_turns(&turns, 2);
+        let text2: Vec<(&str, &str)> =
+            out2.iter().map(|t| (t.role.as_str(), t.text.as_str())).collect();
+        assert_eq!(
+            text2,
+            vec![
+                ("user", "Q1"),
+                ("assistant", "A1"),
+                ("user", "Q2"),
+                ("assistant", "A2"),
+            ]
+        );
+    }
+
+    #[test]
+    fn select_conversation_turns_bounds_prevent_stealing_previous_user() {
+        // Two assistant turns with only one user prompt in between the first
+        // one. The second assistant should not claim the first assistant's
+        // user because lower_bound stops it.
+        let turns = vec![
+            ConversationTurn { role: "user".into(), text: "Q1".into() },
+            ConversationTurn { role: "assistant".into(), text: "A1".into() },
+            ConversationTurn { role: "assistant".into(), text: "A2".into() },
+        ];
+        let out = select_conversation_turns(&turns, 2);
+        let labels: Vec<(&str, &str)> = out.iter().map(|t| (t.role.as_str(), t.text.as_str())).collect();
+        assert_eq!(labels, vec![("user", "Q1"), ("assistant", "A1"), ("assistant", "A2")]);
+    }
+
+    // --- Claude: include_user / tool-calls ---
+
+    fn write_claude_session(dir: &std::path::Path, id: &str, lines: &[serde_json::Value]) -> std::path::PathBuf {
+        let proj = dir.join("-tmp-test-claude");
+        std::fs::create_dir_all(&proj).unwrap();
+        let file = proj.join(format!("{}.jsonl", id));
+        let body = lines
+            .iter()
+            .map(|l| serde_json::to_string(l).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&file, body).unwrap();
+        file
+    }
+
+    #[test]
+    fn claude_include_user_interleaves_turns() {
+        let _guard = claude_env_lock();
+        let fixture = claude_fixture("include_user");
+        let cwd = "/tmp/test-proj";
+        let _ = write_claude_session(&fixture, "sess", &[
+            json!({ "type": "user",      "cwd": cwd, "message": { "role": "user",      "content": [{ "type": "text", "text": "Please run the thing" }] } }),
+            json!({ "type": "assistant", "cwd": cwd, "message": { "role": "assistant", "content": [{ "type": "text", "text": "I ran the thing." }] } }),
+            json!({ "type": "user",      "cwd": cwd, "message": { "role": "user",      "content": [{ "type": "text", "text": "Now do the next step" }] } }),
+            json!({ "type": "assistant", "cwd": cwd, "message": { "role": "assistant", "content": [{ "type": "text", "text": "Next step done." }] } }),
+        ]);
+
+        std::env::set_var("CHORUS_CLAUDE_PROJECTS_DIR", &fixture);
+        let opts = ReadOptions { include_user: true, include_tool_calls: false };
+        let session = read_claude_session_with_options(None, cwd, 2, opts).expect("read");
+        std::env::remove_var("CHORUS_CLAUDE_PROJECTS_DIR");
+
+        assert!(session.content.contains("USER:"), "missing USER header: {}", session.content);
+        assert!(session.content.contains("ASSISTANT:"), "missing ASSISTANT header: {}", session.content);
+        assert!(session.content.contains("Please run the thing"), "missing first user: {}", session.content);
+        assert!(session.content.contains("Next step done."), "missing last assistant: {}", session.content);
+        assert!(session.content.contains("---"), "missing separator: {}", session.content);
+        // 4 selected: u/a/u/a
+        assert_eq!(session.messages_returned, 4);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn claude_tool_calls_emits_tool_use_input() {
+        let _guard = claude_env_lock();
+        let fixture = claude_fixture("tool_calls");
+        let cwd = "/tmp/test-proj";
+        let _ = write_claude_session(&fixture, "sess_tc", &[
+            json!({ "type": "assistant", "cwd": cwd, "message": { "role": "assistant", "content": [
+                { "type": "text", "text": "Reading the file." },
+                { "type": "tool_use", "name": "Read", "input": { "file_path": "/tmp/thing.txt" } },
+                { "type": "text", "text": "Done." }
+            ] } }),
+        ]);
+
+        std::env::set_var("CHORUS_CLAUDE_PROJECTS_DIR", &fixture);
+        let opts = ReadOptions { include_user: false, include_tool_calls: true };
+        let session = read_claude_session_with_options(None, cwd, 1, opts).expect("read");
+        std::env::remove_var("CHORUS_CLAUDE_PROJECTS_DIR");
+
+        assert!(session.content.contains("[TOOL: Read]"), "tool header missing: {}", session.content);
+        assert!(session.content.contains("/tmp/thing.txt"), "tool input missing: {}", session.content);
+        assert!(session.content.contains("[/TOOL]"), "tool footer missing: {}", session.content);
+
+        // Without tool-calls flag, the Read block is elided
+        std::env::set_var("CHORUS_CLAUDE_PROJECTS_DIR", &fixture);
+        let baseline = read_claude_session_with_options(None, cwd, 1, ReadOptions::default()).expect("read2");
+        std::env::remove_var("CHORUS_CLAUDE_PROJECTS_DIR");
+        assert!(!baseline.content.contains("[TOOL:"), "baseline should not render tool: {}", baseline.content);
+        assert!(baseline.content.contains("Reading the file."), "baseline missing first text: {}", baseline.content);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // --- Codex: include_tool_calls ---
+
+    #[test]
+    fn codex_tool_calls_emits_function_call_arguments() {
+        let _guard = codex_env_lock();
+        let fixture = codex_fixture("tool_calls");
+        let cwd = "/tmp/test-codex";
+        let file = fixture.join("session-tc.jsonl");
+        let lines = vec![
+            json!({ "type": "session_meta", "payload": { "session_id": "sid", "cwd": cwd } }),
+            json!({ "type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "content": [
+                    { "text": "Let me call a function." },
+                    { "type": "function_call", "name": "shell", "arguments": "{\"command\":\"ls\"}" }
+                ]
+            }}),
+        ];
+        let body = lines.iter().map(|l| serde_json::to_string(l).unwrap()).collect::<Vec<_>>().join("\n");
+        std::fs::write(&file, body).unwrap();
+
+        std::env::set_var("CHORUS_CODEX_SESSIONS_DIR", &fixture);
+        let opts = ReadOptions { include_user: false, include_tool_calls: true };
+        let session = read_codex_session_with_options(None, cwd, 1, opts).expect("read");
+        std::env::remove_var("CHORUS_CODEX_SESSIONS_DIR");
+
+        assert!(session.content.contains("[TOOL: shell]"), "missing tool header: {}", session.content);
+        assert!(session.content.contains("ls"), "missing tool args: {}", session.content);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn codex_include_user_interleaves() {
+        let _guard = codex_env_lock();
+        let fixture = codex_fixture("include_user");
+        let cwd = "/tmp/test-codex-iu";
+        let file = fixture.join("session-iu.jsonl");
+        let lines = vec![
+            json!({ "type": "session_meta", "payload": { "session_id": "sid", "cwd": cwd } }),
+            json!({ "type": "response_item", "payload": {
+                "type": "message", "role": "user", "content": [{ "text": "Question one" }]
+            }}),
+            json!({ "type": "response_item", "payload": {
+                "type": "message", "role": "assistant", "content": [{ "text": "Answer one" }]
+            }}),
+        ];
+        let body = lines.iter().map(|l| serde_json::to_string(l).unwrap()).collect::<Vec<_>>().join("\n");
+        std::fs::write(&file, body).unwrap();
+
+        std::env::set_var("CHORUS_CODEX_SESSIONS_DIR", &fixture);
+        let opts = ReadOptions { include_user: true, include_tool_calls: false };
+        let session = read_codex_session_with_options(None, cwd, 1, opts).expect("read");
+        std::env::remove_var("CHORUS_CODEX_SESSIONS_DIR");
+
+        assert!(session.content.contains("USER:"), "missing USER: {}", session.content);
+        assert!(session.content.contains("Question one"), "missing user text: {}", session.content);
+        assert!(session.content.contains("Answer one"), "missing assistant text: {}", session.content);
+        assert_eq!(session.messages_returned, 2);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // --- Gemini: include_user over messages schema ---
+
+    #[test]
+    fn gemini_include_user_interleaves_messages() {
+        let _guard = gemini_read_env_lock();
+        let fixture = gemini_fixture_read("include_user");
+        // Hash for cwd — not important, we'll use chats_dir to pin.
+        let chats_dir = fixture.join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+        let session_file = chats_dir.join("session-iu.json");
+        let body = json!({
+            "sessionId": "sid",
+            "messages": [
+                { "type": "user",   "content": "Prompt alpha" },
+                { "type": "gemini", "content": "Reply alpha"  },
+                { "type": "user",   "content": "Prompt beta"  },
+                { "type": "gemini", "content": "Reply beta"   }
+            ]
+        });
+        std::fs::write(&session_file, serde_json::to_string(&body).unwrap()).unwrap();
+
+        let opts = ReadOptions { include_user: true, include_tool_calls: false };
+        let session = read_gemini_session_with_options(
+            None,
+            "/tmp/ignored",
+            Some(chats_dir.to_str().unwrap()),
+            2,
+            opts,
+        ).expect("read");
+
+        assert!(session.content.contains("USER:"), "missing USER: {}", session.content);
+        assert!(session.content.contains("Prompt alpha"), "{}", session.content);
+        assert!(session.content.contains("Reply beta"), "{}", session.content);
+        assert_eq!(session.messages_returned, 4);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // --- Cursor: include_user over JSON messages ---
+
+    #[test]
+    fn cursor_include_user_interleaves() {
+        let _guard = cursor_read_env_lock();
+        let fixture = cursor_fixture_read("include_user");
+        let ws = fixture.join("User").join("workspaceStorage").join("ws1");
+        std::fs::create_dir_all(&ws).unwrap();
+        let chat_file = ws.join("chat.json");
+        let body = json!({
+            "messages": [
+                { "role": "user",      "content": "Hello cursor" },
+                { "role": "assistant", "content": "Hi!" },
+                { "role": "user",      "content": "Second request" },
+                { "role": "assistant", "content": "Second response" }
+            ]
+        });
+        std::fs::write(&chat_file, serde_json::to_string(&body).unwrap()).unwrap();
+
+        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        let opts = ReadOptions { include_user: true, include_tool_calls: false };
+        let session = read_cursor_session_with_options(None, "/tmp/ignored", 2, opts).expect("read");
+        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+
+        assert!(session.content.contains("USER:\nHello cursor"), "{}", session.content);
+        assert!(session.content.contains("ASSISTANT:\nSecond response"), "{}", session.content);
+        assert_eq!(session.messages_returned, 4);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // --- Pure extraction helper tests ---
+
+    #[test]
+    fn extract_claude_content_with_tool_calls_emits_tool_use_block() {
+        let v = json!([
+            { "type": "text", "text": "Hello" },
+            { "type": "tool_use", "name": "Bash", "input": { "command": "ls" } }
+        ]);
+        let out = extract_claude_content_with_tool_calls(&v);
+        assert!(out.contains("Hello"));
+        assert!(out.contains("[TOOL: Bash]"));
+        assert!(out.contains("\"command\""));
+        assert!(out.contains("[/TOOL]"));
+    }
+
+    #[test]
+    fn extract_text_with_tool_calls_emits_function_call_block() {
+        let v = json!([
+            { "text": "text part" },
+            { "type": "function_call", "name": "shell", "arguments": "{\"x\":1}" }
+        ]);
+        let out = extract_text_with_tool_calls(&v);
+        assert!(out.contains("text part"));
+        assert!(out.contains("[TOOL: shell]"));
+        assert!(out.contains("\"x\":1"));
+        assert!(out.contains("[/TOOL]"));
     }
 }

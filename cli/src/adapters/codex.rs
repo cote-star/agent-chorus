@@ -1,4 +1,4 @@
-use super::AgentAdapter;
+use super::{AgentAdapter, ReadOptions};
 use crate::agents::{self, Session};
 use anyhow::Result;
 use serde_json::Value;
@@ -6,14 +6,15 @@ use serde_json::Value;
 pub struct CodexAdapter;
 
 impl AgentAdapter for CodexAdapter {
-    fn read_session(
+    fn read_session_with_options(
         &self,
         id: Option<&str>,
         cwd: &str,
         _chats_dir: Option<&str>,
         last_n: usize,
+        opts: ReadOptions,
     ) -> Result<Session> {
-        agents::read_codex_session_with_last(id, cwd, last_n)
+        agents::read_codex_session_with_options(id, cwd, last_n, opts)
     }
 
     fn list_sessions(&self, cwd: Option<&str>, limit: usize) -> Result<Vec<Value>> {

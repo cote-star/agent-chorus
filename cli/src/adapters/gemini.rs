@@ -1,4 +1,4 @@
-use super::AgentAdapter;
+use super::{AgentAdapter, ReadOptions};
 use crate::agents::{self, Session};
 use anyhow::Result;
 use serde_json::Value;
@@ -6,14 +6,15 @@ use serde_json::Value;
 pub struct GeminiAdapter;
 
 impl AgentAdapter for GeminiAdapter {
-    fn read_session(
+    fn read_session_with_options(
         &self,
         id: Option<&str>,
         cwd: &str,
         chats_dir: Option<&str>,
         last_n: usize,
+        opts: ReadOptions,
     ) -> Result<Session> {
-        agents::read_gemini_session_with_last(id, cwd, chats_dir, last_n)
+        agents::read_gemini_session_with_options(id, cwd, chats_dir, last_n, opts)
     }
 
     fn list_sessions(&self, cwd: Option<&str>, limit: usize) -> Result<Vec<Value>> {

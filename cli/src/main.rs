@@ -62,6 +62,18 @@ enum Commands {
         /// Include redaction audit trail in output
         #[arg(long)]
         audit_redactions: bool,
+
+        /// Interleave each user prompt with the assistant turn that followed it
+        #[arg(long)]
+        include_user: bool,
+
+        /// Render tool-call blocks with their input arguments
+        #[arg(long = "tool-calls")]
+        tool_calls: bool,
+
+        /// Output format: json | md | markdown (default: text)
+        #[arg(long)]
+        format: Option<String>,
     },
 
     /// Compare sources and return an analyze-mode report
@@ -592,7 +604,7 @@ fn main() {
 
 fn is_json_mode(command: &Commands) -> bool {
     match command {
-        Commands::Read { json, .. } => *json,
+        Commands::Read { json, format, .. } => *json || is_json_format(format.as_deref()),
         Commands::Compare { json, .. } => *json,
         Commands::Report { json, .. } => *json,
         Commands::List { json, .. } => *json,
@@ -625,16 +637,24 @@ fn run(cli: Cli) -> Result<()> {
             json,
             metadata_only,
             audit_redactions,
+            include_user,
+            tool_calls,
+            format,
         } => {
             let effective_cwd = effective_cwd(cwd);
             let last_n = last.max(1);
             let adapter = adapters::get_adapter(agent.as_str())
                 .with_context(|| format!("Unsupported agent: {}", agent.as_str()))?;
-            let session = adapter.read_session(
+            let opts = adapters::ReadOptions {
+                include_user,
+                include_tool_calls: tool_calls,
+            };
+            let session = adapter.read_session_with_options(
                 id.as_deref(),
                 &effective_cwd,
                 chats_dir.as_deref(),
                 last_n,
+                opts,
             )?;
 
             // If audit mode requested, re-run redaction with audit on the raw content
@@ -645,7 +665,21 @@ fn run(cli: Cli) -> Result<()> {
                 None
             };
 
-            if json {
+            let included_roles: Vec<&'static str> = if include_user {
+                vec!["user", "assistant"]
+            } else {
+                vec!["assistant"]
+            };
+
+            // Format resolution: --json wins when set. Otherwise --format md/markdown → markdown.
+            // --format json is also honored as an explicit alias for --json (Node's CLI
+            // ignores format=json and falls through to text; we match the documented
+            // semantics instead — see report).
+            let format_str = format.as_deref();
+            let want_json = json || is_json_format(format_str);
+            let want_markdown = !want_json && is_markdown_format(format_str);
+
+            if want_json {
                 let content_value = if metadata_only {
                     serde_json::Value::Null
                 } else {
@@ -662,7 +696,14 @@ fn run(cli: Cli) -> Result<()> {
                     "timestamp": session.timestamp,
                     "message_count": session.message_count,
                     "messages_returned": session.messages_returned,
+                    "included_roles": included_roles,
                 });
+                if tool_calls {
+                    report.as_object_mut().unwrap().insert(
+                        "included_tool_calls".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
                 if let Some(ref audit) = redaction_audit {
                     report.as_object_mut().unwrap().insert(
                         "redactions".to_string(),
@@ -670,6 +711,8 @@ fn run(cli: Cli) -> Result<()> {
                     );
                 }
                 println!("{}", serde_json::to_string_pretty(&report)?);
+            } else if want_markdown {
+                println!("{}", utils::sanitize_for_terminal(&render_read_as_markdown(&session)));
             } else {
                 for warning in &session.warnings {
                     eprintln!("{}", utils::sanitize_for_terminal(warning));
@@ -1158,6 +1201,43 @@ fn effective_cwd(cwd: Option<String>) -> String {
 
 fn is_markdown_format(fmt: Option<&str>) -> bool {
     matches!(fmt, Some("markdown" | "md"))
+}
+
+fn is_json_format(fmt: Option<&str>) -> bool {
+    matches!(fmt, Some("json"))
+}
+
+/// Render the session as markdown, mirroring Node's `renderReadAsMarkdown`.
+fn render_read_as_markdown(session: &agents::Session) -> String {
+    let label = format_agent_name(session.agent);
+    let source_basename = std::path::Path::new(&session.source)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(session.source.as_str())
+        .to_string();
+    let session_id = session.session_id.as_deref().unwrap_or("(unknown)");
+    let cwd = session.cwd.as_deref().unwrap_or("(unknown)");
+    let mut lines = vec![
+        format!("## {} Session: {}", label, session_id),
+        String::new(),
+        "| Field | Value |".to_string(),
+        "|---|---|".to_string(),
+        format!("| Source | `{}` |", source_basename),
+        format!("| CWD | `{}` |", cwd),
+        format!("| Messages | {} of {} |", session.messages_returned, session.message_count),
+    ];
+    if let Some(ts) = &session.timestamp {
+        lines.push(format!("| Timestamp | {} |", ts));
+    }
+    lines.push(String::new());
+    lines.push("---".to_string());
+    lines.push(String::new());
+    if session.content.is_empty() {
+        lines.push("(no content)".to_string());
+    } else {
+        lines.push(session.content.clone());
+    }
+    lines.join("\n")
 }
 
 fn format_agent_name(agent: &str) -> &'static str {
