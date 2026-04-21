@@ -624,7 +624,7 @@ fn parse_gemini_json(path: &Path, last_n: usize) -> Result<ParsedContent> {
     ))
 }
 
-fn extract_text(value: &Value) -> String {
+pub(crate) fn extract_text(value: &Value) -> String {
     if let Some(raw) = value.as_str() {
         return raw.to_string();
     }
@@ -646,7 +646,7 @@ fn extract_text(value: &Value) -> String {
     String::new()
 }
 
-fn extract_claude_text(value: &Value) -> String {
+pub(crate) fn extract_claude_text(value: &Value) -> String {
     if let Some(raw) = value.as_str() {
         return raw.to_string();
     }
@@ -701,7 +701,7 @@ fn epoch_days_to_date(days: u64) -> (u64, u64, u64) {
     (y, m, d)
 }
 
-fn read_jsonl_lines(path: &Path) -> Result<Vec<String>> {
+pub(crate) fn read_jsonl_lines(path: &Path) -> Result<Vec<String>> {
     let meta = fs::metadata(path)?;
     if meta.len() > MAX_FILE_SIZE {
         return Err(anyhow!(
@@ -1108,7 +1108,7 @@ fn path_contains(path: &Path, needle: &str) -> bool {
     path.to_string_lossy().contains(needle)
 }
 
-fn redact_sensitive_text(input: &str) -> String {
+pub(crate) fn redact_sensitive_text(input: &str) -> String {
     let step1 = redact_openai_like_keys(input);
     let step2 = redact_aws_access_keys(&step1);
     let step3 = redact_github_tokens(&step2);

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-chorus.dev/schemas/timeline-output.schema.json",
+  "title": "Chorus Timeline Output",
+  "type": "object",
+  "required": ["chorus_output_version", "timeline"],
+  "properties": {
+    "chorus_output_version": { "type": "integer", "const": 1 },
+    "timeline": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["agent", "session_id"],
+        "properties": {
+          "timestamp": { "type": ["string", "null"] },
+          "agent": { "type": "string" },
+          "session_id": { "type": "string" },
+          "cwd": { "type": ["string", "null"] },
+          "snippet": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "agents_included": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "cwd": { "type": "string" },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

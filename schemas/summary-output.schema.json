@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-chorus.dev/schemas/summary-output.schema.json",
+  "title": "Chorus Summary Output",
+  "type": "object",
+  "required": ["chorus_output_version", "agent", "session_id"],
+  "properties": {
+    "chorus_output_version": { "type": "integer", "const": 1 },
+    "agent": { "type": "string", "enum": ["codex", "gemini", "claude", "cursor"] },
+    "session_id": { "type": "string" },
+    "cwd": { "type": "string" },
+    "source": { "type": "string" },
+    "message_count": { "type": "integer", "minimum": 0 },
+    "duration_estimate": { "type": ["string", "null"] },
+    "user_requests": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 5
+    },
+    "files_referenced": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "tool_calls_by_type": {
+      "type": "object",
+      "additionalProperties": { "type": "integer", "minimum": 0 }
+    },
+    "last_response_snippet": { "type": ["string", "null"] },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

@@ -6,6 +6,8 @@ pub mod diff;
 pub mod messaging;
 pub mod relevance;
 mod report;
+mod summary;
+mod timeline;
 mod utils;
 pub mod update_check;
 mod teardown;
@@ -288,6 +290,56 @@ enum Commands {
         json: bool,
     },
 
+    /// Session digest: files, tools, duration, user requests
+    Summary {
+        /// Agent to summarize
+        #[arg(long, value_enum)]
+        agent: AgentType,
+
+        /// Session ID or UUID (substring match)
+        #[arg(long)]
+        id: Option<String>,
+
+        /// Working directory to scope search
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Explicit path to chats directory (Gemini only)
+        #[arg(long)]
+        chats_dir: Option<String>,
+
+        /// Output format: json | md | markdown (default: text)
+        #[arg(long)]
+        format: Option<String>,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Cross-agent chronological view of recent sessions
+    Timeline {
+        /// Agent to include (repeatable; default: all)
+        #[arg(long)]
+        agent: Vec<String>,
+
+        /// Working directory to scope search
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Maximum sessions per agent
+        #[arg(long, default_value = "5")]
+        limit: usize,
+
+        /// Output format: json | md | markdown (default: text)
+        #[arg(long)]
+        format: Option<String>,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
     #[cfg(feature = "update-check")]
     #[command(hide = true)]
     UpdateWorker,
@@ -516,6 +568,8 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::Messages { json, .. } => *json,
         Commands::Checkpoint { json, .. } => *json,
         Commands::Teardown { json, .. } => *json,
+        Commands::Summary { json, .. } => *json,
+        Commands::Timeline { json, .. } => *json,
         Commands::AgentContext { .. } | Commands::ContextPack { .. } => false,
         #[cfg(feature = "update-check")]
         Commands::UpdateWorker => false,
@@ -898,6 +952,35 @@ fn run(cli: Cli) -> Result<()> {
         Commands::AgentContext { command } => {
             handle_context_pack(command)?;
         }
+        Commands::Summary { agent, id, cwd, chats_dir, format, json } => {
+            let effective_cwd = effective_cwd(cwd);
+            let result = summary::build_summary(
+                agent.as_str(),
+                id.as_deref(),
+                &effective_cwd,
+                chats_dir.as_deref(),
+            )?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+            } else if is_markdown_format(format.as_deref()) {
+                println!("{}", utils::sanitize_for_terminal(&result.to_markdown()));
+            } else {
+                print!("{}", utils::sanitize_for_terminal(&result.to_text()));
+            }
+        }
+        Commands::Timeline { agent, cwd, limit, format, json } => {
+            let effective_cwd = effective_cwd(cwd);
+            let result = timeline::build_timeline(&agent, &effective_cwd, limit)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+            } else if is_markdown_format(format.as_deref()) {
+                println!("{}", utils::sanitize_for_terminal(&result.to_markdown()));
+            } else {
+                print!("{}", utils::sanitize_for_terminal(&result.to_text()));
+            }
+        }
         #[cfg(feature = "update-check")]
         Commands::UpdateWorker => {
             update_check::run_worker();
@@ -1014,6 +1097,10 @@ fn effective_cwd(cwd: Option<String>) -> String {
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string())
     })
+}
+
+fn is_markdown_format(fmt: Option<&str>) -> bool {
+    matches!(fmt, Some("markdown" | "md"))
 }
 
 fn format_agent_name(agent: &str) -> &'static str {
