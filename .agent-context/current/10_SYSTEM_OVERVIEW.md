@@ -1,8 +1,8 @@
 # System Overview
 
 ## Product Shape
-- npm package: `agent-chorus` v0.12.2 (binaries: `chorus`, `chorus-node`)
-- Rust crate: `agent-chorus` v0.12.2 (binary: `chorus`)
+- npm package: `agent-chorus` v0.13.0 (binaries: `chorus`, `chorus-node`)
+- Rust crate: `agent-chorus` v0.13.0 (binary: `chorus`)
 - ~130 tracked files across Node scripts, Rust source, schemas, fixtures, and docs
 - Ships as a global CLI tool (`npm install -g agent-chorus`)
 
@@ -22,18 +22,19 @@
 ## Command/API Surface
 | Command | Intent | Primary Source Files |
 | --- | --- | --- |
-| `chorus read` | Read a single agent session (supports `--tool-calls` surfacing, `--format markdown`, `--include-user` pairing — v0.11.0) | `agents.rs`, `read_session.cjs` |
+| `chorus read` | Read a single agent session. Supports `--tool-calls`, `--format {json\|md\|markdown}`, `--include-user` in **both** Node and Rust (Rust parity landed in v0.13.0). Node `--format json` has a known fall-through bug — use `--json`. | `agents.rs`, `read_session.cjs` |
 | `chorus list` | List sessions for an agent | `agents.rs`, `read_session.cjs` |
 | `chorus search` | Search session content | `agents.rs`, `read_session.cjs` |
 | `chorus compare` | Compare sessions across agents | `agents.rs`, `read_session.cjs` |
 | `chorus report` | Generate handoff coordinator report | `report.rs`, `read_session.cjs` |
 | `chorus diff` | Line-level diff between sessions | `diff.rs`, `read_session.cjs` |
-| `chorus summary` | Structured session digest (metadata-only, no LLM call) — v0.11.0 Node-only | `read_session.cjs` |
-| `chorus timeline` | Cross-agent chronological interleave — v0.11.0 Node-only | `read_session.cjs` |
+| `chorus summary` | Structured session digest (metadata-only, no LLM call). Node + Rust parity since v0.13.0. | `summary.rs`, `read_session.cjs` |
+| `chorus timeline` | Cross-agent chronological interleave. Node + Rust parity since v0.13.0. | `timeline.rs`, `read_session.cjs` |
 | `chorus relevance` | Inspect agent-context relevance patterns | `relevance.rs`, `relevance.cjs` |
 | `chorus send` / `messages` | Agent-to-agent messaging | `messaging.rs`, `read_session.cjs` |
 | `chorus checkpoint --from <agent>` | Broadcast git state to every other agent (v0.12.0) | `checkpoint.rs`, `read_session.cjs` |
-| `chorus setup` / `doctor` | Bootstrap and diagnose installation | `main.rs`, `read_session.cjs` |
+| `chorus setup` | Wire chorus into a project (scaffolding, managed blocks, gitignore, Claude Code plugin). Node + Rust parity since v0.13.0. | `setup.rs`, `read_session.cjs` |
+| `chorus doctor` | Diagnose installation, per-agent session discovery, pack state. Node + Rust parity since v0.13.0. | `doctor.rs`, `read_session.cjs` |
 | `chorus teardown` | Cleanly reverse setup | `read_session.cjs` |
 | `chorus agent-context init/seal/build` | Init, seal, build context packs | `agent_context.rs`, `agent_context/*.cjs` |
 | `chorus agent-context verify` | Verify context pack completeness (interactive or `--ci` mode) | `agent_context.rs`, `scripts/agent_context/verify.cjs`, `templates/ci-agent-context.yml` |
@@ -48,6 +49,12 @@
 - `chorus read --agent gemini` probes `~/.gemini/<profile>/conversations/*.pb` when JSONL lookup misses. If `.pb` files exist, the `NOT_FOUND` error names the count, the directory, and points at `--chats-dir` + the handoff guide instead of returning the bare message.
 - `chorus read --agent cursor` probes `User/workspaceStorage/<workspace-id>/state.vscdb` when file-based lookup misses. Mirror of the Gemini change. Full SQLite-backed reading is a follow-up; the probe alone turns opaque `NOT_FOUND` into actionable guidance.
 - Both probes live in `cli/src/agents.rs` as `detect_gemini_pb_fallback_hint` / `detect_cursor_vscdb_fallback_hint`; the bare messages are composed by `gemini_not_found_message` / `cursor_not_found_message`.
+
+## Full Rust Parity (v0.13.0)
+- `cli/src/summary.rs`, `cli/src/timeline.rs`, `cli/src/doctor.rs`, `cli/src/setup.rs` ship the four previously-Node-only subcommands. Output shape matches the Node implementation byte-for-byte against shared golden fixtures in `fixtures/golden/`.
+- `cli/src/agents.rs` carries a `ReadOptions` struct plus `_with_options` variants of the read functions that take `include_user`, `include_tool_calls`, and the rendering format. Rust treats `--format json` as an alias for `--json`; Node has a documented fall-through bug at `scripts/read_session.cjs:1759` where `--format json` produces plain text. Use `--json` on both runtimes for JSON.
+- `--tool-calls` on Gemini and Cursor is a no-op in both runtimes — those adapters do not parse a tool-call schema from their stores yet. Flag succeeds silently; no `[TOOL: ...]` blocks appear in output. Tracked for a follow-up.
+- Rust test suite: 52 tests (29 previously, 23 new for the v0.13.0 parity work).
 
 ## Tracked Path Density
 | Directory | Files | Content |

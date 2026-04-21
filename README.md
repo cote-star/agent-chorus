@@ -2,7 +2,7 @@
 
 ![CI Status](https://github.com/cote-star/agent-chorus/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.12.2-green.svg)
+![Version](https://img.shields.io/badge/version-0.13.0-green.svg)
 [![Star History](https://img.shields.io/github/stars/cote-star/agent-chorus?style=social)](https://github.com/cote-star/agent-chorus)
 
 **Let your AI agents talk about each other.**
@@ -250,9 +250,9 @@ Full multi-agent coverage. No other tool matches this breadth across 4 agents an
 | **Messaging**         |  Yes  |  Yes   |  Yes   |  Yes   |
 | **Session Handoff**   |  Yes  |  Yes   |  Yes   |  Yes   |
 
-*\*New in v0.11.0. These four features are Node-only; Rust parity is still pending (tracked on the roadmap).*
+*\*Added in v0.11.0. As of v0.13.0, all four features have Rust parity and are conformance-tested against shared golden fixtures. `--tool-calls` on Gemini and Cursor is a no-op in both runtimes — those adapters don't yet parse a tool-call schema.*
 
-Both Node.js and Rust implementations pass identical conformance tests against shared fixtures for core commands.
+Both Node.js and Rust implementations pass identical conformance tests against shared fixtures for every command listed above.
 
 ## Key Capabilities
 
@@ -443,7 +443,6 @@ Full agent-context internals, sync policy, layered model, and enforcement detail
 
 ## Roadmap
 
-- **Rust parity for v0.11.0** - summary, timeline, tool-calls, and markdown output in the Rust CLI (still pending).
 - **Context Pack customization** - user-defined doc structure, custom sections, team templates.
 - **Windows installation** - native Windows support (currently macOS/Linux).
 - **Cross-agent context sharing** - agents share context snippets (still read-only, still local).

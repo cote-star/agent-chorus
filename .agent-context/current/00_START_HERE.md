@@ -2,9 +2,9 @@
 
 ## Snapshot
 - Repo: `agent-chorus`
-- Branch at generation: `chore/v0.12.2-holistic-refresh`
-- HEAD commit: `4505842d8a5ca449cc022dc633f07e178b01fa2a`
-- Generated at: `2026-04-20T11:58:10.687Z`
+- Branch at generation: `feat/v0.13-rust-parity`
+- HEAD commit: `8582a70e096bc04f1d5f3c07863e90bfb882c567`
+- Generated at: `2026-04-21T11:28:13Z`
 
 ## Read Order — MANDATORY before starting work
 1. Read this file completely.
@@ -35,7 +35,13 @@ Read on demand:
 - **Quality gate**: `npm run check` runs conformance, README examples, package contents, schema validation, and agent-context tests.
 - **Core risk**: Any change to CLI output format or command flags must land in both implementations, schemas, and golden fixtures simultaneously.
 - **Session handoff**: `chorus checkpoint --from <agent>` (v0.12.0) plus `scripts/hooks/chorus-session-end.sh` broadcast state across agents on clean exit, crash, or window close — see `docs/session-handoff-guide.md`.
-- **Version**: 0.12.2 (npm `agent-chorus` + crate `agent-chorus`).
+- **Version**: 0.13.0 (npm `agent-chorus` + crate `agent-chorus`).
+
+## What's New Since Last Seal (v0.12.2 → v0.13.0)
+- Full Rust parity for v0.11.0 features: `chorus summary`, `chorus timeline`, `chorus doctor`, `chorus setup` are now implemented end-to-end in `cli/src/summary.rs`, `cli/src/timeline.rs`, `cli/src/doctor.rs`, `cli/src/setup.rs`. Output is byte-identical to the Node implementation (shared golden fixtures under `fixtures/golden/`).
+- `chorus read` gains Rust parity for `--include-user`, `--tool-calls`, and `--format {json|md|markdown}`. `agents.rs` now carries a `ReadOptions` struct plus `_with_options` variants of the read functions.
+- Rust test suite grew from 29 tests to **52 tests**; the extra 23 cover the new subcommands, the new `read` flags, and the cross-runtime parity of their outputs.
+- CI decoupling in `.github/workflows/release.yml` (commit 8582a70): npm publish and crates.io publish are now siblings, `create-release` no longer blocks on registry publishes, and a stale `NPM_TOKEN` degrades gracefully via `continue-on-error: true`.
 
 ## Scope Rule
 - Start with `PROTOCOL.md` for the CLI contract and trust model.

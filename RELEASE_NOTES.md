@@ -1,5 +1,42 @@
 # Release Notes
 
+## v0.13.0 — 2026-04-21
+
+**Full Rust parity for the v0.11.0 Node-only surface, plus CI decoupling so a stale registry token no longer silently drops a GitHub Release.**
+
+Closes the parity gap that has lingered since v0.11.0. The Rust CLI now implements `summary`, `timeline`, `doctor`, and `setup` end-to-end, and the existing `read` subcommand gains `--include-user`, `--tool-calls`, and `--format {json|md|markdown}`. Both implementations continue to emit byte-identical JSON for the same inputs; conformance against shared fixtures gates merges.
+
+### Added — Rust parity for v0.11.0 features
+
+- `chorus summary --agent <agent> [--cwd] [--format] [--json]` in Rust — structured session digest (message count, duration estimate, user requests, files referenced, tool-call counts, last-response snippet). Metadata-only, no LLM calls. Matches the Node output shape byte-for-byte.
+- `chorus timeline [--agent]... [--cwd] [--limit] [--format] [--json]` in Rust — cross-agent chronological view interleaving sessions. Defaults to all four agents with limit 5 per agent. Sorted by timestamp descending.
+- `chorus doctor [--cwd] [--json]` in Rust — environment + setup diagnostic. Reports on version, session directories, scaffolding, managed blocks, session discoverability per agent, context pack state, Claude Code plugin installation, and update status. Each check returns `pass | warn | fail`.
+- `chorus setup [--cwd] [--dry-run] [--force] [--agent-context] [--json]` in Rust — project scaffolding, managed-block injection into `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, `.gitignore` append, and optional Claude Code plugin install. `--dry-run` preview matches Node operation-by-operation.
+
+### Added — `read` flag parity in Rust
+
+- `--include-user` pairs the user prompt(s) that anchor the returned assistant message(s). Designed for live status checks; assistant-only remains the default for narrower handoff reads.
+- `--tool-calls` surfaces `[TOOL: <name>]...[/TOOL]` blocks alongside text content (normally stripped during extraction). Metadata includes `"included_tool_calls": true` when active.
+- `--format {json|md|markdown}` renders output as JSON or formatted markdown. Rust treats `--format json` as an alias for `--json`. Node has a known bug here where `--format json` falls through to plain-text output (see `scripts/read_session.cjs:1759`); the Node bug is documented and left in place because fixing it is an output-contract change that should roll with a dedicated deprecation.
+
+### Added — golden fixtures + conformance harness for parity regression
+
+- `cargo test --manifest-path cli/Cargo.toml` now runs **52 tests** (29 pre-existing plus 23 new parity tests covering the four subcommands and the three `read` flags).
+- New golden fixtures under `fixtures/golden/` seal the v0.13.0 output shapes; `scripts/conformance.sh` diffs them against both Node and Rust on every CI run.
+- `scripts/release/generate_goldens.sh` rebuilds the fixture set when output shapes are intentionally bumped.
+
+### Changed — CI decoupling (release.yml)
+
+- `package-node.needs` drops `publish-crate`. npm and crates.io are independent registries; one registry's failure must not cascade into skipping the other. Prior to v0.13.0, a transient crates.io hiccup silently skipped npm publish (this is how v0.12.1 shipped to GitHub + crates.io but not to npm).
+- `Publish to npm` step gets `continue-on-error: true`. A stale `NPM_TOKEN` (see Known Limitations below) no longer fails the whole `package-node` job — the tarball is already built and uploaded as a workflow artifact before the npm publish step runs.
+- `create-release.needs` drops `publish-crate` and `publish-github-package`. Those jobs don't produce downloadable artifacts for the GitHub Release; only `package-node` (the `.tgz`) and `package-rust` (the two binaries) do. Added `if: always() && needs.verify.result == 'success'` so the Release still ships even if a sibling publish job fails.
+- Net effect: from v0.13.0 onwards, a stale registry token or a transient registry hiccup leaves the GitHub Release + attached binaries intact. The failing publisher is still visible as a red job on the workflow run page.
+
+### Known Limitations
+
+- **Gemini + Cursor `--tool-calls` is a no-op.** Those adapters do not parse a tool-call schema from their underlying stores, so the flag runs without error but returns no `[TOOL: ...]` blocks. This matches the Node behavior — it is a missing-capability in the adapter layer, not a Rust-specific gap. Tracked for a later release.
+- **`NPM_TOKEN` rotation.** The automated npm publish step degrades gracefully (see CI decoupling above), but the token still needs to be rotated at https://github.com/cote-star/agent-chorus/settings/secrets/actions before the npm publish step can succeed on its own. Until rotation, the manual workaround is `npm-play publish --confirm-publish` from a worktree rooted under `~/sandbox/play`.
+
 ## v0.12.2 — 2026-04-20
 
 **Docs + pack-freshness release. Zero code-behavior changes.**

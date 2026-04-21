@@ -9,7 +9,11 @@
 | --- | --- | --- | --- | --- |
 | `scripts/read_session.cjs` | Node CLI entry point | All commands route through here | Parity break if Rust not updated | authoritative |
 | `cli/src/main.rs` | Rust CLI entry point | Clap command definitions, dispatch | Parity break if Node not updated | authoritative |
-| `cli/src/agents.rs` | Rust session adapters + redaction | Core read/list/search logic | Silent redaction miss if pattern missing | authoritative |
+| `cli/src/agents.rs` | Rust session adapters + redaction. Carries `ReadOptions` struct and `_with_options` variants (v0.13.0) for `--include-user`, `--tool-calls`, `--format` plumbing. | Core read/list/search logic | Silent redaction miss if pattern missing | authoritative |
+| `cli/src/summary.rs` | Rust `chorus summary` subcommand (v0.13.0) | Structured session digest; must match Node `read_session.cjs` summary handler byte-for-byte | Parity break regresses conformance | authoritative |
+| `cli/src/timeline.rs` | Rust `chorus timeline` subcommand (v0.13.0) | Cross-agent chronological interleave; must match Node implementation | Parity break regresses conformance | authoritative |
+| `cli/src/doctor.rs` | Rust `chorus doctor` subcommand (v0.13.0) | Environment + setup diagnostics; must match Node check ordering and JSON shape | Parity break regresses conformance | authoritative |
+| `cli/src/setup.rs` | Rust `chorus setup` subcommand (v0.13.0) | Project scaffolding + managed-block injection + Claude Code plugin install | Parity break regresses conformance; file-writing code, touch with care | authoritative |
 | `scripts/adapters/*.cjs` | Node session adapters | Per-agent JSONL parsing | Adapter-specific | authoritative |
 | `scripts/adapters/utils.cjs` | Shared Node utilities | Redaction, path normalization, JSON parsing | Silent redaction miss | authoritative |
 | `cli/src/agent_context.rs` | Rust agent-context commands | Init, seal, verify, build, hooks | Complex but self-contained | authoritative |
@@ -39,6 +43,8 @@
 | Redaction patterns | `cli/src/agents.rs` | `fn redact_sensitive_text` |
 | Gemini `.pb` / Cursor `state.vscdb` probes | `cli/src/agents.rs` | `detect_gemini_pb_fallback_hint`, `detect_cursor_vscdb_fallback_hint`, `gemini_not_found_message`, `cursor_not_found_message`, `gemini_base_dir`, `cursor_base_dir` |
 | Checkpoint broadcast logic | `cli/src/checkpoint.rs` | `fn run`, `compose_state_message` |
+| Read options plumbing (v0.13.0) | `cli/src/agents.rs` | `struct ReadOptions`, `*_with_options` read functions |
+| Summary / timeline / doctor / setup parity (v0.13.0) | `cli/src/{summary,timeline,doctor,setup}.rs` | one module per subcommand, dispatched from `main.rs` |
 | Context-pack template content | `cli/src/agent_context.rs` | `fn build_template_*` functions |
 | Conformance test for a command | `scripts/conformance.sh` | `expect_success "<label>"` calls |
 

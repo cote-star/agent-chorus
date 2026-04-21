@@ -83,9 +83,37 @@ chorus read --agent claude --tool-calls --include-user --json
 
 The JSON response includes `"included_tool_calls": true` in metadata when active. Without the flag, behavior is unchanged.
 
+**Behaviour note — Gemini and Cursor:** `--tool-calls` runs without error on these agents but currently surfaces no `[TOOL: ...]` blocks. The Gemini JSONL and Cursor state stores do not carry a tool-call schema that the adapters parse yet. Applies to both Node and Rust.
+
+### Read Flag Reference
+
+| Flag | Description | Default |
+|---|---|---|
+| `--agent` | Agent to read from (`codex`, `gemini`, `claude`, `cursor`) | required |
+| `--id` | Session-id substring match; omit to pick the latest session | latest |
+| `--cwd` | Working directory to scope sessions | current directory |
+| `--chats-dir` | Override session-discovery root (Gemini `.pb` fallback, etc.) | agent default |
+| `--last` | Number of trailing assistant messages to include | 1 |
+| `--include-user` | Include the paired user prompt(s) with each assistant message | off |
+| `--tool-calls` | Surface `[TOOL: <name>]...[/TOOL]` blocks in `content` | off |
+| `--format` | Output format (`json`, `md` / `markdown`) | text unless `--json` |
+| `--json` | Machine-readable JSON output | off |
+| `--metadata-only` | Return metadata without `content` | off |
+| `--audit-redactions` | Include a `redactions` summary in output | off |
+
+**`--format` vs `--json`:** Rust treats `--format json` as an alias for `--json`. **Node has a bug here** — `--format json` falls through to plain-text output instead of JSON (see `scripts/read_session.cjs:1759`). The bug is documented and left in place because fixing it is a user-visible output-contract change; use `--json` for JSON output on both runtimes.
+
 ## Session Summary
 
-Structured session digest without reading full content. Extracts metadata locally — no LLM calls.
+Structured session digest without reading full content. Extracts metadata locally — no LLM calls. Node and Rust emit byte-identical JSON for the same inputs (Rust parity landed in v0.13.0).
+
+**Synopsis**
+
+```
+chorus summary --agent <codex|gemini|claude|cursor> [--id <substring>] [--cwd PATH] [--format {json|md|markdown}] [--json]
+```
+
+**Examples**
 
 ```bash
 # Quick status check
@@ -94,6 +122,16 @@ chorus summary --agent claude --cwd . --json
 # Human-readable markdown output
 chorus summary --agent claude --format markdown
 ```
+
+**Flags**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--agent` | Agent to summarize (`claude`, `codex`, `gemini`, `cursor`) | required |
+| `--id` | Session-id substring match; omit to pick the latest session | latest |
+| `--cwd` | Working directory to scope sessions | current directory |
+| `--format` | Output format (`json`, `md` / `markdown`) | text unless `--json` |
+| `--json` | Machine-readable JSON output | off |
 
 **JSON output:**
 
@@ -123,9 +161,24 @@ chorus summary --agent claude --format markdown
 | `tool_calls_by_type` | `object` | Count of tool calls by tool name |
 | `last_response_snippet` | `string` | Last assistant message excerpt (300 chars, not an LLM summary) |
 
+**Exit codes**
+
+| Code | Condition |
+|---|---|
+| `0` | Success |
+| non-zero | `NOT_FOUND` (no matching session), `PARSE_FAILED`, `EMPTY_SESSION`, `UNSUPPORTED_AGENT`, `IO_ERROR` — see [Error Codes](#error-codes) |
+
 ## Timeline
 
-Cross-agent chronological view interleaving sessions from multiple agents for a given working directory.
+Cross-agent chronological view interleaving sessions from multiple agents for a given working directory. Node and Rust emit byte-identical JSON for the same inputs (Rust parity landed in v0.13.0).
+
+**Synopsis**
+
+```
+chorus timeline [--agent <agent>]... [--cwd PATH] [--limit N] [--format {json|md|markdown}] [--json]
+```
+
+**Examples**
 
 ```bash
 # All agents, default limit
@@ -167,6 +220,13 @@ chorus timeline --cwd . --format markdown
 ```
 
 Sessions are sorted by timestamp descending. Each entry includes a snippet from the last assistant message (200 chars).
+
+**Exit codes**
+
+| Code | Condition |
+|---|---|
+| `0` | Success (including empty result when no sessions are discovered) |
+| non-zero | `IO_ERROR`, `UNSUPPORTED_AGENT` — see [Error Codes](#error-codes) |
 
 ## Output Formats
 
@@ -534,7 +594,15 @@ the Claude Code `SessionEnd` hook wiring.
 
 ## Setup
 
-Wire Agent Chorus into a project. Creates provider scaffolding, injects managed blocks into agent instruction files, updates `.gitignore`, and auto-installs the Claude Code plugin if the `claude` CLI is present.
+Wire Agent Chorus into a project. Creates provider scaffolding, injects managed blocks into agent instruction files, updates `.gitignore`, and auto-installs the Claude Code plugin if the `claude` CLI is present. Node and Rust emit byte-identical JSON for the same inputs (Rust parity landed in v0.13.0).
+
+**Synopsis**
+
+```
+chorus setup [--cwd PATH] [--dry-run] [--force] [--agent-context] [--json]
+```
+
+**Examples**
 
 ```bash
 # Wire chorus into the current project
@@ -549,6 +617,16 @@ chorus setup --force
 # Also initialize context pack and install pre-push hook
 chorus setup --agent-context
 ```
+
+**Flags**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--cwd` | Target project directory | current directory |
+| `--dry-run` | Preview operations without writing | off |
+| `--force` | Replace existing managed blocks / scaffolding | off |
+| `--agent-context` | Also run `chorus agent-context init` and install pre-push hook | off |
+| `--json` | Machine-readable JSON output | off |
 
 Setup performs these operations:
 
@@ -583,9 +661,24 @@ Setup performs these operations:
 - The Claude Code plugin install is global (user scope). It is not reversed by `teardown`. To uninstall: `claude plugin uninstall agent-chorus`
 - If `claude` CLI is not found, plugin installation is skipped with a `skipped` status and manual instructions
 
+**Exit codes**
+
+| Code | Condition |
+|---|---|
+| `0` | Success (including `--dry-run` previews and idempotent re-runs) |
+| non-zero | `IO_ERROR` (unwritable target), invalid flag combination |
+
 ## Doctor
 
-Check whether Agent Chorus is correctly wired for the current project.
+Check whether Agent Chorus is correctly wired for the current project. Node and Rust emit byte-identical JSON for the same inputs (Rust parity landed in v0.13.0).
+
+**Synopsis**
+
+```
+chorus doctor [--cwd PATH] [--json]
+```
+
+**Examples**
 
 ```bash
 chorus doctor
@@ -594,6 +687,13 @@ chorus doctor --json
 ```
 
 Doctor reports on: version, session directory availability, setup completeness (scaffolding + managed blocks), session discoverability for each agent, context pack state, Claude Code plugin installation, and update status.
+
+**Flags**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--cwd` | Target project directory | current directory |
+| `--json` | Machine-readable JSON output | off |
 
 **Example output:**
 
@@ -613,6 +713,13 @@ Agent Chorus doctor: PASS (/path/to/project)
 ```
 
 **JSON output (`--json`):** array of `{ id, status, detail }` check objects, where `status` is `"pass"`, `"warn"`, or `"fail"`.
+
+**Exit codes**
+
+| Code | Condition |
+|---|---|
+| `0` | All checks passed or warned (non-fatal) |
+| non-zero | At least one check returned `fail`, or the doctor run itself errored before reporting |
 
 ## Teardown
 
@@ -785,4 +892,9 @@ Chorus checks for updates once per version.
 
 ## Parity Notes
 
-v0.11.0 features (`chorus summary`, `chorus timeline`, `--tool-calls`, `--format markdown`) are Node-only. Rust parity is still pending and tracked on the roadmap. Core commands (`read`, `list`, `search`, `compare`, `diff`, `send`, `messages`, `setup`, `doctor`, `teardown`, `agent-context`) have full Node/Rust parity with conformance-tested output contracts.
+As of v0.13.0, Node and Rust have full parity across every supported subcommand: `read` (including `--include-user`, `--tool-calls`, and `--format {json|md|markdown}`), `list`, `search`, `compare`, `diff`, `summary`, `timeline`, `send`, `messages`, `checkpoint`, `setup`, `doctor`, `teardown`, `agent-context`, and `relevance`. All shared outputs are conformance-tested via `scripts/conformance.sh` against golden fixtures in `fixtures/golden/`.
+
+Two documented wrinkles:
+
+- **`--format json` on `chorus read`:** Rust treats `--format json` as an alias for `--json`. Node has a bug where `--format json` falls through to plain-text output (see `scripts/read_session.cjs:1759`); `--json` continues to produce JSON on Node as expected. The Node bug is documented and left in place; use `--json` for JSON output on both runtimes.
+- **`--tool-calls` on Gemini and Cursor:** runs without error but returns no `[TOOL: ...]` blocks in either runtime. The Gemini JSONL and Cursor session stores do not carry a tool-call schema that the adapters can surface. Tracked for a follow-up.
