@@ -7,6 +7,7 @@ mod doctor;
 pub mod messaging;
 pub mod relevance;
 mod report;
+mod setup;
 mod summary;
 mod timeline;
 mod utils;
@@ -145,6 +146,29 @@ enum Commands {
         /// Working directory to scope search
         #[arg(long)]
         cwd: Option<String>,
+    },
+
+    /// Initialize agent-chorus in the current directory (provider blocks, scaffolding, optional context-pack)
+    Setup {
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Preview changes without executing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Overwrite existing scaffolding files
+        #[arg(long)]
+        force: bool,
+
+        /// Also initialize and seal an agent-context pack
+        #[arg(long)]
+        context_pack: bool,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
     },
 
     /// Reverse setup: remove managed blocks, scaffolding, and hooks
@@ -579,6 +603,7 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::Send { json, .. } => *json,
         Commands::Messages { json, .. } => *json,
         Commands::Checkpoint { json, .. } => *json,
+        Commands::Setup { json, .. } => *json,
         Commands::Teardown { json, .. } => *json,
         Commands::Summary { json, .. } => *json,
         Commands::Timeline { json, .. } => *json,
@@ -929,6 +954,16 @@ fn run(cli: Cli) -> Result<()> {
                         println!("  {}", result.message);
                     }
                 }
+            }
+        }
+        Commands::Setup { cwd, dry_run, force, context_pack, json } => {
+            let effective_cwd = effective_cwd(cwd);
+            let result = setup::run_setup(&effective_cwd, dry_run, force, context_pack)?;
+
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+            } else {
+                setup::print_text(&result);
             }
         }
         Commands::Teardown { cwd, dry_run, json, global } => {
