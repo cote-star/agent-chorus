@@ -1,0 +1,18 @@
+{
+  "generator": "scripts/release/generate_goldens.sh",
+  "generated_at": "2026-04-21T11:06:42Z",
+  "pinned_sessions": {
+    "codex": "codex-fixture",
+    "claude": "claude-fixture",
+    "gemini": "gemini-fixture"
+  },
+  "fixture_session_store": "fixtures/session-store",
+  "doctor_cwd_strategy": "empty tempdir (warn states predictable)",
+  "setup_cwd_strategy": "empty tempdir dry-run",
+  "scrubber": "scripts/scrub_parity_output.cjs",
+  "notes": [
+    "Gemini --tool-calls skipped: no-op per adapter (no tool-call schema).",
+    "Cursor goldens skipped: JSON sessions not discoverable on generating machine (SQLite-only fallback).",
+    "Volatile fields scrubbed: timestamps (sub-second), absolute paths, version string, update_status detail, cwd prefix."
+  ]
+}

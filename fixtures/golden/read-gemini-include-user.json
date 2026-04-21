@@ -1,0 +1,16 @@
+{
+  "agent": "gemini",
+  "chorus_output_version": 1,
+  "content": "USER:\nhello\n---\nASSISTANT:\nGemini fixture assistant output.",
+  "cwd": null,
+  "included_roles": [
+    "user",
+    "assistant"
+  ],
+  "message_count": 1,
+  "messages_returned": 2,
+  "session_id": "gemini-fixture-0001",
+  "source": "session-gemini-fixture-0001.json",
+  "timestamp": "2026-03-11T12:38:32Z",
+  "warnings": []
+}

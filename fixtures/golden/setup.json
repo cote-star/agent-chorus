@@ -1,0 +1,65 @@
+{
+  "changed": 7,
+  "cwd": "__CWD__",
+  "dry_run": true,
+  "force": false,
+  "operations": [
+    {
+      "note": "Created intent contract",
+      "path": "__CWD__/.agent-chorus/INTENTS.md",
+      "status": "created",
+      "type": "file"
+    },
+    {
+      "note": "Created provider snippet",
+      "path": "__CWD__/.agent-chorus/providers/codex.md",
+      "status": "created",
+      "type": "file"
+    },
+    {
+      "note": "Created file with managed block",
+      "path": "__CWD__/AGENTS.md",
+      "status": "created",
+      "type": "integration"
+    },
+    {
+      "note": "Created provider snippet",
+      "path": "__CWD__/.agent-chorus/providers/claude.md",
+      "status": "created",
+      "type": "file"
+    },
+    {
+      "note": "Created file with managed block",
+      "path": "__CWD__/CLAUDE.md",
+      "status": "created",
+      "type": "integration"
+    },
+    {
+      "note": "Created provider snippet",
+      "path": "__CWD__/.agent-chorus/providers/gemini.md",
+      "status": "created",
+      "type": "file"
+    },
+    {
+      "note": "Created file with managed block",
+      "path": "__CWD__/GEMINI.md",
+      "status": "created",
+      "type": "integration"
+    },
+    {
+      "note": "Would add .agent-chorus/ to .gitignore",
+      "path": "__CWD__/.gitignore",
+      "status": "planned",
+      "type": "gitignore"
+    },
+    {
+      "note": "agent-chorus Claude Code plugin already installed",
+      "path": "claude plugin",
+      "status": "unchanged",
+      "type": "plugin"
+    }
+  ],
+  "warnings": [
+    "Warning: __PATH__ has no recognizable project markers (.git, package.json, etc.)"
+  ]
+}

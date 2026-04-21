@@ -1,0 +1,16 @@
+{
+  "agent": "codex",
+  "chorus_output_version": 1,
+  "content": "Codex fixture assistant output.",
+  "cwd": "/workspace/demo",
+  "included_roles": [
+    "assistant"
+  ],
+  "included_tool_calls": true,
+  "message_count": 1,
+  "messages_returned": 1,
+  "session_id": "session-codex-fixture-0001",
+  "source": "session-codex-fixture-0001.jsonl",
+  "timestamp": "2026-03-17T15:54:38Z",
+  "warnings": []
+}

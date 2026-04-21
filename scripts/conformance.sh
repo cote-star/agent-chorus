@@ -148,6 +148,145 @@ run_search_case() {
   fi
 }
 
+# -----------------------------------------------------------------------------
+# v0.13 parity tests (summary / timeline / doctor / setup / read-flags).
+#
+# These subcommands either were Node-only or had flags that Node supported but
+# Rust did not before v0.13. The tests here gate against silent regressions.
+#
+# NOTE: `--format json` is intentionally NOT tested for Rust-vs-Node parity.
+# Node has a known bug (scripts/read_session.cjs ~line 1759) where
+# `--format json` falls through to the text renderer and emits TEXT instead of
+# valid JSON. Rust treats `--format json` as an alias for `--json` (correct).
+# Until the Node bug is fixed, `--format json` parity is excluded.
+#
+# All parity-sensitive output is piped through scripts/scrub_parity_output.cjs
+# which normalizes known-drift fields (sub-second timestamps, absolute paths,
+# version/update strings, timeline insertion order) before diff.
+# -----------------------------------------------------------------------------
+
+SCRUB="$ROOT/scripts/scrub_parity_output.cjs"
+
+# Helper: run one parity test. Captures both Node and Rust outputs, scrubs,
+# diffs them against each other AND against the golden fixture if present.
+run_parity_case() {
+  local kind="$1"      # summary|timeline|doctor|setup|read
+  local label="$2"     # human-readable label for PASS/FAIL print
+  local golden="$3"    # filename under fixtures/golden (empty string to skip)
+  shift 3
+  # Remaining args split by "::" separator into node_cmd (left) and rust_cmd (right)
+  local sep_idx=0
+  local args=("$@")
+  for ((i=0; i<${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "::" ]]; then
+      sep_idx=$i
+      break
+    fi
+  done
+  if [[ $sep_idx -eq 0 ]]; then
+    echo "run_parity_case missing :: separator between node and rust args" >&2
+    exit 1
+  fi
+
+  local node_args=("${args[@]:0:$sep_idx}")
+  local rust_args=("${args[@]:$((sep_idx + 1))}")
+
+  local node_out="$TMP_DIR/parity-${label}-node.json"
+  local rust_out="$TMP_DIR/parity-${label}-rust.json"
+  local node_scrubbed="$TMP_DIR/parity-${label}-node.scrubbed.json"
+  local rust_scrubbed="$TMP_DIR/parity-${label}-rust.scrubbed.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  node "$ROOT/scripts/read_session.cjs" "${node_args[@]}" > "$node_out"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- "${rust_args[@]}" > "$rust_out"
+
+  node "$SCRUB" "$node_out" "$node_scrubbed" "$kind"
+  node "$SCRUB" "$rust_out" "$rust_scrubbed" "$kind"
+
+  if ! diff -u "$node_scrubbed" "$rust_scrubbed" >/dev/null; then
+    echo "FAIL parity-${label}: Node vs Rust mismatch after scrub"
+    diff -u "$node_scrubbed" "$rust_scrubbed" || true
+    exit 1
+  fi
+  echo "PASS parity-${label} (Node=Rust)"
+
+  if [[ -n "$golden" && -f "$GOLDEN/$golden" ]]; then
+    if ! diff -u "$GOLDEN/$golden" "$rust_scrubbed" >/dev/null; then
+      echo "FAIL golden-${label}: Rust output drifted from $golden"
+      diff -u "$GOLDEN/$golden" "$rust_scrubbed" || true
+      exit 1
+    fi
+    echo "PASS golden-${label} (Rust=$golden)"
+  fi
+}
+
+# Setup for doctor/setup tests: deterministic empty tempdirs so checks return
+# predictable warn states. Must NOT overlap with $TMP_DIR itself because the
+# scrubber needs the original tempdir path to strip it out.
+DOCTOR_TMP_CWD="$(mktemp -d)"
+SETUP_TMP_CWD="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR" "$DOCTOR_TMP_CWD" "$SETUP_TMP_CWD"' EXIT
+
+# --- summary parity (codex, claude, gemini; cursor skipped — see fixture note) ---
+# --cwd is pinned to /workspace/demo so the gemini golden (which has no cwd
+# embedded in the session file) isn't machine-specific.
+run_parity_case summary summary-codex summary-codex.json \
+  summary --agent=codex --id=codex-fixture --cwd=/workspace/demo --json :: \
+  summary --agent codex --id codex-fixture --cwd /workspace/demo --json
+
+run_parity_case summary summary-claude summary-claude.json \
+  summary --agent=claude --id=claude-fixture --cwd=/workspace/demo --json :: \
+  summary --agent claude --id claude-fixture --cwd /workspace/demo --json
+
+run_parity_case summary summary-gemini summary-gemini.json \
+  summary --agent=gemini --id=gemini-fixture --cwd=/workspace/demo --json :: \
+  summary --agent gemini --id gemini-fixture --cwd /workspace/demo --json
+
+# --- timeline parity (schema-shape, entries sorted by agent+session_id) ---
+run_parity_case timeline timeline timeline.json \
+  timeline --cwd=/workspace/demo --limit 6 --json :: \
+  timeline --cwd /workspace/demo --limit 6 --json
+
+# --- doctor parity (empty-tempdir warn states, scrubbed paths) ---
+run_parity_case doctor doctor doctor.json \
+  doctor --cwd="$DOCTOR_TMP_CWD" --json :: \
+  doctor --cwd "$DOCTOR_TMP_CWD" --json
+
+# --- setup dry-run parity ---
+run_parity_case setup setup setup.json \
+  setup --cwd="$SETUP_TMP_CWD" --dry-run --json :: \
+  setup --cwd "$SETUP_TMP_CWD" --dry-run --json
+
+# --- read --include-user parity (codex, claude, gemini) ---
+# Gemini and Cursor --tool-calls are no-ops (no tool-call schema); only
+# --include-user is meaningful for gemini here.
+run_parity_case read read-codex-include-user read-codex-include-user.json \
+  read --agent=codex --id=codex-fixture --include-user --json :: \
+  read --agent codex --id codex-fixture --include-user --json
+
+run_parity_case read read-claude-include-user read-claude-include-user.json \
+  read --agent=claude --id=claude-fixture --include-user --json :: \
+  read --agent claude --id claude-fixture --include-user --json
+
+run_parity_case read read-gemini-include-user read-gemini-include-user.json \
+  read --agent=gemini --id=gemini-fixture --include-user --json :: \
+  read --agent gemini --id gemini-fixture --include-user --json
+
+# --- read --tool-calls parity (codex, claude) ---
+run_parity_case read read-codex-tool-calls read-codex-tool-calls.json \
+  read --agent=codex --id=codex-fixture --tool-calls --json :: \
+  read --agent codex --id codex-fixture --tool-calls --json
+
+run_parity_case read read-claude-tool-calls read-claude-tool-calls.json \
+  read --agent=claude --id=claude-fixture --tool-calls --json :: \
+  read --agent claude --id claude-fixture --tool-calls --json
+
 run_read_case codex codex-fixture Codex
 run_read_case gemini gemini-fixture Gemini
 run_read_case claude claude-fixture Claude
@@ -156,4 +295,4 @@ run_report_case
 run_list_case codex Codex /workspace/demo
 run_search_case codex Codex "Codex fixture assistant output." /workspace/demo
 
-echo "Conformance complete: Node and Rust outputs match for read/compare/report/list/search (including golden file diffs)."
+echo "Conformance complete: Node and Rust outputs match for read/compare/report/list/search, plus v0.13 summary/timeline/doctor/setup/read-flags (including golden file diffs)."

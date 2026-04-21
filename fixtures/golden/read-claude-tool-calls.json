@@ -1,0 +1,16 @@
+{
+  "agent": "claude",
+  "chorus_output_version": 1,
+  "content": "Claude fixture assistant output.",
+  "cwd": "/workspace/demo",
+  "included_roles": [
+    "assistant"
+  ],
+  "included_tool_calls": true,
+  "message_count": 1,
+  "messages_returned": 1,
+  "session_id": "session-claude-fixture-0001",
+  "source": "session-claude-fixture-0001.jsonl",
+  "timestamp": "2026-03-11T12:38:32Z",
+  "warnings": []
+}

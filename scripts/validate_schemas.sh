@@ -93,6 +93,33 @@ if CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   exit 1
 fi
 
+# v0.13 parity outputs: generated up front so both the AJV and the
+# CHORUS_SKIP_AJV=1 paths can sanity-check them.
+summary_node_json="$TMP_DIR/summary-node.json"
+summary_rust_json="$TMP_DIR/summary-rust.json"
+timeline_node_json="$TMP_DIR/timeline-node.json"
+timeline_rust_json="$TMP_DIR/timeline-rust.json"
+
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+node "$ROOT/scripts/read_session.cjs" summary --agent=codex --id=codex-fixture --json > "$summary_node_json"
+
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- summary --agent codex --id codex-fixture --json > "$summary_rust_json"
+
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+node "$ROOT/scripts/read_session.cjs" timeline --cwd=/workspace/demo --limit 6 --json > "$timeline_node_json"
+
+CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- timeline --cwd /workspace/demo --limit 6 --json > "$timeline_rust_json"
+
 if [[ "${CHORUS_SKIP_AJV:-0}" == "1" ]]; then
   node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$read_node_json"
   node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$read_rust_json"
@@ -106,6 +133,10 @@ if [[ "${CHORUS_SKIP_AJV:-0}" == "1" ]]; then
   node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$search_rust_json"
   node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$error_node_json"
   node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$error_rust_json"
+  node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$summary_node_json"
+  node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$summary_rust_json"
+  node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$timeline_node_json"
+  node -e "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'));" "$timeline_rust_json"
   echo "Schema validation skipped (CHORUS_SKIP_AJV=1); JSON parse sanity checks passed."
   exit 0
 fi
@@ -128,4 +159,13 @@ AJV_CMD=(node "$ROOT/scripts/validate_schemas_ajv.cjs")
 "${AJV_CMD[@]}" "$ROOT/schemas/error.schema.json" "$error_node_json"
 "${AJV_CMD[@]}" "$ROOT/schemas/error.schema.json" "$error_rust_json"
 
-echo "Schema validation complete for handoff/read/report/list/search/error outputs."
+# --- v0.13 parity: summary + timeline schemas ---
+# Inputs were generated before the CHORUS_SKIP_AJV branch above so both paths
+# sanity-check them. Doctor/setup don't have published schemas yet — they are
+# gated by scripts/conformance.sh goldens instead.
+"${AJV_CMD[@]}" "$ROOT/schemas/summary-output.schema.json" "$summary_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/summary-output.schema.json" "$summary_rust_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/timeline-output.schema.json" "$timeline_node_json"
+"${AJV_CMD[@]}" "$ROOT/schemas/timeline-output.schema.json" "$timeline_rust_json"
+
+echo "Schema validation complete for handoff/read/report/list/search/error/summary/timeline outputs."

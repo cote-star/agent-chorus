@@ -1,0 +1,111 @@
+{
+  "checks": [
+    {
+      "detail": "agent-chorus Claude Code plugin installed",
+      "id": "claude_plugin",
+      "status": "pass"
+    },
+    {
+      "detail": "Found: __PATH__",
+      "id": "claude_projects_dir",
+      "status": "pass"
+    },
+    {
+      "detail": "Found: __PATH__",
+      "id": "codex_sessions_dir",
+      "status": "pass"
+    },
+    {
+      "detail": "Run `chorus agent-context init` to start",
+      "id": "context_pack_guidance",
+      "status": "warn"
+    },
+    {
+      "detail": "Git hooks path is __PATH__ (expected .githooks for agent-context pre-push automation)",
+      "id": "context_pack_hooks_path",
+      "status": "warn"
+    },
+    {
+      "detail": "Found: __PATH__",
+      "id": "context_pack_pre_push",
+      "status": "pass"
+    },
+    {
+      "detail": "State: UNINITIALIZED",
+      "id": "context_pack_state",
+      "status": "warn"
+    },
+    {
+      "detail": "Found: __PATH__",
+      "id": "gemini_tmp_dir",
+      "status": "pass"
+    },
+    {
+      "detail": "Missing provider instruction file: __PATH__",
+      "id": "integration_claude",
+      "status": "warn"
+    },
+    {
+      "detail": "Missing provider instruction file: __PATH__",
+      "id": "integration_codex",
+      "status": "warn"
+    },
+    {
+      "detail": "Missing provider instruction file: __PATH__",
+      "id": "integration_gemini",
+      "status": "warn"
+    },
+    {
+      "detail": "No claude sessions discovered",
+      "id": "sessions_claude",
+      "status": "warn"
+    },
+    {
+      "detail": "No codex sessions discovered",
+      "id": "sessions_codex",
+      "status": "warn"
+    },
+    {
+      "detail": "No cursor sessions discovered",
+      "id": "sessions_cursor",
+      "status": "warn"
+    },
+    {
+      "detail": "No gemini sessions discovered",
+      "id": "sessions_gemini",
+      "status": "warn"
+    },
+    {
+      "detail": "Missing: __PATH__",
+      "id": "setup_intents",
+      "status": "warn"
+    },
+    {
+      "detail": "Missing: __PATH__",
+      "id": "snippet_claude",
+      "status": "warn"
+    },
+    {
+      "detail": "Missing: __PATH__",
+      "id": "snippet_codex",
+      "status": "warn"
+    },
+    {
+      "detail": "Missing: __PATH__",
+      "id": "snippet_gemini",
+      "status": "warn"
+    },
+    {
+      "detail": "__UPDATE_STATUS__",
+      "id": "update_status",
+      "status": "pass"
+    },
+    {
+      "detail": "__VERSION__",
+      "id": "version",
+      "status": "pass"
+    }
+  ],
+  "cwd": "__CWD__",
+  "overall": "warn"
+}
