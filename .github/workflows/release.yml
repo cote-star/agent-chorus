@@ -42,7 +42,7 @@ jobs:
           bash scripts/release/verify_versions.sh "${TAG_NAME}"
 
   package-node:
-    needs: [verify, publish-crate]
+    needs: [verify]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -77,6 +77,7 @@ jobs:
 
       - name: Publish to npm
         if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && steps.npm_package_check.outputs.exists != 'true' }}
+        continue-on-error: true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public
@@ -171,10 +172,13 @@ jobs:
 
   create-release:
     # Creates the GitHub Release for a tag push, attaching binaries from
-    # package-rust and using the matching RELEASE_NOTES.md section as the
-    # body. Runs last so earlier failures skip it cleanly.
-    needs: [verify, package-node, publish-github-package, package-rust, publish-crate]
-    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    # package-rust and the npm tarball from package-node. Only gated on
+    # artifact-producing jobs; registry publishes (crates.io, GitHub
+    # Packages) are siblings and must not block the Release itself —
+    # a missing npm publish (e.g. stale NPM_TOKEN) should not strand
+    # users without downloadable binaries.
+    needs: [verify, package-node, package-rust]
+    if: ${{ always() && needs.verify.result == 'success' && github.event_name == 'push' && github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
