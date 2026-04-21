@@ -1985,7 +1985,7 @@ pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
     Ok(entries)
 }
 
-fn codex_base_dir() -> PathBuf {
+pub(crate) fn codex_base_dir() -> PathBuf {
     std::env::var("CHORUS_CODEX_SESSIONS_DIR")
         .or_else(|_| std::env::var("BRIDGE_CODEX_SESSIONS_DIR"))
         .ok()
@@ -1993,7 +1993,7 @@ fn codex_base_dir() -> PathBuf {
         .unwrap_or_else(|| expand_home("~/.codex/sessions").unwrap_or_else(|| PathBuf::from("~/.codex/sessions")))
 }
 
-fn claude_base_dir() -> PathBuf {
+pub(crate) fn claude_base_dir() -> PathBuf {
     std::env::var("CHORUS_CLAUDE_PROJECTS_DIR")
         .or_else(|_| std::env::var("BRIDGE_CLAUDE_PROJECTS_DIR"))
         .ok()
@@ -2001,7 +2001,7 @@ fn claude_base_dir() -> PathBuf {
         .unwrap_or_else(|| expand_home("~/.claude/projects").unwrap_or_else(|| PathBuf::from("~/.claude/projects")))
 }
 
-fn gemini_tmp_base_dir() -> PathBuf {
+pub(crate) fn gemini_tmp_base_dir() -> PathBuf {
     std::env::var("CHORUS_GEMINI_TMP_DIR")
         .or_else(|_| std::env::var("BRIDGE_GEMINI_TMP_DIR"))
         .ok()

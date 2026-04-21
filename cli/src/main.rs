@@ -3,6 +3,7 @@ mod agents;
 mod agent_context;
 mod checkpoint;
 pub mod diff;
+mod doctor;
 pub mod messaging;
 pub mod relevance;
 mod report;
@@ -317,6 +318,17 @@ enum Commands {
         json: bool,
     },
 
+    /// Diagnostic checks across the agent-chorus install
+    Doctor {
+        /// Working directory to scope checks
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Emit structured JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
+
     /// Cross-agent chronological view of recent sessions
     Timeline {
         /// Agent to include (repeatable; default: all)
@@ -570,6 +582,7 @@ fn is_json_mode(command: &Commands) -> bool {
         Commands::Teardown { json, .. } => *json,
         Commands::Summary { json, .. } => *json,
         Commands::Timeline { json, .. } => *json,
+        Commands::Doctor { json, .. } => *json,
         Commands::AgentContext { .. } | Commands::ContextPack { .. } => false,
         #[cfg(feature = "update-check")]
         Commands::UpdateWorker => false,
@@ -979,6 +992,15 @@ fn run(cli: Cli) -> Result<()> {
                 println!("{}", utils::sanitize_for_terminal(&result.to_markdown()));
             } else {
                 print!("{}", utils::sanitize_for_terminal(&result.to_text()));
+            }
+        }
+        Commands::Doctor { cwd, json } => {
+            let effective_cwd = effective_cwd(cwd);
+            let result = doctor::run_doctor(&effective_cwd)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&result.to_json())?);
+            } else {
+                doctor::print_text(&result);
             }
         }
         #[cfg(feature = "update-check")]
