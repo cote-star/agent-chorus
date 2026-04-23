@@ -84,6 +84,11 @@ function deepSortKeys(value) {
 }
 
 function scrubCommon(obj) {
+  // Fully mask volatile timestamp fields — they come from fs.stat mtimes on
+  // fixture files, which drift per-checkout (local vs CI). Stripping only
+  // sub-seconds is insufficient because a fresh clone resets the whole
+  // timestamp. Replacing with a placeholder preserves presence-shape testing
+  // without coupling goldens to file-system mtimes.
   const VOLATILE_TIME_KEYS = new Set(['timestamp', 'modified_at', 'file_modified_iso']);
   function walk(value, keyName) {
     if (Array.isArray(value)) return value.map((v) => walk(v, keyName));
@@ -95,7 +100,7 @@ function scrubCommon(obj) {
       return out;
     }
     if (VOLATILE_TIME_KEYS.has(keyName) && typeof value === 'string') {
-      return stripSubSecond(value);
+      return '__TS__';
     }
     if ((keyName === 'source' || keyName === 'file_path') && typeof value === 'string') {
       return basename(value);

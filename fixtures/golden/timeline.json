@@ -11,49 +11,49 @@
       "cwd": "/workspace/demo",
       "session_id": "session-claude-fixture-0001",
       "snippet": "Claude fixture assistant output.",
-      "timestamp": "2026-03-11T12:38:32Z"
+      "timestamp": "__TS__"
     },
     {
       "agent": "claude",
       "cwd": "/workspace/demo",
       "session_id": "session-claude-no-assistant",
       "snippet": "Could not extract assistant messages. Showing last 20 raw lines:\n{\"cwd\":\"/workspace/demo\"}\n{\"type\":\"human\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"User message only, no assistant re",
-      "timestamp": "2026-03-11T12:38:32Z"
+      "timestamp": "__TS__"
     },
     {
       "agent": "claude",
       "cwd": "/workspace/demo",
       "session_id": "session-claude-redaction-stress",
       "snippet": "Here are some secrets: sk-[REDACTED] and AKIA[REDACTED] and Bearer [REDACTED] and api_key=[REDACTED] and token=[REDACTED] and password=[REDACTED] and apikey=[REDACTED] and secret=[REDACTED]",
-      "timestamp": "2026-03-11T12:38:32Z"
+      "timestamp": "__TS__"
     },
     {
       "agent": "codex",
       "cwd": "/workspace/demo",
       "session_id": "session-codex-fixture-0001",
       "snippet": "Codex fixture assistant output.",
-      "timestamp": "2026-03-17T15:54:38Z"
+      "timestamp": "__TS__"
     },
     {
       "agent": "codex",
       "cwd": "/workspace/demo",
       "session_id": "session-codex-malformed",
       "snippet": "Valid message after malformed line.",
-      "timestamp": "2026-03-11T12:38:32Z"
+      "timestamp": "__TS__"
     },
     {
       "agent": "codex",
       "cwd": "/workspace/demo",
       "session_id": "session-codex-mixed-schema",
       "snippet": "Third response_item message.",
-      "timestamp": "2026-03-11T12:38:32Z"
+      "timestamp": "__TS__"
     },
     {
       "agent": "codex",
       "cwd": "/workspace/demo",
       "session_id": "session-codex-multi",
       "snippet": "Third assistant response.",
-      "timestamp": "2026-03-11T12:38:32Z"
+      "timestamp": "__TS__"
     }
   ],
   "warnings": []
