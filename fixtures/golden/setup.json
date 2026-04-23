@@ -1,5 +1,5 @@
 {
-  "changed": 7,
+  "changed": "__CHANGED__",
   "cwd": "__CWD__",
   "dry_run": true,
   "force": false,
@@ -51,12 +51,6 @@
       "path": "__CWD__/.gitignore",
       "status": "planned",
       "type": "gitignore"
-    },
-    {
-      "note": "agent-chorus Claude Code plugin already installed",
-      "path": "claude plugin",
-      "status": "unchanged",
-      "type": "plugin"
     }
   ],
   "warnings": [

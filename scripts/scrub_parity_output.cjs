@@ -178,16 +178,28 @@ function scrubSetup(obj) {
   const originalCwd = typeof scrubbed.cwd === 'string' ? scrubbed.cwd : null;
   if (originalCwd) scrubbed.cwd = '__CWD__';
   const abspathRe = /\/(?:Users|var|tmp|home|opt)\/[^\s]+/g;
+  // Operation types whose status + note are environment-dependent. The
+  // `plugin` operation reports "unchanged" on hosts where claude CLI is
+  // installed and "skipped" on hosts without it (with the manual-install
+  // hint embedded in the note, which also contains a machine-specific
+  // absolute path). Parity (Node vs Rust) already validates same-host
+  // agreement; the golden compare should not gate on host claude state.
+  const ENV_DEPENDENT_OP_TYPES = new Set(['plugin']);
   if (Array.isArray(scrubbed.operations)) {
-    scrubbed.operations = scrubbed.operations.map((op) => {
-      const out = { ...op };
-      if (typeof out.path === 'string') {
-        if (originalCwd) out.path = scrubCwdInString(out.path, originalCwd);
-        out.path = out.path.replace(abspathRe, '__PATH__');
-      }
-      return out;
-    });
+    scrubbed.operations = scrubbed.operations
+      .filter((op) => !ENV_DEPENDENT_OP_TYPES.has(op && op.type))
+      .map((op) => {
+        const out = { ...op };
+        if (typeof out.path === 'string') {
+          if (originalCwd) out.path = scrubCwdInString(out.path, originalCwd);
+          out.path = out.path.replace(abspathRe, '__PATH__');
+        }
+        return out;
+      });
   }
+  // `changed` counts env-dependent operations — pin to placeholder for
+  // the same reason as checks.
+  if (typeof scrubbed.changed === 'number') scrubbed.changed = '__CHANGED__';
   if (Array.isArray(scrubbed.warnings)) {
     scrubbed.warnings = scrubbed.warnings.map((w) => {
       if (typeof w !== 'string') return w;

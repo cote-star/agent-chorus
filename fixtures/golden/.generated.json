@@ -1,6 +1,6 @@
 {
   "generator": "scripts/release/generate_goldens.sh",
-  "generated_at": "2026-04-23T12:46:59Z",
+  "generated_at": "2026-04-23T12:52:54Z",
   "pinned_sessions": {
     "codex": "codex-fixture",
     "claude": "claude-fixture",
