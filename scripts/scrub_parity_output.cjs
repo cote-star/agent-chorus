@@ -135,14 +135,27 @@ function scrubDoctor(obj) {
   // session-store paths, and system-wide session dirs that differ per machine.
   // We redact anything that looks like an absolute POSIX path in detail strings.
   const abspathRe = /\/(?:Users|var|tmp|home|opt)\/[^\s]+/g;
+  // Checks whose status + detail depend on the host environment (PATH
+  // contents, git config, whether claude CLI is installed). Parity check
+  // (Node vs Rust) still compares these directly — both runtimes see the
+  // same env, so they agree. But the golden file is frozen from the author's
+  // machine; on a fresh CI clone or another dev's laptop, these checks
+  // legitimately report different statuses. Drop them from the golden
+  // comparison entirely — id-only stability is what matters here.
+  const ENV_DEPENDENT_CHECK_IDS = new Set([
+    'claude_plugin',
+    'context_pack_hooks_path',
+    'context_pack_pre_push',
+    'update_status',
+  ]);
   if (Array.isArray(scrubbed.checks)) {
     scrubbed.checks = scrubbed.checks
       .slice()
+      .filter((c) => !ENV_DEPENDENT_CHECK_IDS.has(c && c.id))
       .sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')))
       .map((c) => {
         const out = { ...c };
         if (out.id === 'version' && typeof out.detail === 'string') out.detail = '__VERSION__';
-        else if (out.id === 'update_status' && typeof out.detail === 'string') out.detail = '__UPDATE_STATUS__';
         else if (typeof out.detail === 'string') {
           if (originalCwd) out.detail = scrubCwdInString(out.detail, originalCwd);
           out.detail = out.detail.replace(abspathRe, '__PATH__');
@@ -151,6 +164,9 @@ function scrubDoctor(obj) {
           // "agent-context" naming). Parity-wise the check id is what matters.
           out.detail = out.detail.replace(/\bcontext-pack\b/g, 'agent-context');
         }
+        // Overall status is also env-dependent (pass→warn when a claude_plugin
+        // warn tips it); pin to the structurally correct value.
+        if (typeof scrubbed.overall === 'string') scrubbed.overall = '__OVERALL__';
         return out;
       });
   }
