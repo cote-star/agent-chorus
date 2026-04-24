@@ -1,8 +1,8 @@
 # System Overview
 
 ## Product Shape
-- npm package: `agent-chorus` v0.13.0 (binaries: `chorus`, `chorus-node`)
-- Rust crate: `agent-chorus` v0.13.0 (binary: `chorus`)
+- npm package: `agent-chorus` v0.14.0 (binaries: `chorus`, `chorus-node`)
+- Rust crate: `agent-chorus` v0.14.0 (binary: `chorus`)
 - ~130 tracked files across Node scripts, Rust source, schemas, fixtures, and docs
 - Ships as a global CLI tool (`npm install -g agent-chorus`)
 
@@ -54,7 +54,27 @@
 - `cli/src/summary.rs`, `cli/src/timeline.rs`, `cli/src/doctor.rs`, `cli/src/setup.rs` ship the four previously-Node-only subcommands. Output shape matches the Node implementation byte-for-byte against shared golden fixtures in `fixtures/golden/`.
 - `cli/src/agents.rs` carries a `ReadOptions` struct plus `_with_options` variants of the read functions that take `include_user`, `include_tool_calls`, and the rendering format. Rust treats `--format json` as an alias for `--json`; Node has a documented fall-through bug at `scripts/read_session.cjs:1759` where `--format json` produces plain text. Use `--json` on both runtimes for JSON.
 - `--tool-calls` on Gemini and Cursor is a no-op in both runtimes — those adapters do not parse a tool-call schema from their stores yet. Flag succeeds silently; no `[TOOL: ...]` blocks appear in output. Tracked for a follow-up.
-- Rust test suite: 52 tests (29 previously, 23 new for the v0.13.0 parity work).
+- Rust test suite: 139 tests as of v0.14.0 (52 at v0.13.0 baseline, 87 added by the agent-context hardening pass).
+
+## Agent-Context Hardening (v0.14.0)
+
+### Manifest additions
+- `aliases` — object mapping canonical filenames to on-disk names (e.g. `{"20_CODE_MAP.md": "20_architecture.md"}`). Verify retries with aliased filenames; seal carries the map forward across re-seals.
+- `last_known_good_sha` — pointer to the sealed HEAD of the last fully-green `verify --ci` run. `rollback --latest-good` resolves this through `history.jsonl` (falling back to rotated archives).
+- `schema_version` — now enforced by `verify`; unknown schema versions fail fast instead of silently degrading.
+- Provenance block — head SHA at seal, seal timestamp, tool versions, tool hashes recorded so downstream consumers can verify pack origin.
+
+### Tier concept (`init --tier 1|2|3`)
+- **Tier 1**: `20_CODE_MAP.md` + `routes.json` only (minimal onboarding surface).
+- **Tier 2**: Tier 1 + `30_BEHAVIORAL_INVARIANTS.md` + `completeness_contract.json`.
+- **Tier 3**: full pack (default; identical to legacy behavior).
+- Seal auto-detects which files are actually present, so a Tier-1/2 pack does not fail the required-files check.
+
+### Session-start freshness gate
+The routing blocks `init` upserts into `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` now open with a mandatory first-line instruction: **agents must compare `head_sha_at_seal` against `git rev-parse HEAD` before any reasoning and warn the user when they diverge.** Rust and Node `init` flows emit the identical preamble. This is a behavior change for agents consuming existing packs — re-run `chorus agent-context init` (or re-seal) to pick up the gate.
+
+### Separate-commit enforcement flag
+`chorus agent-context verify --ci --enforce-separate-commits` inspects `base..HEAD` and fails if any commit mixes `.agent-context/**` with non-pack paths. **Off by default.** The gate is opt-in and intended for teams that have adopted the "pack edits land as their own commit" convention. See `docs/CLI_REFERENCE.md` for the JSON schema additions (`separate_commits`, `mixed_commits`).
 
 ## Tracked Path Density
 | Directory | Files | Content |

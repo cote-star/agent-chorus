@@ -5,7 +5,7 @@
 npm run check          # Full suite: conformance + readme + package + schemas + agent-context tests
 npm run conformance    # Node/Rust parity only
 npm run validate:schemas  # JSON schema validation only
-cargo test --manifest-path cli/Cargo.toml  # Rust unit tests (52 tests as of v0.13.0)
+cargo test --manifest-path cli/Cargo.toml  # Rust unit tests (139 tests as of v0.14.0)
 cargo clippy --manifest-path cli/Cargo.toml
 bash scripts/test_context_pack.sh  # Agent-context integration tests (9 tests)
 ```
@@ -33,6 +33,11 @@ The pre-v0.13.0 chain had `package-node.needs = [verify, publish-crate]` and `cr
 
 ## Branch Protection
 - `main` has force-push denied and deletion denied (enabled alongside v0.12.1). All changes land through reviewed PRs.
+
+## Agent-Context Atomicity Guarantees (v0.14.0, P10)
+- **Staging-dir + rename commit**: Seal writes the new snapshot to a staging directory inside `.agent-context/` and promotes it via `rename(2)` — an atomic filesystem op on POSIX. A crash mid-seal leaves the previous snapshot intact.
+- **Stale lockfile auto-recovery**: If a prior seal was interrupted, the next seal detects the stale lock, recovers cleanly, and continues. Callers no longer need a manual `rm .agent-context/.lock` recipe.
+- **Concurrent verify safety**: `verify` reads the committed snapshot only; a seal that is mid-flight in its staging dir cannot be observed by a racing verify run. This closes F29–F33 (concurrency) and F55 (recovery).
 
 ## Release Flow
 1. Ensure all checks pass: `npm run check && cargo clippy`
