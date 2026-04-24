@@ -179,6 +179,8 @@ pub fn run_setup(
                 pack_dir: None,
                 cwd: Some(cwd_path.to_string_lossy().to_string()),
                 force,
+                follow_symlinks: false,
+                tier: agent_context::InitTier::default(),
             }) {
                 Ok(_) => operations.push(json!({
                     "type": "context-pack",
