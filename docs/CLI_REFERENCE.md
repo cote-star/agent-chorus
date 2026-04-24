@@ -19,7 +19,7 @@ chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
 chorus checkpoint --from <agent> [--cwd=<path>] [--message=<text>] [--json]
 chorus setup [--cwd=<path>] [--dry-run] [--force] [--agent-context] [--json]
 chorus doctor [--cwd=<path>] [--json]
-chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify> [...]
+chorus agent-context <init|seal|build|sync-main|install-hooks|rollback|check-freshness|verify|check-tool-integrity> [...]
 chorus teardown [--cwd=<path>] [--dry-run] [--global] [--json]
 ```
 
@@ -337,9 +337,51 @@ chorus agent-context install-hooks
 # Restore latest local snapshot
 chorus agent-context rollback
 
+# P13/F58: restore the snapshot the manifest's last_known_good_sha points to
+chorus agent-context rollback --latest-good
+
 # Non-blocking warning check for stale pack updates
 chorus agent-context check-freshness --base origin/main
+
+# P7: zone-grouped diff from seal-time baseline → current HEAD
+#     (subagent reconciliation protocol)
+chorus agent-context diff --since-seal
+chorus agent-context diff --since-seal --format text
+
+# P13/F46: tiered adoption — scaffold a narrower starting pack
+chorus agent-context init --tier 1   # CODE_MAP + routes.json only
+chorus agent-context init --tier 2   # + BEHAVIORAL_INVARIANTS + completeness_contract
+chorus agent-context init --tier 3   # full pack (default; existing behavior)
 ```
+
+### P13 — Authoring ergonomics (tiers, aliases, last-known-good)
+
+The init flow supports three adoption tiers. Tier 3 preserves legacy
+behavior; tiers 1 and 2 scaffold a narrower core so teams can adopt the
+skill without committing to the full pack upfront.
+
+| Tier | Files scaffolded |
+|---|---|
+| 1 | `20_CODE_MAP.md`, `routes.json` |
+| 2 | Tier 1 + `30_BEHAVIORAL_INVARIANTS.md`, `completeness_contract.json` |
+| 3 | Full pack (default — all nine files) |
+
+`manifest.json` gains two P13 fields that `seal` and `verify` carry
+forward between runs:
+
+- `aliases` — object mapping canonical filenames to the on-disk names the
+  team prefers. Example: `{"20_CODE_MAP.md": "20_architecture.md"}`.
+  `verify` accepts the aliased filename when the canonical one is missing.
+- `last_known_good_sha` — SHA promoted by `verify --ci` on a green run.
+  `rollback --latest-good` resolves this pointer to the matching snapshot
+  in `history.jsonl` and restores it, giving teams a one-command
+  "undo to last green".
+
+The routing blocks written to `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`
+at `init` time now start with a mandatory session-start freshness gate
+(F47): "Before any reasoning, check
+`.agent-context/current/manifest.json`'s `head_sha_at_seal` vs
+`git rev-parse HEAD`. If they diverge, warn the user."
 
 You can also bootstrap agent-context from setup:
 
@@ -369,6 +411,7 @@ chorus agent-context verify --ci --base origin/develop
 | `--ci` | Combined integrity + freshness check with JSON output | off |
 | `--base` | Git ref to diff against for freshness detection | `origin/main` |
 | `--json` | Force JSON output (implied by `--ci`) | off |
+| `--enforce-separate-commits` | (P6) Under `--ci`, fail when any commit in `base..HEAD` touches both `.agent-context/**` and non-pack paths | off |
 
 **JSON output (`--ci`):**
 
@@ -390,7 +433,151 @@ chorus agent-context verify --ci --base origin/develop
 | `pack_updated` | `boolean` | Whether `.agent-context/current/` was also modified |
 | `exit_code` | `number` | `0` if both checks pass, non-zero otherwise |
 
+When `--enforce-separate-commits` is set, the JSON output adds:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `separate_commits` | `"pass"` / `"fail"` | Whether every commit keeps pack and non-pack changes separate |
+| `mixed_commits` | `string[]` | Human-readable lines (`commit <sha> mixes pack + non-pack changes`) for each offender |
+
+A mixed commit causes `exit_code: 1` even when integrity and freshness pass.
+The gate is off by default because many teams land pack updates in the same
+commit as the code change that motivated them; only enable it when your team
+has agreed on the "pack edits land as their own commit" convention (see the
+"Known limitations" section in `RELEASE_NOTES.md`). The Node entrypoint
+(`scripts/agent_context/verify.cjs`) accepts the flag for parity but exits 1
+with a message pointing to the Rust binary until the Node port lands.
+
 A CI workflow template is available at `templates/ci-agent-context.yml`.
+
+The `--ci` JSON payload also carries the P7 subagent-reconciliation shape under
+`diff_since_seal` and the flat `acceptance_tests_invalidated` list. CI fails
+(`exit_code = 1`) when `acceptance_tests_invalidated` is non-empty AND the pack
+wasn't updated, so stale ground truth cannot pass the gate.
+
+### Trust boundary & pack integrity (P12)
+
+**Semantic `look_for` (F40):** `search_scope.json` verification_shortcuts now
+strip comments from the referenced file before matching the `look_for`
+substring. Supported extensions: `.py` (line `#` + `"""..."""` docstrings),
+`.rs` / `.ts` / `.tsx` / `.js` / `.jsx` / `.cjs` / `.mjs`
+(`//` line + `/* */` block). Other extensions fall back to the existing raw
+substring contract. A match that only appears inside comments surfaces as:
+
+```
+LOOK_FOR_MISSING: search_scope lookup: look_for matches only comments in calc.py: MIN_CELL_SIZE = 30
+```
+
+When authors want regex semantics, add `look_for_regex` alongside `look_for`:
+
+```json
+{
+  "file": "calc.py",
+  "look_for": "MIN_CELL_SIZE",
+  "look_for_regex": "MIN_CELL_SIZE\\s*=\\s*\\d+"
+}
+```
+
+`look_for_regex` takes precedence over `look_for` when both are present.
+
+**Verified acceptance tests (F41):** `acceptance_tests.md` tests may declare
+`verified: true` with a list of `anchors` pinning `{file, line, line_contains}`
+pointers into real code. On verify, each anchor's `line_contains` must appear
+at the named line (±3 lines tolerance); a miss emits
+`VERIFIED_ANCHOR_MISS` in `structural_warnings[]`. The pack is considered
+"ship-quality" when at least 2 of N tests are verified; fewer emits the
+non-fatal `VERIFIED_COUNT_LOW`.
+
+**Audit trail (F42):** `history.jsonl` entries now carry:
+
+| Field | Meaning |
+|---|---|
+| `sealed_by` | `"name <email>"` from `git config user.{name,email}`. |
+| `prose_diff_sections` | H2 sections whose body changed vs the previous snapshot, keyed `<file>#<heading>` (e.g. `20_CODE_MAP.md#Contexts`). Empty on first seal. |
+| `seal_reason` | Mirror of `reason` for explicit audit reads. |
+
+**HIGH_TRUST_DIFF labeling (F39):** the shipped CI workflow
+(`templates/ci-agent-context.yml`) applies label `HIGH_TRUST_DIFF` when a PR
+diff touches prose in `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md`,
+`.agent-context/current/00_START_HERE.md`, or any of `CLAUDE.md`/`AGENTS.md`/
+`GEMINI.md`. Branch protection should require CODEOWNERS approval on the label.
+
+**Known limitation — `[skip ci]` bypass (F43):** the PR gate runs on
+`pull_request` events, so a merge with `[skip ci]` will skip the PR check
+entirely. Solutions in order of strength:
+
+1. Configure branch-protection rules to disallow `[skip ci]` on protected
+   branches (the primary defense).
+2. The shipped CI template also runs `chorus agent-context verify --ci` on
+   push to `main`, so drift lands as a red check on the merged commit even
+   when the PR gate was skipped.
+3. Teams that want a stricter gate can require the post-merge verify
+   workflow to pass via branch protection.
+
+## Context Pack Diff (Subagent Reconciliation)
+
+P7. Zone-grouped diff from the seal-time baseline to current HEAD. Intended for
+the orchestrator of a parallel-subagent session: after subagents modify code,
+run this to learn which pack sections are impacted, then dispatch a single
+reconciler subagent to patch and re-seal.
+
+```bash
+# Machine-readable JSON (default)
+chorus agent-context diff --since-seal
+
+# Human-readable summary of zones + actions
+chorus agent-context diff --since-seal --format text
+
+# Explicit pack dir / cwd
+chorus agent-context diff --since-seal --pack-dir .agent-context --cwd /repo
+```
+
+**Flags:**
+
+| Flag | Description | Default |
+|---|---|---|
+| `--since-seal` | Required. Diff from `manifest.post_commit_sha` (preferred) or `head_sha_at_seal`. | — |
+| `--format` | `json` (default) or `text`. | `json` |
+| `--pack-dir` | Override pack directory. | `.agent-context` |
+| `--cwd` | Working directory. | current directory |
+
+**JSON output:**
+
+```json
+{
+  "baseline_sha": "abc1234…",
+  "pack_updated": false,
+  "zones": [
+    {
+      "paths": ["src/**"],
+      "affects": ["20_CODE_MAP.md"],
+      "changed_files": ["src/lib.rs", "src/new_module.rs"],
+      "signature_drifts": [],
+      "count_deltas": [],
+      "deleted_files": []
+    }
+  ],
+  "acceptance_tests_invalidated": [],
+  "recommended_reconciliation_actions": [
+    "Review 20_CODE_MAP.md: 2 file(s) changed in zone",
+    "Re-seal the pack (`chorus agent-context seal --force`) after patching sections"
+  ]
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `baseline_sha` | `string` or `null` | The seal-time commit (`post_commit_sha` if present, else `head_sha_at_seal`). |
+| `pack_updated` | `boolean` | Whether `.agent-context/current/` was touched since the baseline. |
+| `zones[]` | array | One entry per authored zone in `relevance.json` that had a matching changed file. |
+| `zones[].signature_drifts` | array | Reserved for P2 baseline-drift integration — empty today. |
+| `zones[].count_deltas` | array | Reserved for P2 — empty today. |
+| `zones[].deleted_files` | array | Reserved for P2 — empty today. |
+| `acceptance_tests_invalidated[]` | array | Acceptance tests whose `invalidated_by` functions drifted (requires P4 schema in `acceptance_tests.md`). |
+| `recommended_reconciliation_actions[]` | `string[]` | Natural-language bullets the reconciler subagent can follow. |
+
+See the "Parallel subagent pattern" section in `skills/agent-context/SKILL.md`
+for the orchestrator workflow.
 
 ## Common Recipes
 

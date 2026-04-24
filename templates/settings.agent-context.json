@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "chorus agent-context check-freshness --affected-sections \"${CLAUDE_TOOL_INPUT_FILE_PATH:-}\" 2>&1 || true",
+            "timeout_ms": 200
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c 'if echo \"$CLAUDE_TOOL_INPUT_COMMAND\" | grep -qE \"^(rm|git rm|mv) \"; then chorus agent-context check-freshness --affected-sections-for-cmd \"$CLAUDE_TOOL_INPUT_COMMAND\"; fi'",
+            "timeout_ms": 500
+          }
+        ]
+      }
+    ]
+  }
+}

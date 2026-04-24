@@ -10,6 +10,10 @@ function parseArgs(argv) {
     packDir: process.env.CHORUS_CONTEXT_PACK_DIR || process.env.BRIDGE_CONTEXT_PACK_DIR || '.agent-context',
     cwd: process.cwd(),
     force: false,
+    // P13/F46: adoption tier. 3 = full pack (legacy default), 2 = CODE_MAP +
+    // BEHAVIORAL_INVARIANTS + routes + completeness_contract, 1 = CODE_MAP +
+    // routes only. Node parity with cli/src/agent_context.rs::InitTier.
+    tier: 3,
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -28,6 +32,16 @@ function parseArgs(argv) {
       case '--force':
         opts.force = true;
         break;
+      case '--tier': {
+        const parsed = Number.parseInt(next, 10);
+        if (![1, 2, 3].includes(parsed)) {
+          console.error('[context-pack] init --tier accepts 1, 2, or 3');
+          process.exit(1);
+        }
+        opts.tier = parsed;
+        if (inline == null) i += 1;
+        break;
+      }
       default:
         break;
     }
@@ -52,7 +66,16 @@ function relPath(target, base) {
   return path.relative(base, target) || target;
 }
 
-function defaultRelevanceJson() {
+/**
+ * P3: produce the default relevance.json shipped by init, including a
+ * `zones[]` array so freshness can map changed files to pack sections.
+ * When `hasStudy` is true, include a `study/**` zone; otherwise fall back to
+ * a placeholder `docs/**` zone so the default file is always zone-map-valid.
+ */
+function defaultRelevanceJson(hasStudy = false) {
+  const studyZone = hasStudy
+    ? '    {"paths": ["study/**", "docs/methodology/**"], "affects": ["10_SYSTEM_OVERVIEW.md", "30_BEHAVIORAL_INVARIANTS.md"]},\n'
+    : '    {"paths": ["docs/**"], "affects": ["10_SYSTEM_OVERVIEW.md", "30_BEHAVIORAL_INVARIANTS.md"]},\n';
   return `{
   "include": ["**"],
   "exclude": [
@@ -64,6 +87,11 @@ function defaultRelevanceJson() {
     "build/**",
     "vendor/**",
     "tmp/**"
+  ],
+  "zones": [
+${studyZone}    {"paths": ["src/**", "cli/src/**"], "affects": ["20_CODE_MAP.md", "30_BEHAVIORAL_INVARIANTS.md"]},
+    {"paths": ["scripts/run_*.py", "scripts/**"], "affects": ["20_CODE_MAP.md", "40_OPERATIONS_AND_RELEASE.md"]},
+    {"paths": ["pyproject.toml", "Cargo.toml", "package.json", "cli/Cargo.toml"], "affects": ["40_OPERATIONS_AND_RELEASE.md"]}
   ]
 }
 `;
@@ -454,9 +482,17 @@ function templateSearchScopeJson() {
   }, null, 2)}\n`;
 }
 
+// P13/F47: mandatory first-line freshness gate. Kept identical across agent
+// variants so every routing block carries the same contract. Must stay in
+// lockstep with cli/src/agent_context.rs::build_context_pack_routing_block.
+const FRESHNESS_GATE =
+  '**Before any reasoning, check `.agent-context/current/manifest.json`\'s `head_sha_at_seal` vs `git rev-parse HEAD`. If they diverge, warn the user.**';
+
 function buildContextPackRoutingBlock(agentKind) {
   if (agentKind === 'codex') {
     return `## Context Pack
+
+${FRESHNESS_GATE}
 
 When asked to understand this repository:
 
@@ -473,6 +509,8 @@ If \`.agent-context/current/routes.json\` is missing, fall back to the markdown 
   }
 
   return `## Context Pack
+
+${FRESHNESS_GATE}
 
 **BEFORE starting any task**, read the context pack in this order:
 
@@ -511,24 +549,45 @@ function main() {
 
   const generatedAt = nowStamp();
 
-  const outputs = [
-    ['00_START_HERE.md', templateStartHere(repoName, branch, headSha, generatedAt)],
-    ['10_SYSTEM_OVERVIEW.md', templateSystemOverview()],
-    ['20_CODE_MAP.md', templateCodeMap()],
-    ['30_BEHAVIORAL_INVARIANTS.md', templateInvariants()],
-    ['40_OPERATIONS_AND_RELEASE.md', templateOperations()],
-    ['routes.json', templateRoutesJson()],
-    ['completeness_contract.json', templateCompletenessContractJson()],
-    ['reporting_rules.json', templateReportingRulesJson()],
-    ['search_scope.json', templateSearchScopeJson()],
-  ];
+  // P13/F46: scaffold only the files the requested tier defines.
+  // Tier 3 preserves legacy behavior (full pack).
+  let outputs;
+  if (opts.tier === 1) {
+    outputs = [
+      ['20_CODE_MAP.md', templateCodeMap()],
+      ['routes.json', templateRoutesJson()],
+    ];
+  } else if (opts.tier === 2) {
+    outputs = [
+      ['20_CODE_MAP.md', templateCodeMap()],
+      ['30_BEHAVIORAL_INVARIANTS.md', templateInvariants()],
+      ['routes.json', templateRoutesJson()],
+      ['completeness_contract.json', templateCompletenessContractJson()],
+    ];
+  } else {
+    outputs = [
+      ['00_START_HERE.md', templateStartHere(repoName, branch, headSha, generatedAt)],
+      ['10_SYSTEM_OVERVIEW.md', templateSystemOverview()],
+      ['20_CODE_MAP.md', templateCodeMap()],
+      ['30_BEHAVIORAL_INVARIANTS.md', templateInvariants()],
+      ['40_OPERATIONS_AND_RELEASE.md', templateOperations()],
+      ['routes.json', templateRoutesJson()],
+      ['completeness_contract.json', templateCompletenessContractJson()],
+      ['reporting_rules.json', templateReportingRulesJson()],
+      ['search_scope.json', templateSearchScopeJson()],
+    ];
+  }
 
   for (const [filename, content] of outputs) {
     safeWriteText(path.join(currentDir, filename), content);
   }
 
   if (!fs.existsSync(relevancePath) || opts.force) {
-    safeWriteText(relevancePath, defaultRelevanceJson());
+    // P3: when a `study/` directory exists at repo root, tailor the default
+    // zone map to include it so freshness surfaces the right pack sections.
+    const hasStudy = fs.existsSync(path.join(repoRoot, 'study')) &&
+      fs.statSync(path.join(repoRoot, 'study')).isDirectory();
+    safeWriteText(relevancePath, defaultRelevanceJson(hasStudy));
   }
 
   if (!fs.existsSync(guidePath) || opts.force) {

@@ -1,5 +1,74 @@
 # Release Notes
 
+## v0.14.0 — 2026-04-21
+
+**Agent-context hardening pass: P1–P13 addressing failure modes F19–F58 across integrity, hostile input, concurrency, schema lifecycle, and authoring ergonomics.**
+
+v0.14.0 ships the thirteen-pass hardening effort planned in `research/agent-context-gaps-plan.md` on top of v0.13.0's full Rust parity. Every pass closes a named set of failure modes from the gap analysis. The Rust CLI and Node adapter receive matching changes; both implementations continue to emit byte-identical outputs where they share contract. The headline behavior change is the **session-start freshness gate**: routing blocks in `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` now carry a mandatory first-line instruction directing agents to compare `head_sha_at_seal` against `git rev-parse HEAD` before any reasoning and warn the user when they diverge.
+
+### Integrity & provenance (P1, P2, P11, P12)
+
+- **P1 — rich manifest + provenance.** `manifest.json` now carries provenance fields (head SHA at seal, seal timestamp, tool versions, tool hashes) and records the authoring/sealing chain so downstream consumers can verify pack origin.
+- **P2 — structural verifier.** `chorus agent-context verify` gains a structural pass that validates required sections, cross-file references, and JSON-schema-bound authority files beyond the earlier checksum-only integrity check.
+- **P11 — schema version enforcement + install integrity (F34, F36, F37, F38).** Manifest now pins a schema version; `verify` rejects packs whose schema version is unknown to the installed CLI, and `install` performs integrity checks so tampered or partially-installed packs fail fast instead of silently degrading.
+- **P12 — trust boundary & pack integrity.** Pack integrity validation runs on every seal. The trust boundary between pack content and agent reasoning is documented and enforced end-to-end.
+
+### Hostile input safety (P8, P9)
+
+- **P8 — hostile input & platform safety (F19–F23).** Seal and verify now harden against hostile pack content: path traversal, symlink escape, oversized files, non-UTF-8 sequences, and platform-specific name collisions are all rejected with clear diagnostics rather than producing corrupt packs.
+- **P9 — git edge cases (F24–F28).** Detached HEAD, submodules, worktrees, shallow clones, and grafted histories are all handled explicitly. `build_manifest` records a `detached` flag and `SealOptions` carries `follow_symlinks: false` by default.
+
+### Concurrency & atomicity (P10)
+
+- **P10 — concurrency, atomic writes & recovery (F29–F33, F55).** Seal is now crash-safe: writes go through a staging directory with `rename` commit, stale lockfiles from interrupted seals are detected and recovered, and concurrent `verify` runs no longer race against a mid-flight seal.
+
+### Authoring ergonomics & lifecycle (P13)
+
+- **F46 — Tiered adoption.** `agent-context init --tier <1|2|3>` lets teams scaffold a narrower starting pack. Tier 1 ships `20_CODE_MAP.md` + `routes.json` only; Tier 2 adds `30_BEHAVIORAL_INVARIANTS.md` + `completeness_contract.json`; Tier 3 is the full pack (default, identical to legacy behavior). Seal auto-detects which files are actually present, so a Tier-1/2 pack does not fail the required-files check. Node parity added to `scripts/agent_context/init.cjs`.
+- **F50 — Pack-file alias support.** `manifest.json` gains an `aliases` object mapping canonical filenames to on-disk names (e.g. `{"20_CODE_MAP.md": "20_architecture.md"}`). Both `verify` and the Node verifier retry with the aliased filename when the canonical one is missing and surface a `NOTE` in human output so an author can see the alias was consulted. `seal` carries the `aliases` map forward across re-seals.
+- **F58 — Last-known-good pointer.** `manifest.json` gains `last_known_good_sha`. `verify --ci` promotes the sealed HEAD into this field on a fully green run. `agent-context rollback --latest-good` resolves the pointer through `history.jsonl` (falling back to rotated archives) and restores the matching snapshot. `--latest-good` and `--snapshot` are mutually exclusive. Node parity added in `scripts/agent_context/rollback.cjs` and `scripts/agent_context/verify.cjs`.
+- **F47 — Session-start freshness gate.** The routing blocks `init` upserts into `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` now open with a mandatory first-line instruction: agents must compare `head_sha_at_seal` against `git rev-parse HEAD` before any reasoning and warn the user when they diverge. The Rust and Node `init` flows emit the identical preamble. **This is a behavior change for agents consuming existing packs** — re-run `chorus agent-context init` (or re-seal) after upgrade to pick up the gate.
+
+### Zone-aware freshness & pre-edit awareness (P3, P4, P5)
+
+- **P3 — zone-aware freshness + suggest-patches.** Freshness detection now operates per pack zone (code map, invariants, operations, etc.) instead of a single global-stale signal. `check-freshness` emits targeted suggestion patches naming which sections the diff affects, which P6 hook intelligence consumes.
+- **P4 — pre-edit awareness.** Authoring flows now read the pack before editing so that the agent is aware of the invariants it is about to mutate.
+- **P5 — count SSOT via handlebars.** Counts quoted in narrative markdown (file counts, invariant counts, etc.) are expanded from the manifest through a single handlebars-style source of truth, eliminating drift between prose and data.
+
+### Subagent reconciliation (P7)
+
+- **P7 — subagent reconciliation diff --since-seal.** `chorus agent-context diff --since-seal` compares a subagent's working tree against the last sealed state so a parent agent can reconcile parallel subagent work without re-reading full sessions.
+
+### Hook intelligence + separate-commit enforcement (P6)
+
+- Pre-push hook now detects pack-only pushes (every path in the push range starts with `.agent-context/`) and skips the freshness cycle with a `pack-only push, skipping freshness check` message. Closes the noise loop where code pushes warn "pack is stale", the agent updates the pack, and the follow-up push re-warns about its own commit.
+- Each `chorus agent-context verify` / `check-freshness` warning now writes `.agent-context/current/.last_freshness.json` with `{changed_files, affected_sections, timestamp}`. On a subsequent pack-only push the hook reads this state, checks whether the push touches the section files the prior warning named, and prints `warning appears addressed: sections [X, Y] updated`.
+- New opt-in flag `chorus agent-context verify --ci --enforce-separate-commits`. When set, verify inspects `base..HEAD` and fails if any commit mixes `.agent-context/**` with non-pack paths. **Off by default;** the gate is intended for teams that have adopted the "pack edits land as their own commit" convention. See `docs/CLI_REFERENCE.md` for the JSON schema additions (`separate_commits`, `mixed_commits`).
+
+### Known Limitations
+
+- **Markdown merge conflicts (#11):** Parallel PRs that both edit the same pack markdown file (e.g. `20_CODE_MAP.md`) can conflict on merge. The tooling cannot auto-resolve these. Mitigation: keep pack files organized around stable H2 section headings so edits cluster inside bounded sections and conflicts stay localized. Re-seal after the human conflict resolution.
+- **Squash-merge collapses pack commits (#12):** When a PR uses squash merge, the separate pack commit is folded into the squash parent. This is a git workflow decision outside the tooling's authority. Mitigation: teams that squash should land pack updates as their own PR (the team convention documented in `skills/agent-context/SKILL.md`). Teams that merge-commit or rebase-and-merge can keep pack updates in the same PR; `--enforce-separate-commits` is available for those teams to hard-require separate commits.
+
+### Deferred (TODO(P13-continuation))
+
+These items from the P13 plan are **intentionally deferred** and carry a `TODO(P13-continuation)` marker in the plan/code. Tracked for a follow-up P13-continuation package; nothing in this release blocks on them:
+
+- **F48** — `explain-diff` subcommand (new command surface).
+- **F49** — Monorepo multi-team mode (structural change).
+- **F51** — Canonical routing template (better coordinated via the `team_skills` track).
+- **F52** — Scheduled job to re-run acceptance tests.
+- **F53** — Cross-file integrity check.
+- **F54** — Difficulty floor for acceptance tests.
+- **F59** — Cryptographic history chain.
+- **F45** — `AUTHORING_TODO.md`.
+
+### Upgrade Notes
+
+- Re-run `chorus agent-context init` (or re-seal) after upgrade so existing packs pick up the session-start freshness gate preamble in `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`.
+- `--enforce-separate-commits` is off by default; enable explicitly in CI only if your team has adopted the separate-pack-commit convention.
+- Existing packs sealed before v0.14.0 will continue to verify, but new fields (`aliases`, `last_known_good_sha`) are only populated on a re-seal under v0.14.0.
+
 ## v0.13.0 — 2026-04-21
 
 **Full Rust parity for the v0.11.0 Node-only surface, plus CI decoupling so a stale registry token no longer silently drops a GitHub Release.**

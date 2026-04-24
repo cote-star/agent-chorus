@@ -126,11 +126,33 @@ git commit -m "feat: add agent context pack (.agent-context)"
 
 When you are an agent that has just completed work and is preparing a PR:
 
-### Step 1 — Determine what changed
+### Step 1 — Post-work reconciliation
+
+After completing a multi-edit task, run the suggest-patches verifier to see which pack sections are affected by the diff:
+
+```bash
+chorus agent-context verify --suggest-patches
+```
+
+The JSON payload reports `changed_files`, `pack_sections_to_update`, a capped `diff_excerpt`, and (once P2 is integrated) `baseline_drift` entries for signature/count/family drift. Patch only the sections it names, then re-seal:
+
+```bash
+chorus agent-context seal --force
+```
+
+This replaces the "remember-after" reconciliation pattern with a targeted, diff-aware one — agents no longer guess which files to touch.
+
+> Tip: install the pre-edit freshness prompt so drift is caught at edit time, not afterward:
+> ```bash
+> chorus agent-context install-hooks --install-settings-template
+> ```
+> This merges `templates/settings.agent-context.json` into `.claude/settings.json`, wiring a PreToolUse hook that runs `chorus agent-context check-freshness` before every Edit/Write/Bash mutation.
+
+### Step 2 — Determine what changed
 
 Review your own work: which files did you create, modify, or delete?
 
-### Step 2 — Map changes to context pack sections
+### Step 3 — Map changes to context pack sections
 
 For each changed file, check:
 - Is it in `20_CODE_MAP.md`? Does the entry need updating?
@@ -139,17 +161,17 @@ For each changed file, check:
 - Is it a new file that should be added to CODE_MAP or a completeness contract?
 - Is it a deleted file that should be removed from contracts?
 
-### Step 3 — Patch only the affected sections
+### Step 4 — Patch only the affected sections
 
 Edit only the specific lines/entries that are affected. Do NOT rewrite entire files.
 
-### Step 4 — Re-seal
+### Step 5 — Re-seal
 
 ```bash
 chorus agent-context seal --force
 ```
 
-### Step 5 — Commit as a separate commit
+### Step 6 — Commit as a separate commit
 
 ```bash
 git add .agent-context/
@@ -220,3 +242,30 @@ A context pack is ready when:
 - Do not rewrite the entire pack on updates — patch only affected sections
 - Do not include secrets, credentials, or sensitive configuration in the context pack
 - Do not add the context pack to `.gitignore` — it is meant to be committed and shared
+
+---
+
+## Parallel subagent pattern
+
+When an orchestrator spawns parallel subagents that each modify code in different zones (`src/`, `study/`, `scripts/`, etc.), do **not** ask each subagent to reconcile the context pack. That approach merge-conflicts on pack files and produces N competing, inconsistent patches.
+
+Use this flow instead:
+
+1. **Spawn** subagents in parallel. Each one touches its own code zone and returns a brief change summary. None of them should touch `.agent-context/`.
+2. **Collect** the changes. After all subagents return, run:
+
+    ```bash
+    chorus agent-context diff --since-seal --format json
+    ```
+
+    This emits a zone-grouped JSON payload: for each authored zone in `relevance.json`, the `changed_files` that match plus the `affects` pack sections (e.g. `20_CODE_MAP.md`, `30_BEHAVIORAL_INVARIANTS.md`). It also includes `acceptance_tests_invalidated` — the acceptance tests whose `invalidated_by` functions drifted — and `recommended_reconciliation_actions`, a bullet list the next agent can follow.
+
+3. **Dispatch a single reconciler subagent** with the JSON payload. Its job is to:
+   - patch each `affects` section (only the lines the zone implies)
+   - revalidate any `acceptance_tests_invalidated`
+   - run `chorus agent-context seal --force` once, at the end
+   - commit `.agent-context/` as a separate commit per the Update flow
+
+4. **Verify in CI.** `chorus agent-context verify --ci` surfaces the same payload under `diff_since_seal` and fails when `acceptance_tests_invalidated` is non-empty AND the pack wasn't updated to revalidate. If CI fails on this gate, the reconciler subagent was either skipped or incomplete.
+
+One reconciler subagent = one consistent pack patch. N parallel reconcilers = conflicts and stale prose.

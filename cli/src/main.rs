@@ -448,6 +448,33 @@ enum ContextPackCommand {
         /// Preview changes without writing
         #[arg(long)]
         dry_run: bool,
+
+        /// P1 — also install a post-commit hook that runs
+        /// `chorus agent-context post-commit-reconcile` when the commit
+        /// touched `.agent-context/**`. Opt-in — off by default so existing
+        /// installs are not disturbed.
+        #[arg(long = "enable-post-commit-reconcile")]
+        enable_post_commit_reconcile: bool,
+
+        /// P4 — also merge the shipped `templates/settings.agent-context.json`
+        /// PreToolUse hook entries into `.claude/settings.json`. Existing keys
+        /// are preserved; idempotent when run twice.
+        #[arg(long = "install-settings-template")]
+        install_settings_template: bool,
+    },
+
+    /// P1 — reconcile the manifest's `post_commit_sha` with the current
+    /// git HEAD. Intended to be invoked from a post-commit hook after a
+    /// commit that touched `.agent-context/**`.
+    #[command(name = "post-commit-reconcile")]
+    PostCommitReconcile {
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
+
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
     },
 
     /// Restore context pack from snapshot
@@ -459,6 +486,13 @@ enum ContextPackCommand {
         /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
         #[arg(long)]
         pack_dir: Option<String>,
+
+        /// P13/F58: roll back to the snapshot matching the manifest's
+        /// `last_known_good_sha` field. The pointer is promoted on
+        /// `verify --ci` success, so this gives teams a simple "undo to last
+        /// green" without knowing the snapshot ID. Conflicts with `--snapshot`.
+        #[arg(long = "latest-good")]
+        latest_good: bool,
     },
 
     /// Verify context pack integrity (checksums)
@@ -478,6 +512,27 @@ enum ContextPackCommand {
         /// Base ref for freshness check (default: origin/main)
         #[arg(long)]
         base: Option<String>,
+
+        /// Recover from a corrupt manifest by restoring the most recent intact
+        /// snapshot. Prompts for confirmation unless --yes is given.
+        #[arg(long)]
+        repair: bool,
+
+        /// Skip the interactive confirmation prompt when running --repair.
+        #[arg(long = "yes")]
+        repair_yes: bool,
+
+        /// P3: emit a JSON payload with changed_files, pack_sections_to_update,
+        /// a capped diff excerpt, and a reserved baseline_drift array. Used by
+        /// agents to target which pack sections to patch.
+        #[arg(long = "suggest-patches")]
+        suggest_patches: bool,
+
+        /// P6: opt-in CI gate that fails when any commit in the PR range
+        /// mixes `.agent-context/**` with non-pack paths. Off by default; only
+        /// active under `--ci`.
+        #[arg(long = "enforce-separate-commits")]
+        enforce_separate_commits: bool,
     },
 
     /// Warn when context-relevant files changed without pack update
@@ -505,6 +560,47 @@ enum ContextPackCommand {
         /// Overwrite existing template files
         #[arg(long)]
         force: bool,
+
+        /// Dereference symlinks whose targets resolve outside the repo root.
+        /// Off by default so a rogue symlink cannot exfiltrate content into
+        /// the pack. Opt in only for repos that rely on out-of-tree sources.
+        #[arg(long)]
+        follow_symlinks: bool,
+
+        /// P13/F46: adoption tier for the scaffolded pack. Tier 1 ships just
+        /// `20_CODE_MAP.md` + `routes.json`. Tier 2 adds
+        /// `30_BEHAVIORAL_INVARIANTS.md` + `completeness_contract.json`. Tier
+        /// 3 (the default) scaffolds the full pack — existing behavior.
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3), default_value_t = 3)]
+        tier: u8,
+    },
+
+    /// P7 — zone-grouped diff from the seal-time baseline to current HEAD.
+    ///
+    /// Intended for the orchestrator of a parallel-subagent session: after
+    /// subagents modify code, run this to learn which pack sections are
+    /// impacted, then dispatch a single reconciler subagent to patch and
+    /// re-seal. Requires a sealed pack (`manifest.json` with
+    /// `head_sha_at_seal` or `post_commit_sha`).
+    Diff {
+        /// Emit diff since the seal-time baseline recorded in
+        /// `manifest.json`. This flag is the only mode currently supported;
+        /// reserved in the spec so future diff modes can slot in cleanly.
+        #[arg(long = "since-seal")]
+        since_seal: bool,
+
+        /// Output format: `json` (default, machine-readable) or `text`
+        /// (human-readable summary of zones + actions).
+        #[arg(long, default_value = "json")]
+        format: DiffFormat,
+
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
     },
 
     /// Validate and seal an agent-authored context pack
@@ -536,6 +632,27 @@ enum ContextPackCommand {
         /// Force creating a new snapshot even when unchanged
         #[arg(long)]
         force_snapshot: bool,
+
+        /// Dereference symlinks whose targets resolve outside the repo root.
+        /// Off by default; turn on only when an out-of-tree source must be
+        /// read into the pack. Seal will still warn on skipped files.
+        #[arg(long)]
+        follow_symlinks: bool,
+    },
+
+    /// P11-drift / F38 — verify that shipped helper scripts under
+    /// `.agent-context/current/tools/` still match the SHA256 values recorded
+    /// on `manifest.json` at seal time. Exits non-zero on any mismatch so CI
+    /// can use it as a standalone tampering gate alongside `verify --ci`.
+    #[command(name = "check-tool-integrity")]
+    CheckToolIntegrity {
+        /// Override pack directory (default: .agent-context or CHORUS_CONTEXT_PACK_DIR)
+        #[arg(long)]
+        pack_dir: Option<String>,
+
+        /// Working directory (default: current directory)
+        #[arg(long)]
+        cwd: Option<String>,
     },
 }
 
@@ -556,6 +673,15 @@ impl AgentType {
             AgentType::Cursor => "cursor",
         }
     }
+}
+
+/// P7 — output format for `agent-context diff --since-seal`. JSON is the
+/// machine-readable contract; text is a compact human-facing summary so an
+/// operator can eyeball the zones without piping through `jq`.
+#[derive(Copy, Clone, PartialEq, Eq, ValueEnum, Debug)]
+enum DiffFormat {
+    Json,
+    Text,
 }
 
 fn main() {
@@ -1125,20 +1251,59 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 &remote_sha,
             )?;
         }
-        ContextPackCommand::InstallHooks { cwd, dry_run } => {
+        ContextPackCommand::InstallHooks {
+            cwd,
+            dry_run,
+            enable_post_commit_reconcile,
+            install_settings_template,
+        } => {
             let target_cwd = effective_cwd(cwd);
-            agent_context::install_hooks(&target_cwd, dry_run)?;
+            agent_context::install_hooks_with_options(
+                &target_cwd,
+                dry_run,
+                enable_post_commit_reconcile,
+            )?;
+            if install_settings_template {
+                agent_context::install_settings_template(&target_cwd, dry_run)?;
+            }
         }
-        ContextPackCommand::Rollback { snapshot, pack_dir } => {
-            agent_context::rollback(snapshot.as_deref(), pack_dir.as_deref())?;
+        ContextPackCommand::PostCommitReconcile { cwd, pack_dir } => {
+            agent_context::post_commit_reconcile(cwd.as_deref(), pack_dir.as_deref())?;
         }
-        ContextPackCommand::Verify { pack_dir, cwd, ci, base } => {
+        ContextPackCommand::Rollback { snapshot, pack_dir, latest_good } => {
+            // P13/F58: --latest-good conflicts with an explicit --snapshot
+            // value. Fail loudly rather than silently picking one.
+            if latest_good && snapshot.is_some() {
+                return Err(anyhow::anyhow!(
+                    "[agent-context] rollback: --latest-good and --snapshot are mutually exclusive"
+                ));
+            }
+            agent_context::rollback_with_options(agent_context::RollbackOptions {
+                snapshot,
+                pack_dir,
+                latest_good,
+            })?;
+        }
+        ContextPackCommand::Verify {
+            pack_dir,
+            cwd,
+            ci,
+            base,
+            repair,
+            repair_yes,
+            suggest_patches,
+            enforce_separate_commits,
+        } => {
             let target_cwd = effective_cwd(cwd);
             agent_context::verify(agent_context::VerifyOptions {
                 pack_dir,
                 cwd: target_cwd,
                 ci,
                 base,
+                repair,
+                repair_yes,
+                suggest_patches,
+                enforce_separate_commits,
             })?;
         }
         ContextPackCommand::CheckFreshness { base, cwd } => {
@@ -1152,11 +1317,22 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             pack_dir,
             cwd,
             force,
+            follow_symlinks,
+            tier,
         } => {
+            // P13/F46: map the numeric CLI flag to the internal tier enum.
+            // clap's range parser guarantees 1..=3 reaches us here.
+            let init_tier = match tier {
+                1 => agent_context::InitTier::One,
+                2 => agent_context::InitTier::Two,
+                _ => agent_context::InitTier::Three,
+            };
             agent_context::init(agent_context::InitOptions {
                 pack_dir,
                 cwd,
                 force,
+                follow_symlinks,
+                tier: init_tier,
             })?;
         }
         ContextPackCommand::Seal {
@@ -1167,6 +1343,7 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
             cwd,
             force,
             force_snapshot,
+            follow_symlinks,
         } => {
             agent_context::seal(agent_context::SealOptions {
                 reason,
@@ -1176,7 +1353,40 @@ fn handle_context_pack(command: ContextPackCommand) -> Result<()> {
                 cwd,
                 force,
                 force_snapshot,
+                follow_symlinks,
             })?;
+        }
+        ContextPackCommand::Diff {
+            since_seal,
+            format,
+            pack_dir,
+            cwd,
+        } => {
+            // --since-seal is currently the only supported diff mode. We
+            // accept it as an explicit flag so future modes (e.g. --since-tag)
+            // slot in cleanly without breaking the CLI contract.
+            if !since_seal {
+                return Err(anyhow::anyhow!(
+                    "[agent-context] diff requires --since-seal; no other mode is implemented yet"
+                ));
+            }
+            let target_cwd = effective_cwd(cwd);
+            let result = agent_context::diff_since_seal(
+                std::path::Path::new(&target_cwd),
+                pack_dir.as_deref(),
+            )?;
+            match format {
+                DiffFormat::Json => {
+                    println!("{}", serde_json::to_string_pretty(&result.value)?);
+                }
+                DiffFormat::Text => {
+                    agent_context::render_diff_since_seal_text(&result.value);
+                }
+            }
+        }
+        ContextPackCommand::CheckToolIntegrity { pack_dir, cwd } => {
+            let target_cwd = effective_cwd(cwd);
+            agent_context::check_tool_integrity(&target_cwd, pack_dir.as_deref())?;
         }
     }
     Ok(())

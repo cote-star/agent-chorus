@@ -20,23 +20,30 @@ name: Agent Context Freshness
 on:
   pull_request:
     branches: [main]
+  # P12 / F43 — post-merge verify catches drift even when a PR was merged
+  # with `[skip ci]` or the PR gate was bypassed. Branch-protection rules
+  # should also disallow `[skip ci]` on protected branches; this job is the
+  # belt-and-braces safety net.
+  push:
+    branches: [main]
 
 # Cancel redundant runs when the PR is updated.
 concurrency:
-  group: agent-context-${{ github.event.pull_request.number }}
+  group: agent-context-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: true
 
 permissions:
   contents: read
   pull-requests: write  # needed to post the status comment
+  issues: write  # needed to label HIGH_TRUST_DIFF
 
 jobs:
   verify-agent-context:
     name: Verify agent-context pack
     runs-on: ubuntu-latest
 
-    # Skip the entire job when the bypass label is present.
-    if: "!contains(github.event.pull_request.labels.*.name, 'skip-agent-context-check')"
+    # PR-only job. Skip the entire job when the bypass label is present.
+    if: "github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-agent-context-check')"
 
     steps:
       # -----------------------------------------------------------
@@ -145,6 +152,149 @@ jobs:
                 body,
               });
             }
+
+  # =================================================================
+  # P12 / F39 — HIGH_TRUST_DIFF labeling
+  # =================================================================
+  # Flag PRs that modify trust-boundary prose so CODEOWNERS approval is
+  # required before merge. The check inspects the PR diff for changes to:
+  #
+  #   - `.agent-context/current/30_BEHAVIORAL_INVARIANTS.md` (any prose line)
+  #   - routing blocks in `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`
+  #     (content between `<!-- agent-chorus:context-pack:*:start -->` and
+  #     `:end -->` markers, or any change if no markers are present)
+  #   - instruction sections of `.agent-context/current/00_START_HERE.md`
+  #     (H2 headings whose body changed)
+  #
+  # When any of these show prose diffs, the job applies the label
+  # `HIGH_TRUST_DIFF` and exits non-zero so branch-protection can require a
+  # CODEOWNERS review before merge.
+  label-high-trust-diff:
+    name: Label HIGH_TRUST_DIFF when trust-boundary prose changes
+    runs-on: ubuntu-latest
+    if: "github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'skip-agent-context-check')"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect trust-boundary prose changes
+        id: detect
+        run: |
+          set -euo pipefail
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          # Paths whose prose lives on the pack trust boundary. Any additions
+          # or modifications here flag HIGH_TRUST_DIFF.
+          TRUST_PATHS=(
+            ".agent-context/current/30_BEHAVIORAL_INVARIANTS.md"
+            ".agent-context/current/00_START_HERE.md"
+            "CLAUDE.md"
+            "AGENTS.md"
+            "GEMINI.md"
+          )
+
+          TRIGGERED=0
+          REASONS=""
+          for path in "${TRUST_PATHS[@]}"; do
+            if [ ! -f "$path" ]; then
+              continue
+            fi
+            # `git diff --quiet` exits 1 when there ARE differences.
+            if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$path"; then
+              TRIGGERED=1
+              REASONS="${REASONS}- ${path}\n"
+            fi
+          done
+
+          if [ "$TRIGGERED" -eq 1 ]; then
+            echo "triggered=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "reasons<<EOF"
+              printf '%b' "$REASONS"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "triggered=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Apply HIGH_TRUST_DIFF label and require CODEOWNERS
+        if: steps.detect.outputs.triggered == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const reasons = `${{ steps.detect.outputs.reasons }}`;
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              labels: ['HIGH_TRUST_DIFF'],
+            });
+            const body = [
+              '### HIGH_TRUST_DIFF applied',
+              '',
+              'This PR modifies trust-boundary prose. CODEOWNERS approval is',
+              'required before merge. Files touched:',
+              '',
+              reasons || '(no reason captured)',
+              '',
+              'Configure branch-protection to require CODEOWNERS review on the',
+              '`HIGH_TRUST_DIFF` label.',
+            ].join('\n');
+            const marker = '### HIGH_TRUST_DIFF applied';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c => c.body?.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
+            core.setFailed('HIGH_TRUST_DIFF label applied — CODEOWNERS approval required.');
+
+  # =================================================================
+  # P12 / F43 — post-merge verify (skip-CI safety net)
+  # =================================================================
+  # Runs on every push to `main`, including merges that used `[skip ci]`
+  # or bypassed the PR gate another way. Branch-protection rules should
+  # disallow `[skip ci]` on protected branches as the primary defense;
+  # this job is the belt-and-braces check so drift is caught even when
+  # that is forgotten.
+  post-merge-verify:
+    name: Post-merge agent-context verify
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Verify pack integrity + structural checks
+        run: |
+          set -e
+          npx agent-chorus@latest agent-context verify --ci
 
   # =================================================================
   # OPTIONAL: Separate-commit enforcement
