@@ -79,7 +79,11 @@ jobs:
         if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && steps.npm_package_check.outputs.exists != 'true' }}
         continue-on-error: true
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Uses AGENT_CHORUS_CI (npm "Automation" token, 2FA-bypassed,
+          # scoped to the agent-chorus package). Historical NPM_TOKEN
+          # secret returned 404 on publish because its scope did not
+          # cover this package on the owning npm account.
+          NODE_AUTH_TOKEN: ${{ secrets.AGENT_CHORUS_CI }}
         run: npm publish --access public
 
   publish-github-package:
