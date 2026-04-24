@@ -248,6 +248,16 @@ run_parity_case summary summary-gemini summary-gemini.json \
   summary --agent=gemini --id=gemini-fixture --cwd=/workspace/demo --json :: \
   summary --agent gemini --id gemini-fixture --cwd /workspace/demo --json
 
+# Bug 2 regression: summary over the .jsonl fixture. Before the fix the
+# summary walker did not recognize Gemini's `type: "gemini"` role vocabulary
+# and returned message_count: 0 even though read() returned >0. No golden
+# file — parity between Node and Rust is the gate.
+run_parity_case summary summary-gemini-jsonl "" \
+  summary --agent=gemini --id=gemini-jsonl-fixture --cwd=/workspace/demo \
+    --chats-dir="$STORE/gemini/tmp/demo/chats" --json :: \
+  summary --agent gemini --id gemini-jsonl-fixture --cwd /workspace/demo \
+    --chats-dir "$STORE/gemini/tmp/demo/chats" --json
+
 # --- timeline parity (schema-shape, entries sorted by agent+session_id) ---
 run_parity_case timeline timeline timeline.json \
   timeline --cwd=/workspace/demo --limit 6 --json :: \
@@ -337,6 +347,46 @@ run_gemini_list_case() {
 }
 
 run_gemini_list_case
+
+# Bug 1 regression: `list --agent gemini --cwd <abspath>` should return
+# sessions when the abspath's slug lenient-matches a named Gemini scope dir.
+# The fixture scope `demo` lives under tmp/demo/chats; a cwd ending in
+# `/demo` must match it. Before the fix the listing always hashed the
+# abspath and returned [] when the hash dir didn't exist.
+run_gemini_list_cwd_case() {
+  local node_out="$TMP_DIR/list-gemini-cwd-node.json"
+  local rust_out="$TMP_DIR/list-gemini-cwd-rust.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  node "$ROOT/scripts/read_session.cjs" list \
+    --agent=gemini --cwd=/workspace/demo --limit=20 --json > "$node_out"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- list \
+    --agent gemini --cwd /workspace/demo --limit 20 --json > "$rust_out"
+
+  # Node-vs-Rust shape equivalence.
+  node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "list-gemini-cwd"
+
+  # Behavior assertion: the listing is non-empty and each entry's cwd hint
+  # surfaces the scope slug `demo`.
+  if ! node -e "
+    const rows = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+    if (rows.length === 0) { console.error('FAIL list-gemini-cwd: expected non-empty listing for --cwd /workspace/demo'); process.exit(1); }
+    for (const r of rows) {
+      if (r.cwd !== 'demo') { console.error('FAIL list-gemini-cwd-hint: expected cwd=demo, got ' + JSON.stringify(r.cwd)); process.exit(1); }
+    }
+    console.log('PASS list-gemini-cwd-assertions (' + rows.length + ' sessions, all cwd=demo)');
+  " "$rust_out"; then
+    exit 1
+  fi
+}
+
+run_gemini_list_cwd_case
 
 # --- Gemini .jsonl read parity: proves the line-delimited parser works ---
 #

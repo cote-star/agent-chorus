@@ -58,6 +58,22 @@ v0.14.0 ships the thirteen-pass hardening effort planned in `research/agent-cont
   for every Gemini session. The scope directory name (e.g. `play`) is now returned as the cwd
   hint, so `chorus read --agent gemini --cwd <X>` filtering works for named scopes.
   Hex-hash scopes still return the hash (lossy; users can set `--chats-dir` to pin).
+- **Gemini adapter: lenient `--cwd <abspath>` filter in listings.** `chorus list --agent gemini
+  --cwd /abs/path` previously hashed the abspath and returned `[]` whenever a matching hash
+  directory didn't exist — which is the common case because Gemini CLI actually uses named
+  scopes (e.g. `~/.gemini/tmp/play/chats/`). The listing resolver now also accepts a named
+  scope whose slug equals the cwd's final segment or appears as `/<slug>/` or trailing
+  `/<slug>` within the abspath. This cascades into `chorus timeline --cwd` and
+  `chorus doctor --cwd` (both of which go through `list_sessions`), so `sessions_gemini` now
+  reports `pass` and timeline entries include Gemini when the abspath matches a named scope.
+  Hex-hash scopes are still resolved only by exact hash match.
+- **Gemini adapter: `summary` understands Gemini's role vocabulary.** `chorus summary --agent
+  gemini` used to report `message_count: 0` for `.jsonl` sessions even when `read` returned
+  multi-message content on the same file. The summary walker's role detector now maps
+  `type: "gemini"` and `type: "model"` to `assistant` (matching the existing read-path
+  mapping), and single-document `.json` sessions are expanded into synthetic line-shaped
+  entries so the walker works uniformly across both Gemini layouts. Rust and Node implementations
+  apply the same fix.
 
 ### Known Limitations
 

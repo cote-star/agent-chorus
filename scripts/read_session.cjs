@@ -2966,7 +2966,40 @@ function runSummary(inputArgs) {
   }
 
   const { readJsonlLines, extractClaudeText, extractClaudeContentWithToolCalls, extractText, extractContentWithToolCalls, extractToolCallSummary, extractFilePaths, redactSensitiveText, getFileTimestamp } = require('./adapters/utils.cjs');
-  const lines = readJsonlLines(resolved.path);
+
+  // Extension dispatch: .jsonl parses line-by-line (Claude/Codex/new Gemini),
+  // .json is a single-document Gemini layout whose contents won't survive
+  // the per-line JSON parser. For the single-doc case, walk
+  // `session.messages` / `session.history` and synthesize JSONL-shaped lines
+  // so the downstream walker can consume them unchanged.
+  let lines;
+  if (resolved.path.endsWith('.json')) {
+    let synth = [];
+    try {
+      const raw = fs.readFileSync(resolved.path, 'utf-8');
+      const doc = JSON.parse(raw);
+      if (Array.isArray(doc.messages)) {
+        synth = doc.messages
+          .filter(m => m && typeof m === 'object')
+          .map(m => JSON.stringify(m));
+      } else if (Array.isArray(doc.history)) {
+        for (const turn of doc.history) {
+          const role = ((turn && turn.role) || '').toLowerCase();
+          const mappedType = role === 'user' ? 'user' : 'gemini';
+          let text = '';
+          if (Array.isArray(turn.parts)) {
+            text = turn.parts.map(p => (p && p.text) || '').filter(Boolean).join('\n');
+          } else if (typeof turn.parts === 'string') {
+            text = turn.parts;
+          }
+          if (text) synth.push(JSON.stringify({ type: mappedType, content: text }));
+        }
+      }
+    } catch (_e) { /* fall through: empty synth */ }
+    lines = synth;
+  } else {
+    lines = readJsonlLines(resolved.path);
+  }
 
   const userRequests = [];
   const toolCallCounts = {};
@@ -3000,7 +3033,12 @@ function runSummary(inputArgs) {
 
       // Claude-format messages
       const message = json.message || json;
-      const role = (message.role || json.type || '').toLowerCase();
+      const rawRole = (message.role || json.type || '').toLowerCase();
+      // Normalize Gemini's role vocabulary: `type: "gemini"` and
+      // `type: "model"` both map to `assistant`. Without this, Gemini
+      // .jsonl sessions produce message_count: 0 in the summary even
+      // though `read` returns a non-empty content.
+      const role = (rawRole === 'gemini' || rawRole === 'model') ? 'assistant' : rawRole;
       if (role === 'user') {
         const content = message.content !== undefined ? message.content : json.content;
         const text = extractClaudeText(content) || extractText(content) || '';

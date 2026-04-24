@@ -1,7 +1,8 @@
 {
   "agents_included": [
     "claude",
-    "codex"
+    "codex",
+    "gemini"
   ],
   "chorus_output_version": 1,
   "cwd": "/workspace/demo",
@@ -53,6 +54,34 @@
       "cwd": "/workspace/demo",
       "session_id": "session-codex-multi",
       "snippet": "Third assistant response.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "gemini",
+      "cwd": "demo",
+      "session_id": "session-gemini-empty",
+      "snippet": null,
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "gemini",
+      "cwd": "demo",
+      "session_id": "session-gemini-fixture-0001",
+      "snippet": "Gemini fixture assistant output.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "gemini",
+      "cwd": "demo",
+      "session_id": "session-gemini-history-format",
+      "snippet": "4",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "gemini",
+      "cwd": "demo",
+      "session_id": "session-gemini-jsonl-fixture",
+      "snippet": "Second jsonl assistant answer.",
       "timestamp": "__TS__"
     }
   ],

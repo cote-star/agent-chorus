@@ -328,13 +328,51 @@ function inferGeminiScope(sessionPath) {
   return { cwd: scopeName, scopeHash: null };
 }
 
+// Given an absolute cwd, return chat dirs to scan. Mirrors the Rust
+// `resolve_gemini_chat_dirs_for_listing` leniency: exact hash match first,
+// then named-scope slugs whose slug appears in the cwd (final segment,
+// embedded `/<slug>/`, or trailing `/<slug>`). Hex-hash-shaped scope dirs
+// are excluded from the lenient match since they are either already handled
+// by the exact hash match or belong to a different project.
+function resolveChatDirsForListing(cwd) {
+  if (!cwd) return listGeminiChatDirs();
+  const normalized = normalizePath(cwd);
+  const ordered = [];
+  const seen = new Set();
+  const scoped = path.join(geminiTmpBase, hashPath(normalized), 'chats');
+  if (fs.existsSync(scoped)) {
+    ordered.push(scoped);
+    seen.add(scoped);
+  }
+  const finalSegment = path.basename(normalized);
+  let entries = [];
+  try {
+    entries = fs.readdirSync(geminiTmpBase, { withFileTypes: true });
+  } catch (_e) {
+    return ordered;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const slug = entry.name;
+    const isHexHash = slug.length >= 40 && /^[0-9a-f]+$/.test(slug);
+    if (isHexHash) continue;
+    const lenient = finalSegment === slug
+      || normalized.includes(`/${slug}/`)
+      || normalized.endsWith(`/${slug}`);
+    if (!lenient) continue;
+    const chats = path.join(geminiTmpBase, slug, 'chats');
+    if (fs.existsSync(chats) && !seen.has(chats)) {
+      ordered.push(chats);
+      seen.add(chats);
+    }
+  }
+  return ordered;
+}
+
 function list(cwd, limit) {
   limit = limit || 10;
   const dirs = cwd
-    ? (() => {
-      const scoped = path.join(geminiTmpBase, hashPath(cwd), 'chats');
-      return fs.existsSync(scoped) ? [scoped] : [];
-    })()
+    ? resolveChatDirsForListing(cwd)
     : listGeminiChatDirs();
   const candidates = [];
   for (const dir of dirs) {
@@ -364,10 +402,7 @@ function search(query, cwd, limit) {
   limit = limit || 10;
   const queryLower = String(query || '').toLowerCase();
   const dirs = cwd
-    ? (() => {
-      const scoped = path.join(geminiTmpBase, hashPath(cwd), 'chats');
-      return fs.existsSync(scoped) ? [scoped] : [];
-    })()
+    ? resolveChatDirsForListing(cwd)
     : listGeminiChatDirs();
   const candidates = [];
   for (const dir of dirs) {

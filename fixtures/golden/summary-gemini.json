@@ -4,11 +4,13 @@
   "cwd": "/workspace/demo",
   "duration_estimate": null,
   "files_referenced": [],
-  "last_response_snippet": null,
-  "message_count": 0,
+  "last_response_snippet": "Gemini fixture assistant output.",
+  "message_count": 1,
   "session_id": "session-gemini-fixture-0001",
   "source": "session-gemini-fixture-0001.json",
   "tool_calls_by_type": {},
-  "user_requests": [],
+  "user_requests": [
+    "hello"
+  ],
   "warnings": []
 }

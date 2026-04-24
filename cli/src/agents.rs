@@ -1465,17 +1465,66 @@ fn resolve_gemini_chat_dirs(chats_dir: Option<&str>, cwd: &str) -> Result<Vec<Pa
 }
 
 fn resolve_gemini_chat_dirs_for_listing(cwd: Option<&str>) -> Result<Vec<PathBuf>> {
+    let tmp_base = gemini_tmp_base_dir();
+
     if let Some(scope) = cwd {
         let normalized_cwd = normalize_path(scope)?;
         let scoped_hash = hash_path(&normalized_cwd);
-        let dir = gemini_tmp_base_dir().join(scoped_hash).join("chats");
-        if dir.exists() {
-            return Ok(vec![dir]);
+
+        // Exact hash match (Gemini CLI's canonical layout for scoped sessions).
+        let exact = tmp_base.join(&scoped_hash).join("chats");
+        let mut ordered: Vec<PathBuf> = Vec::new();
+        let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        if exact.exists() {
+            seen.insert(exact.clone());
+            ordered.push(exact);
         }
-        return Ok(Vec::new());
+
+        // Lenient fallback: match scope-slug directories against the abspath.
+        // Gemini also lays sessions under `~/.gemini/tmp/<slug>/chats/` where
+        // <slug> is a short, human-named scope (e.g. `play`, `sandbox`). We
+        // accept a slug if the abspath ends with `/<slug>` or contains
+        // `/<slug>/`, or if the abspath's final segment equals the slug. Hex
+        // hash-shaped scopes are excluded from the lenient match (they are
+        // either an exact hash match handled above or a different project).
+        let cwd_str = normalized_cwd.to_string_lossy().to_string();
+        let final_segment = normalized_cwd
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_string());
+        if let Ok(entries) = fs::read_dir(&tmp_base) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_dir() {
+                    continue;
+                }
+                let slug = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                // Skip hash-shaped slugs — only exact-hash match is valid.
+                let is_hex_hash = slug.len() >= 40 && slug.chars().all(|c| c.is_ascii_hexdigit());
+                if is_hex_hash {
+                    continue;
+                }
+                let slug_pat_contains = format!("/{}/", slug);
+                let slug_pat_suffix = format!("/{}", slug);
+                let lenient_match = final_segment.as_deref() == Some(slug.as_str())
+                    || cwd_str.contains(&slug_pat_contains)
+                    || cwd_str.ends_with(&slug_pat_suffix);
+                if !lenient_match {
+                    continue;
+                }
+                let chats = path.join("chats");
+                if chats.exists() && seen.insert(chats.clone()) {
+                    ordered.push(chats);
+                }
+            }
+        }
+
+        return Ok(ordered);
     }
 
-    let tmp_base = gemini_tmp_base_dir();
     let mut ordered = Vec::new();
     if let Ok(entries) = fs::read_dir(&tmp_base) {
         for entry in entries.flatten() {
@@ -3794,5 +3843,67 @@ mod tests {
         let (cwd3, hash3) = infer_gemini_scope(&shortish);
         assert_eq!(cwd3, serde_json::Value::String("abc".into()));
         assert_eq!(hash3, None);
+    }
+
+    /// Bug 1 regression: `--cwd <abspath>` should match a named-scope slug
+    /// (e.g. `play`) when the abspath's final segment or an embedded path
+    /// component equals the slug. Before the fix, `list_gemini_sessions`
+    /// would hash the abspath and look for the hashed directory only —
+    /// missing the actual named-scope layout Gemini CLI uses.
+    #[test]
+    fn gemini_list_lenient_cwd_filter_matches_named_scope() {
+        let _guard = gemini_list_env_lock();
+        let fixture = gemini_list_fixture("lenient_cwd");
+        // Mixed: named `play` scope with a .jsonl session + an unrelated
+        // `work` scope with a .json session. A cwd whose final segment is
+        // `play` should return only the play session.
+        let play_chats = fixture.join("play").join("chats");
+        std::fs::create_dir_all(&play_chats).unwrap();
+        std::fs::write(
+            play_chats.join("session-live.jsonl"),
+            "{\"sessionId\":\"live\"}\n{\"type\":\"gemini\",\"content\":\"hi\"}\n",
+        )
+        .unwrap();
+
+        let work_chats = fixture.join("work").join("chats");
+        std::fs::create_dir_all(&work_chats).unwrap();
+        std::fs::write(
+            work_chats.join("session-other.json"),
+            serde_json::json!({ "messages": [] }).to_string(),
+        )
+        .unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_TMP_DIR", &fixture);
+
+        // Case 1: --cwd ending in `/play` picks only the play scope.
+        let out = super::list_gemini_sessions(Some("/Users/testuser/sandbox/play"), 10)
+            .expect("list_gemini_sessions play");
+        let ids: Vec<String> = out
+            .iter()
+            .map(|e| e["session_id"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(out.len(), 1, "expected 1 play session, got: {:?}", ids);
+        assert_eq!(ids[0], "session-live");
+
+        // Case 2: --cwd with `/play/` embedded (deeper subdir) also picks play.
+        let out2 = super::list_gemini_sessions(
+            Some("/Users/testuser/sandbox/play/agent-chorus"),
+            10,
+        )
+        .expect("list_gemini_sessions play subdir");
+        assert_eq!(out2.len(), 1);
+        assert_eq!(out2[0]["session_id"].as_str(), Some("session-live"));
+
+        // Case 3: --cwd unrelated to any slug returns empty.
+        let out3 = super::list_gemini_sessions(Some("/Users/testuser/elsewhere"), 10)
+            .expect("list_gemini_sessions unrelated");
+        assert!(
+            out3.is_empty(),
+            "unrelated cwd should return no sessions, got: {:?}",
+            out3,
+        );
+
+        std::env::remove_var("CHORUS_GEMINI_TMP_DIR");
+        let _ = std::fs::remove_dir_all(&fixture);
     }
 }

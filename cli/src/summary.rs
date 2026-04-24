@@ -168,9 +168,30 @@ pub fn build_summary(
     let source_path = session.source.clone();
     let session_warnings = session.warnings.clone();
 
-    // Now parse the raw file for summary extraction
+    // Now parse the raw file for summary extraction.
+    //
+    // Extension dispatch: .jsonl files parse line-by-line; Gemini also writes
+    // single-document .json files (older CLI layout) whose contents won't
+    // survive the per-line JSON parser. For those, walk `session.messages`
+    // and `session.history` and re-serialize each entry as a synthetic JSONL
+    // line so the downstream walker can consume them unchanged.
     let path = Path::new(&source_path);
-    let lines = agents::read_jsonl_lines(path).unwrap_or_default();
+    let is_single_doc_json = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+    let lines: Vec<String> = if is_single_doc_json {
+        match std::fs::read_to_string(path) {
+            Ok(raw) => match serde_json::from_str::<Value>(&raw) {
+                Ok(doc) => synthesize_gemini_jsonl_lines(&doc),
+                Err(_) => Vec::new(),
+            },
+            Err(_) => Vec::new(),
+        }
+    } else {
+        agents::read_jsonl_lines(path).unwrap_or_default()
+    };
 
     let mut user_requests: Vec<String> = Vec::new();
     let mut tool_call_counts: BTreeMap<String, usize> = BTreeMap::new();
@@ -226,12 +247,20 @@ pub fn build_summary(
 
         // Claude-format messages
         let message = json.get("message").unwrap_or(&json);
-        let role = message
+        let raw_role = message
             .get("role")
             .or_else(|| json.get("type"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_lowercase();
+        // Normalize Gemini's role vocabulary: `type: "gemini"` and
+        // `type: "model"` both map to `assistant`. Without this, Gemini
+        // .jsonl sessions produce message_count: 0 in the summary even
+        // though `read` returns a non-empty content.
+        let role = match raw_role.as_str() {
+            "gemini" | "model" => "assistant".to_string(),
+            other => other.to_string(),
+        };
 
         if role == "user" || role == "human" {
             let content = message
@@ -334,6 +363,61 @@ pub fn build_summary(
         last_response_snippet: snippet,
         warnings: session_warnings,
     })
+}
+
+/// Expand a single-document Gemini session into synthetic JSONL-shaped lines.
+///
+/// Accepts both historical Gemini schemas:
+///   - `{ "messages": [ { "type": "user"|"gemini"|..., "content": ... } ] }`
+///   - `{ "history":  [ { "role": "user"|"model", "parts": [...] } ] }`
+///
+/// Each returned string is a compact JSON object the summary walker can parse
+/// like a regular .jsonl line. Non-text and malformed entries are skipped.
+fn synthesize_gemini_jsonl_lines(doc: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    if let Some(messages) = doc.get("messages").and_then(|v| v.as_array()) {
+        for msg in messages {
+            if msg.is_object() {
+                if let Ok(s) = serde_json::to_string(msg) {
+                    out.push(s);
+                }
+            }
+        }
+        return out;
+    }
+    if let Some(history) = doc.get("history").and_then(|v| v.as_array()) {
+        for turn in history {
+            // Normalize `{role,parts}` into `{type,content}` so the walker's
+            // role+content extraction path applies unchanged.
+            let role = turn
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_lowercase();
+            let mapped_type = if role == "user" { "user" } else { "gemini" };
+            let text = if let Some(arr) = turn.get("parts").and_then(|v| v.as_array()) {
+                arr.iter()
+                    .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                    .collect::<Vec<&str>>()
+                    .join("\n")
+            } else if let Some(s) = turn.get("parts").and_then(|v| v.as_str()) {
+                s.to_string()
+            } else {
+                String::new()
+            };
+            if text.is_empty() {
+                continue;
+            }
+            let synth = serde_json::json!({
+                "type": mapped_type,
+                "content": text,
+            });
+            if let Ok(s) = serde_json::to_string(&synth) {
+                out.push(s);
+            }
+        }
+    }
+    out
 }
 
 /// Extract tool call counts from a Claude-style content array.
@@ -447,5 +531,107 @@ fn capitalize(s: &str) -> String {
     match chars.next() {
         None => String::new(),
         Some(c) => c.to_uppercase().collect::<String>() + chars.as_str(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::hash_path;
+
+    fn summary_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn fresh_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_summary_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    /// Bug 2 regression: Gemini .jsonl session produces a non-zero
+    /// `message_count` in the summary output. Before the fix, the summary
+    /// walker treated `type: "gemini"` as a non-role and returned 0 even
+    /// though `read` returned 27+ messages on the same file.
+    #[test]
+    fn gemini_summary_counts_assistant_messages_from_jsonl() {
+        let _guard = summary_env_lock();
+        let fixture = fresh_fixture("gemini_jsonl_count");
+        // Use the hash layout so the default resolve path finds the session
+        // when we pass --cwd /tmp/fake-project.
+        let fake_cwd_str = "/tmp/fake-project";
+        let fake_cwd = std::path::PathBuf::from(fake_cwd_str);
+        let scoped_hash = hash_path(&fake_cwd);
+        let chats = fixture.join(&scoped_hash).join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        // Header + two assistant messages + one user message +
+        // a `$set` metadata event to exercise skipping.
+        let jsonl = concat!(
+            "{\"sessionId\":\"test-session\"}\n",
+            "{\"id\":\"u1\",\"type\":\"user\",\"content\":\"hello there\",\"timestamp\":\"2026-04-24T17:48:52.144Z\"}\n",
+            "{\"$set\":{\"lastUpdated\":\"2026-04-24T17:48:52.145Z\"}}\n",
+            "{\"id\":\"g1\",\"type\":\"gemini\",\"content\":\"first reply\",\"timestamp\":\"2026-04-24T17:48:59.748Z\"}\n",
+            "{\"id\":\"g2\",\"type\":\"gemini\",\"content\":\"second reply\",\"timestamp\":\"2026-04-24T17:49:10.000Z\"}\n",
+        );
+        std::fs::write(chats.join("session-test.jsonl"), jsonl).unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_TMP_DIR", &fixture);
+        let res = super::build_summary("gemini", None, fake_cwd_str, None)
+            .expect("build_summary");
+        std::env::remove_var("CHORUS_GEMINI_TMP_DIR");
+
+        assert_eq!(res.message_count, 2, "expected 2 assistant messages");
+        assert_eq!(
+            res.user_requests.len(),
+            1,
+            "expected 1 user request captured, got {:?}",
+            res.user_requests
+        );
+        assert!(
+            res.last_response_snippet.as_deref().unwrap_or("").contains("second reply"),
+            "last snippet should come from the last gemini message: {:?}",
+            res.last_response_snippet,
+        );
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    /// Also verify the single-document .json path still summarizes correctly
+    /// after the extension dispatch was introduced.
+    #[test]
+    fn gemini_summary_counts_assistant_messages_from_single_doc_json() {
+        let _guard = summary_env_lock();
+        let fixture = fresh_fixture("gemini_json_count");
+        let fake_cwd_str = "/tmp/fake-project-json";
+        let fake_cwd = std::path::PathBuf::from(fake_cwd_str);
+        let scoped_hash = hash_path(&fake_cwd);
+        let chats = fixture.join(&scoped_hash).join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        let doc = serde_json::json!({
+            "sessionId": "json-session",
+            "messages": [
+                { "type": "user", "content": "q1" },
+                { "type": "gemini", "content": "a1" },
+                { "type": "user", "content": "q2" },
+                { "type": "gemini", "content": "a2" },
+                { "type": "gemini", "content": "a3" },
+            ],
+        });
+        std::fs::write(chats.join("session-test.json"), doc.to_string()).unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_TMP_DIR", &fixture);
+        let res = super::build_summary("gemini", None, fake_cwd_str, None)
+            .expect("build_summary");
+        std::env::remove_var("CHORUS_GEMINI_TMP_DIR");
+
+        assert_eq!(res.message_count, 3, "expected 3 assistant messages");
+        assert_eq!(res.user_requests.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&fixture);
     }
 }
