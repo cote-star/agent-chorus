@@ -47,8 +47,13 @@ v0.14.0 ships the thirteen-pass hardening effort planned in `research/agent-cont
 
 ### Fixed
 
-- **Gemini adapter: `.jsonl` files now indexed.** Pre-existing bug where the list/scope discovery
-  only picked up `.json`; newer Gemini CLI writes `.jsonl`. Listings now include both.
+- **Gemini adapter: `.jsonl` files now indexed and readable.** Pre-existing bug where the
+  list/scope discovery only picked up `.json`; newer Gemini CLI writes `.jsonl`. Listings now
+  include both, and `chorus read --agent gemini --id <session>` now parses `.jsonl`
+  line-delimited sessions (header + message lines + `$set` metadata), dedupes streaming-
+  duplicate assistant turns on message `id`, and funnels through the same `Session` shape as
+  the legacy single-document `.json` path. Rust and Node adapters dispatch on file extension
+  so downstream callers remain format-agnostic.
 - **Gemini adapter: cwd inference from scope directory.** Listings used to emit `cwd: null`
   for every Gemini session. The scope directory name (e.g. `play`) is now returned as the cwd
   hint, so `chorus read --agent gemini --cwd <X>` filtering works for named scopes.

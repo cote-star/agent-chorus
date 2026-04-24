@@ -93,11 +93,10 @@ function resolve(id, cwd, opts) {
   const candidates = [];
   for (const dir of dirs) {
     const files = collectMatchingFiles(dir, (fullPath, name) => {
-      // resolve() feeds read(), which parses .json (single-document). The
-      // .jsonl layout has a different schema — list/search index it, but
-      // read does not yet support it. Keep resolve narrow to .json so reads
-      // don't surface a .jsonl file that read() can't parse.
-      if (!name.endsWith('.json')) return false;
+      // read() now dispatches on extension: .json -> single-document parser,
+      // .jsonl -> line-delimited parser. Accept both so newer Gemini CLI
+      // sessions (.jsonl) are readable.
+      if (!(name.endsWith('.json') || name.endsWith('.jsonl'))) return false;
       if (id) return fullPath.includes(id);
       return name.startsWith('session-');
     }, false);
@@ -107,8 +106,122 @@ function resolve(id, cwd, opts) {
   return candidates.length > 0 ? { path: candidates[0].path, warnings, searchedDirs: dirs } : null;
 }
 
+// Parse line-delimited JSON Gemini sessions.
+//
+// Shape:
+//   - First line is a header: {sessionId, projectHash, kind, ...}
+//   - Message lines: {id, timestamp, type: 'user'|'gemini', content: <string|array>}
+//   - Metadata lines: {"$set": {...}} — skip
+//
+// Gemini's streaming producer can emit the same assistant message twice
+// (mid-stream + final) with identical `id`. Dedupe on id while preserving
+// first-seen order.
+function readJsonl(filePath, lastN, opts = {}) {
+  lastN = lastN || 1;
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const lines = raw.split('\n').filter(l => l.trim().length > 0);
+
+  let sessionId = null;
+  const turns = [];
+  const seenIds = new Set();
+  let skipped = 0;
+
+  for (const line of lines) {
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch (_e) {
+      skipped += 1;
+      continue;
+    }
+
+    // Header line — grab sessionId and move on.
+    if (sessionId == null && typeof obj.sessionId === 'string') {
+      sessionId = obj.sessionId;
+      continue;
+    }
+
+    // Metadata events carry only `$set` — skip.
+    if (obj.$set !== undefined && obj.type === undefined) continue;
+
+    const type = (obj.type || obj.role || '').toLowerCase();
+    const role = (type === 'gemini' || type === 'assistant' || type === 'model')
+      ? 'assistant'
+      : (type === 'user' ? 'user' : null);
+    if (!role) continue;
+
+    if (typeof obj.id === 'string') {
+      if (seenIds.has(obj.id)) continue;
+      seenIds.add(obj.id);
+    }
+
+    let text;
+    if (typeof obj.content === 'string') {
+      text = obj.content;
+    } else {
+      const fromContent = extractText(obj.content);
+      if (fromContent) {
+        text = fromContent;
+      } else {
+        const fromParts = extractText(obj.parts);
+        text = fromParts || '[No text content]';
+      }
+    }
+    turns.push({ role, text });
+  }
+
+  if (!sessionId) {
+    sessionId = path.basename(filePath, path.extname(filePath));
+  }
+
+  const assistantMsgs = turns.filter(t => t.role === 'assistant').map(t => t.text);
+  const messageCount = assistantMsgs.length;
+
+  const warnings = [];
+  if (skipped > 0) {
+    warnings.push(`Warning: skipped ${skipped} unparseable line(s) in ${filePath}`);
+  }
+
+  let content = '';
+  let messagesReturned = 1;
+  let rolesIncluded = ['assistant'];
+
+  if (opts.includeUser && assistantMsgs.length > 0) {
+    const selected = selectConversationTurns(turns, lastN);
+    messagesReturned = selected.length;
+    rolesIncluded = ['user', 'assistant'];
+    content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
+  } else if (lastN > 1 && assistantMsgs.length > 0) {
+    const selected = assistantMsgs.slice(-lastN);
+    messagesReturned = selected.length;
+    content = selected.join('\n---\n');
+  } else {
+    if (assistantMsgs.length === 0) throw new Error('Gemini session has no assistant messages.');
+    content = assistantMsgs[assistantMsgs.length - 1];
+  }
+
+  return {
+    agent: 'gemini',
+    source: filePath,
+    content: redactSensitiveText(content),
+    warnings,
+    session_id: sessionId,
+    cwd: null,
+    timestamp: getFileTimestamp(filePath),
+    message_count: messageCount,
+    messages_returned: messagesReturned,
+    included_roles: rolesIncluded,
+  };
+}
+
 function read(filePath, lastN, opts = {}) {
   lastN = lastN || 1;
+  // Dispatch on extension. Newer Gemini CLI writes line-delimited .jsonl;
+  // older ones write a single JSON document. Both funnel into the same
+  // Session shape via shared output below.
+  if (filePath.endsWith('.jsonl')) {
+    return readJsonl(filePath, lastN, opts);
+  }
   let session;
   try {
     session = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

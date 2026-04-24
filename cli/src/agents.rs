@@ -237,7 +237,8 @@ pub fn read_gemini_session_with_options(
         let mut candidates = Vec::new();
         for dir in &dirs {
             let mut files = collect_matching_files(dir, false, &|file_path| {
-                has_extension(file_path, "json") && path_contains(file_path, id_value)
+                (has_extension(file_path, "json") || has_extension(file_path, "jsonl"))
+                    && path_contains(file_path, id_value)
             })?;
             candidates.append(&mut files);
         }
@@ -250,7 +251,7 @@ pub fn read_gemini_session_with_options(
         let mut candidates = Vec::new();
         for dir in &dirs {
             let mut files = collect_matching_files(dir, false, &|file_path| {
-                has_extension(file_path, "json")
+                (has_extension(file_path, "json") || has_extension(file_path, "jsonl"))
                     && file_path
                         .file_name()
                         .and_then(|n| n.to_str())
@@ -266,7 +267,14 @@ pub fn read_gemini_session_with_options(
         }
     };
 
-    let parsed = parse_gemini_json(&target_file, last_n, opts)?;
+    // Newer Gemini CLI writes line-delimited JSON (.jsonl) session files;
+    // older ones write a single JSON document (.json). Dispatch by extension
+    // so both reach the same Session shape downstream.
+    let parsed = if has_extension(&target_file, "jsonl") {
+        parse_gemini_jsonl(&target_file, last_n, opts)?
+    } else {
+        parse_gemini_json(&target_file, last_n, opts)?
+    };
 
     let mut warnings = parsed.warnings;
     if let Some(w) = cross_project_warning {
@@ -775,6 +783,165 @@ fn parse_gemini_json(path: &Path, last_n: usize, opts: ReadOptions) -> Result<Pa
     Err(anyhow!(
         "Unknown Gemini session schema. Supported fields: messages, history."
     ))
+}
+
+/// Parse line-delimited JSON Gemini sessions (newer Gemini CLI layout).
+///
+/// Shape: one JSON object per line. Three kinds of lines:
+///   - header:    `{"sessionId":..., "projectHash":..., "kind":"main"}` (first line)
+///   - message:   `{"id":..., "timestamp":..., "type":"user"|"gemini", "content": <string|array>}`
+///   - metadata:  `{"$set":{...}}` — skip
+///
+/// Gemini's streaming producer can emit the same assistant message twice
+/// (once mid-stream, once final) with identical `id`. We dedupe on id while
+/// preserving the first-seen order so the conversation reads naturally.
+fn parse_gemini_jsonl(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent> {
+    let meta = fs::metadata(path)?;
+    if meta.len() > MAX_FILE_SIZE {
+        return Err(anyhow!(
+            "Skipped {} (exceeds {}MB size limit)",
+            path.display(),
+            MAX_FILE_SIZE / (1024 * 1024)
+        ));
+    }
+
+    let lines = read_jsonl_lines(path)?;
+    let mut session_id: Option<String> = None;
+    let mut turns: Vec<ConversationTurn> = Vec::new();
+    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut skipped = 0usize;
+
+    for line in &lines {
+        let json: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => {
+                skipped += 1;
+                continue;
+            }
+        };
+
+        // Header line — capture sessionId and move on.
+        if session_id.is_none() {
+            if let Some(id) = json["sessionId"].as_str() {
+                session_id = Some(id.to_string());
+                continue;
+            }
+        }
+
+        // Metadata events carry only a `$set` key — skip.
+        if json.get("$set").is_some() && json.get("type").is_none() {
+            continue;
+        }
+
+        let type_str = json["type"]
+            .as_str()
+            .or_else(|| json["role"].as_str())
+            .unwrap_or("")
+            .to_lowercase();
+        let role = if type_str == "gemini" || type_str == "assistant" || type_str == "model" {
+            "assistant"
+        } else if type_str == "user" {
+            "user"
+        } else {
+            continue;
+        };
+
+        // Dedupe streaming duplicates. Only messages with an `id` participate
+        // in dedupe; if a message has no id we keep it.
+        if let Some(id) = json["id"].as_str() {
+            if !seen_ids.insert(id.to_string()) {
+                continue;
+            }
+        }
+
+        // Content is either a string (assistant final answer) or an array of
+        // `{text: ...}` parts (user turn, or API-shape assistant turn).
+        let text = if let Some(s) = json["content"].as_str() {
+            s.to_string()
+        } else {
+            let from_content = extract_text(&json["content"]);
+            if !from_content.is_empty() {
+                from_content
+            } else {
+                let from_parts = extract_text(&json["parts"]);
+                if from_parts.is_empty() {
+                    "[No text content]".to_string()
+                } else {
+                    from_parts
+                }
+            }
+        };
+
+        turns.push(ConversationTurn { role: role.to_string(), text });
+    }
+
+    let session_id = session_id
+        .or_else(|| path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()));
+    let timestamp = file_modified_iso(path);
+
+    let assistant_msgs: Vec<String> = turns
+        .iter()
+        .filter(|t| t.role == "assistant")
+        .map(|t| t.text.clone())
+        .collect();
+    let assistant_count = assistant_msgs.len();
+
+    let mut warnings = Vec::new();
+    if skipped > 0 {
+        warnings.push(format!(
+            "Warning: skipped {} unparseable line(s) in {}",
+            skipped,
+            path.display()
+        ));
+    }
+
+    if opts.include_user && !assistant_msgs.is_empty() {
+        let selected = select_conversation_turns(&turns, last_n);
+        let messages_returned = selected.len();
+        let content = selected
+            .iter()
+            .map(|t| format!("{}:\n{}", t.role.to_uppercase(), t.text))
+            .collect::<Vec<String>>()
+            .join("\n---\n");
+        return Ok(ParsedContent {
+            content: redact_sensitive_text(&content),
+            warnings,
+            session_id,
+            cwd: None,
+            timestamp,
+            message_count: assistant_count,
+            messages_returned,
+        });
+    }
+
+    if last_n > 1 && !assistant_msgs.is_empty() {
+        let start = assistant_msgs.len().saturating_sub(last_n);
+        let selected: Vec<&String> = assistant_msgs[start..].iter().collect();
+        let messages_returned = selected.len();
+        let content = selected.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n");
+        return Ok(ParsedContent {
+            content: redact_sensitive_text(&content),
+            warnings,
+            session_id,
+            cwd: None,
+            timestamp,
+            message_count: assistant_count,
+            messages_returned,
+        });
+    }
+
+    if assistant_msgs.is_empty() {
+        return Err(anyhow!("Gemini session has no assistant messages."));
+    }
+    Ok(ParsedContent {
+        content: redact_sensitive_text(assistant_msgs.last().unwrap()),
+        warnings,
+        session_id,
+        cwd: None,
+        timestamp,
+        message_count: assistant_count,
+        messages_returned: 1,
+    })
 }
 
 pub(crate) fn extract_text(value: &Value) -> String {
@@ -3316,6 +3483,119 @@ mod tests {
         assert!(session.content.contains("Prompt alpha"), "{}", session.content);
         assert!(session.content.contains("Reply beta"), "{}", session.content);
         assert_eq!(session.messages_returned, 4);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    // --- Gemini: line-delimited .jsonl sessions ---
+
+    #[test]
+    fn gemini_jsonl_basic_read_returns_last_assistant() {
+        let _guard = gemini_read_env_lock();
+        let fixture = gemini_fixture_read("jsonl_basic");
+        let chats_dir = fixture.join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+        let session_file = chats_dir.join("session-jsonl-basic.jsonl");
+        // Header + user + assistant (duplicated, streaming) + $set + user + assistant.
+        let jsonl = concat!(
+            r#"{"sessionId":"sid-jsonl-basic","kind":"main"}"#, "\n",
+            r#"{"id":"u1","type":"user","content":[{"text":"first question"}]}"#, "\n",
+            r#"{"$set":{"lastUpdated":"2026-04-24T00:00:00Z"}}"#, "\n",
+            r#"{"id":"a1","type":"gemini","content":"first answer"}"#, "\n",
+            r#"{"id":"a1","type":"gemini","content":"first answer"}"#, "\n",
+            r#"{"id":"u2","type":"user","content":[{"text":"second question"}]}"#, "\n",
+            r#"{"id":"a2","type":"gemini","content":"second answer"}"#, "\n",
+        );
+        std::fs::write(&session_file, jsonl).unwrap();
+
+        let opts = ReadOptions::default();
+        let session = read_gemini_session_with_options(
+            None,
+            "/tmp/ignored",
+            Some(chats_dir.to_str().unwrap()),
+            1,
+            opts,
+        ).expect("read jsonl");
+
+        assert_eq!(session.session_id.as_deref(), Some("sid-jsonl-basic"));
+        assert_eq!(session.message_count, 2, "dedupe should collapse duplicate a1");
+        assert_eq!(session.content, "second answer");
+        assert!(session.source.ends_with(".jsonl"), "source should be .jsonl: {}", session.source);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn gemini_jsonl_include_user_interleaves() {
+        let _guard = gemini_read_env_lock();
+        let fixture = gemini_fixture_read("jsonl_include_user");
+        let chats_dir = fixture.join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+        let session_file = chats_dir.join("session-jsonl-iu.jsonl");
+        let jsonl = concat!(
+            r#"{"sessionId":"sid-jsonl-iu"}"#, "\n",
+            r#"{"id":"u1","type":"user","content":[{"text":"prompt alpha"}]}"#, "\n",
+            r#"{"id":"a1","type":"gemini","content":"reply alpha"}"#, "\n",
+            r#"{"id":"u2","type":"user","content":[{"text":"prompt beta"}]}"#, "\n",
+            r#"{"id":"a2","type":"gemini","content":"reply beta"}"#, "\n",
+        );
+        std::fs::write(&session_file, jsonl).unwrap();
+
+        let opts = ReadOptions { include_user: true, include_tool_calls: false };
+        let session = read_gemini_session_with_options(
+            None,
+            "/tmp/ignored",
+            Some(chats_dir.to_str().unwrap()),
+            2,
+            opts,
+        ).expect("read jsonl");
+
+        assert!(session.content.contains("USER:"), "missing USER: {}", session.content);
+        assert!(session.content.contains("prompt alpha"), "{}", session.content);
+        assert!(session.content.contains("reply beta"), "{}", session.content);
+        assert_eq!(session.messages_returned, 4);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn gemini_jsonl_skips_metadata_and_dedupes_streaming_duplicates() {
+        let _guard = gemini_read_env_lock();
+        let fixture = gemini_fixture_read("jsonl_skip_meta");
+        let chats_dir = fixture.join("chats");
+        std::fs::create_dir_all(&chats_dir).unwrap();
+        let session_file = chats_dir.join("session-jsonl-skip.jsonl");
+        // Header, a bunch of $set metadata, one assistant message emitted three
+        // times with the same id, a malformed line (should be skipped).
+        let jsonl = concat!(
+            r#"{"sessionId":"sid-jsonl-skip"}"#, "\n",
+            r#"{"$set":{"lastUpdated":"2026-04-24T00:00:00Z"}}"#, "\n",
+            r#"{"id":"u1","type":"user","content":[{"text":"hi"}]}"#, "\n",
+            r#"{"$set":{"lastUpdated":"2026-04-24T00:00:01Z"}}"#, "\n",
+            r#"{"id":"a1","type":"gemini","content":"streaming v1"}"#, "\n",
+            r#"not valid json"#, "\n",
+            r#"{"id":"a1","type":"gemini","content":"streaming v1"}"#, "\n",
+            r#"{"id":"a1","type":"gemini","content":"streaming v1"}"#, "\n",
+        );
+        std::fs::write(&session_file, jsonl).unwrap();
+
+        let opts = ReadOptions::default();
+        let session = read_gemini_session_with_options(
+            None,
+            "/tmp/ignored",
+            Some(chats_dir.to_str().unwrap()),
+            1,
+            opts,
+        ).expect("read jsonl");
+
+        assert_eq!(session.message_count, 1, "three duplicate ids should collapse to one");
+        assert_eq!(session.content, "streaming v1");
+        // The malformed line should surface as a warning.
+        assert!(
+            session.warnings.iter().any(|w| w.contains("unparseable")),
+            "expected unparseable-line warning, got {:?}",
+            session.warnings
+        );
 
         let _ = std::fs::remove_dir_all(&fixture);
     }

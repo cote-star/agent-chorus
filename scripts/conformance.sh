@@ -338,4 +338,86 @@ run_gemini_list_case() {
 
 run_gemini_list_case
 
+# --- Gemini .jsonl read parity: proves the line-delimited parser works ---
+#
+# Newer Gemini CLI writes sessions as .jsonl. v0.14.0 indexes them in list
+# but read() originally rejected .jsonl (single-document parser only).
+# This case reads the .jsonl fixture and checks Rust/Node byte-identical
+# output across the default path, --include-user, and --last 2.
+run_gemini_jsonl_read_case() {
+  local node_out="$TMP_DIR/read-gemini-jsonl-node.json"
+  local rust_out="$TMP_DIR/read-gemini-jsonl-rust.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  node "$ROOT/scripts/read_session.cjs" read \
+    --agent=gemini --id=gemini-jsonl-fixture \
+    --chats-dir="$STORE/gemini/tmp/demo/chats" --json > "$node_out"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- read \
+    --agent gemini --id gemini-jsonl-fixture \
+    --chats-dir "$STORE/gemini/tmp/demo/chats" --json > "$rust_out"
+
+  node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "read-gemini-jsonl"
+
+  # Behavior assertion: reached the .jsonl parser (not json) and returned the
+  # expected assistant text plus non-null session id.
+  if ! node -e "
+    const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+    if (!r.source || !r.source.endsWith('.jsonl')) { console.error('FAIL read-gemini-jsonl: source is not .jsonl, got ' + r.source); process.exit(1); }
+    if (r.session_id !== 'gemini-jsonl-fixture') { console.error('FAIL read-gemini-jsonl-session-id: ' + r.session_id); process.exit(1); }
+    if (r.message_count !== 2) { console.error('FAIL read-gemini-jsonl-count (expected 2 after dedupe): ' + r.message_count); process.exit(1); }
+    if (!String(r.content).includes('Second jsonl assistant answer')) { console.error('FAIL read-gemini-jsonl-content: ' + r.content); process.exit(1); }
+    console.log('PASS read-gemini-jsonl-assertions');
+  " "$rust_out"; then
+    exit 1
+  fi
+
+  # --include-user parity
+  local node_iu="$TMP_DIR/read-gemini-jsonl-iu-node.json"
+  local rust_iu="$TMP_DIR/read-gemini-jsonl-iu-rust.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  node "$ROOT/scripts/read_session.cjs" read \
+    --agent=gemini --id=gemini-jsonl-fixture --include-user \
+    --chats-dir="$STORE/gemini/tmp/demo/chats" --json > "$node_iu"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- read \
+    --agent gemini --id gemini-jsonl-fixture --include-user \
+    --chats-dir "$STORE/gemini/tmp/demo/chats" --json > "$rust_iu"
+
+  node "$ROOT/scripts/compare_read_output.cjs" "$node_iu" "$rust_iu" "read-gemini-jsonl-include-user"
+
+  # --last 2 parity
+  local node_l2="$TMP_DIR/read-gemini-jsonl-last2-node.json"
+  local rust_l2="$TMP_DIR/read-gemini-jsonl-last2-rust.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  node "$ROOT/scripts/read_session.cjs" read \
+    --agent=gemini --id=gemini-jsonl-fixture --last=2 \
+    --chats-dir="$STORE/gemini/tmp/demo/chats" --json > "$node_l2"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- read \
+    --agent gemini --id gemini-jsonl-fixture --last 2 \
+    --chats-dir "$STORE/gemini/tmp/demo/chats" --json > "$rust_l2"
+
+  node "$ROOT/scripts/compare_read_output.cjs" "$node_l2" "$rust_l2" "read-gemini-jsonl-last2"
+}
+
+run_gemini_jsonl_read_case
+
 echo "Conformance complete: Node and Rust outputs match for read/compare/report/list/search, plus v0.13 summary/timeline/doctor/setup/read-flags (including golden file diffs)."

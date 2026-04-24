@@ -1,3 +1,8 @@
 {"sessionId":"gemini-jsonl-fixture","startTime":"2026-04-24T17:45:31.574Z","lastUpdated":"2026-04-24T17:45:31.575Z","kind":"main"}
 {"id":"e89a23e3","timestamp":"2026-04-24T17:48:52.144Z","type":"user","content":[{"text":"hello from jsonl"}]}
-{"id":"f9a12bc4","timestamp":"2026-04-24T17:48:53.000Z","type":"gemini","content":[{"text":"Gemini jsonl assistant output."}]}
+{"$set":{"lastUpdated":"2026-04-24T17:48:52.145Z"}}
+{"id":"f9a12bc4","timestamp":"2026-04-24T17:48:53.000Z","type":"gemini","content":"Gemini jsonl assistant output."}
+{"$set":{"lastUpdated":"2026-04-24T17:48:53.001Z"}}
+{"id":"f9a12bc4","timestamp":"2026-04-24T17:48:53.200Z","type":"gemini","content":"Gemini jsonl assistant output."}
+{"id":"c7d3e910","timestamp":"2026-04-24T17:49:10.000Z","type":"user","content":[{"text":"follow up question"}]}
+{"id":"a4b5c6d7","timestamp":"2026-04-24T17:49:12.000Z","type":"gemini","content":"Second jsonl assistant answer."}
