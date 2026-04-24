@@ -146,7 +146,7 @@ This replaces the "remember-after" reconciliation pattern with a targeted, diff-
 > ```bash
 > chorus agent-context install-hooks --install-settings-template
 > ```
-> This merges `templates/settings.agent-context.json` into `.claude/settings.json`, wiring a PreToolUse hook that runs `chorus agent-context check-freshness` before every Edit/Write/Bash mutation.
+> This merges `cli/templates/settings.agent-context.json` into `.claude/settings.json`, wiring a PreToolUse hook that runs `chorus agent-context check-freshness` before every Edit/Write/Bash mutation.
 
 ### Step 2 — Determine what changed
 

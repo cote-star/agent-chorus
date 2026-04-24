@@ -456,7 +456,7 @@ enum ContextPackCommand {
         #[arg(long = "enable-post-commit-reconcile")]
         enable_post_commit_reconcile: bool,
 
-        /// P4 — also merge the shipped `templates/settings.agent-context.json`
+        /// P4 — also merge the shipped `cli/templates/settings.agent-context.json`
         /// PreToolUse hook entries into `.claude/settings.json`. Existing keys
         /// are preserved; idempotent when run twice.
         #[arg(long = "install-settings-template")]

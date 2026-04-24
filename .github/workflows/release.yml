@@ -24,6 +24,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Verify cargo publish packaging (dry-run)
+        # Catches the v0.14.0 failure class: missing/excluded files inside
+        # the crate tarball that only surface when cargo rebuilds the
+        # extracted package. --allow-dirty so local + workflow_dispatch
+        # runs work; tag pushes run against a clean checkout anyway.
+        run: cargo publish --manifest-path cli/Cargo.toml --dry-run --allow-dirty
+
       - name: Verify conformance
         run: bash scripts/conformance.sh
 

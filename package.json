@@ -1,6 +1,6 @@
 {
   "name": "agent-chorus",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Local-first CLI to read, compare, and hand off context across Codex, Claude, Gemini, and Cursor sessions.",
   "keywords": [
     "agent-chorus",

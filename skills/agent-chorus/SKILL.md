@@ -1,7 +1,7 @@
 ---
 name: agent-chorus
 description: This skill should be used when the user asks "What is Claude doing?", "What did Gemini say?", "What is Codex working on?", "Compare Codex and Claude outputs.", "Read session from Cursor.", "How did that session change?", "Send a message to Codex.", "Any messages for me?", "What was redacted?", "Which files are relevant?", "Summarize this session.", "Show a timeline of agent activity.", or any request to inspect, compare, diff, search, summarize, or coordinate activity across Codex, Claude, Gemini, or Cursor agents using chorus.
-version: 0.14.0
+version: 0.14.1
 ---
 
 # Agent Chorus Skill

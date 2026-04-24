@@ -1,5 +1,27 @@
 # Release Notes
 
+## v0.14.1 — 2026-04-24
+
+**Packaging-only patch — fixes crates.io publish that failed silently on v0.14.0.**
+
+### Fixed
+
+- **`cargo publish` no longer errors** on missing template file. Relocated
+  `templates/settings.agent-context.json` → `cli/templates/settings.agent-context.json`
+  so it ships inside the crate tarball. v0.14.0 published successfully to npm +
+  GitHub Packages + GitHub Release, but the crates.io step errored with
+  `couldn't read src/../../templates/settings.agent-context.json` because the
+  file was outside the crate root and got excluded from the packaged tarball.
+  The file is the authoritative source consumed by the Rust-side template
+  hardening from v0.14.0's P11/P13 passes — moving it into the crate is the
+  cleanest fix (Node-side `<callers>` updated to read from the new path).
+
+### Changed — CI
+
+- `release.yml` verify job now runs `cargo publish --dry-run` so a packaging
+  bug like v0.14.0's fails the pre-merge check instead of silently shipping
+  a broken crate release with all other registries green.
+
 ## v0.14.0 — 2026-04-21
 
 **Agent-context hardening pass: P1–P13 addressing failure modes F19–F58 across integrity, hostile input, concurrency, schema lifecycle, and authoring ergonomics.**

@@ -1629,8 +1629,8 @@ pub fn install_hooks_with_options(
 /// `templates/` directory on disk (published binaries, `npx` invocations
 /// where the template tree is not unpacked alongside the CLI).
 ///
-/// Keep in sync with `templates/settings.agent-context.json`.
-const SETTINGS_TEMPLATE_JSON: &str = include_str!("../../templates/settings.agent-context.json");
+/// Keep in sync with `cli/templates/settings.agent-context.json`.
+const SETTINGS_TEMPLATE_JSON: &str = include_str!("../templates/settings.agent-context.json");
 
 /// P4 — merge `templates/settings.agent-context.json` into
 /// `<cwd>/.claude/settings.json`, preserving existing keys and existing

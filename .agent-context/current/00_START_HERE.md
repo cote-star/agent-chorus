@@ -2,8 +2,8 @@
 
 ## Snapshot
 - Repo: `agent-chorus`
-- Branch at generation: `feat/v0.14-agent-context-hardening`
-- Pack version: 0.14.0
+- Branch at generation: `fix/v0.14.1-crates-packaging`
+- Pack version: 0.14.1
 - Generated at seal time (fields populated by `chorus agent-context seal`)
 
 ## Read Order — MANDATORY before starting work
@@ -36,7 +36,8 @@ Read on demand:
 - **Core risk**: Any change to CLI output format or command flags must land in both implementations, schemas, and golden fixtures simultaneously.
 - **Session handoff**: `chorus checkpoint --from <agent>` (v0.12.0) plus `scripts/hooks/chorus-session-end.sh` broadcast state across agents on clean exit, crash, or window close — see `docs/session-handoff-guide.md`.
 - **Session-start freshness gate (v0.14.0)**: routing blocks in `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` now begin with a mandatory instruction to compare `head_sha_at_seal` against `git rev-parse HEAD` before reasoning. Agents MUST warn the user when they diverge.
-- **Version**: 0.14.0 (npm `agent-chorus` + crate `agent-chorus`).
+- **Version**: 0.14.1 (npm `agent-chorus` + crate `agent-chorus`).
+- **What's new in 0.14.1**: packaging-only patch — relocates `settings.agent-context.json` template into `cli/templates/` so `cargo publish` can package it (v0.14.0 silently failed crates.io publish); adds `cargo publish --dry-run` to the release verify job to prevent recurrence.
 
 ## What's New Since Last Seal (v0.13.0 → v0.14.0)
 - **P1 — rich manifest + provenance.** Manifest carries head SHA, seal timestamp, tool versions and hashes; sealing/authoring chain is recorded so consumers can verify pack origin.

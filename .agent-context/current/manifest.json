@@ -1,33 +1,33 @@
 {
   "schema_version": 1,
-  "chorus_version": "0.14.0",
+  "chorus_version": "0.14.1",
   "skill_version": null,
-  "verifier_sha256": "7e803e81bc1f82f1889275adefcdff57a44052e7cbb77183d729dd16d6c66f99",
-  "generated_at": "2026-04-24T17:48:34Z",
+  "verifier_sha256": "3ff01369efae7933776696f873a4a007cf07c03541bf74ba43ad73afe9a25d76",
+  "generated_at": "2026-04-24T22:07:31Z",
   "repo_name": "agent-chorus",
   "repo_root": ".",
-  "branch": "feat/v0.14-agent-context-hardening",
+  "branch": "fix/v0.14.1-crates-packaging",
   "detached": false,
-  "head_sha": "53acb8b83b2d72a3f2318ae32cc44359c5178773",
-  "head_sha_at_seal": "53acb8b83b2d72a3f2318ae32cc44359c5178773",
+  "head_sha": "0bdf84d288b1a6af700b0ad26328f017885e3879",
+  "head_sha_at_seal": "0bdf84d288b1a6af700b0ad26328f017885e3879",
   "post_commit_sha": null,
   "last_known_good_sha": null,
   "aliases": {},
-  "build_reason": "v0.14.0 release prep",
+  "build_reason": "v0.14.1 crates.io packaging fix",
   "base_sha": null,
   "changed_files": [],
   "files_count": 8,
-  "words_total": 5668,
-  "bytes_total": 46368,
-  "pack_checksum": "55e54e7d10ecaeab28792486f78eb4f4dd54309f92b8f2cd71c6560e928aa0f8",
+  "words_total": 5704,
+  "bytes_total": 46645,
+  "pack_checksum": "6c12432870725f62085a64027f033901afcbf00a1fb53d3cc68523a7a03ceb70",
   "stable_checksum": "d540821597c0ace853008553d9ff183c88c80ded0b9d1e2f36fe8e95c830dcbb",
   "files": [
     {
       "path": "00_START_HERE.md",
       "path_lower": "00_start_here.md",
-      "sha256": "a6463ff844089abbab1d1bb6186cc387695c3fcf5c17f6500e300dc3ebece6fc",
-      "bytes": 6011,
-      "words": 821
+      "sha256": "c3c0cfd62e746933acf8c031e2a751ed985bf2064fc1de7a7d89c11c94544089",
+      "bytes": 6288,
+      "words": 857
     },
     {
       "path": "10_SYSTEM_OVERVIEW.md",
@@ -330,6 +330,7 @@
     "cli/src/agents.rs::get_claude_session_cwd": "fn get_claude_session_cwd(file_path: &Path) -> Option<PathBuf>",
     "cli/src/agents.rs::get_codex_session_cwd": "fn get_codex_session_cwd(file_path: &Path) -> Option<PathBuf>",
     "cli/src/agents.rs::has_extension": "fn has_extension(path: &Path, ext: &str) -> bool",
+    "cli/src/agents.rs::infer_gemini_scope": "fn infer_gemini_scope(session_path: &Path) -> (serde_json::Value, Option<String>)",
     "cli/src/agents.rs::is_system_directory": "fn is_system_directory(dir: &Path) -> bool",
     "cli/src/agents.rs::list_claude_sessions": "pub fn list_claude_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>>",
     "cli/src/agents.rs::list_codex_sessions": "pub fn list_codex_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>>",
@@ -338,6 +339,7 @@
     "cli/src/agents.rs::parse_claude_jsonl": "fn parse_claude_jsonl(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent>",
     "cli/src/agents.rs::parse_codex_jsonl": "fn parse_codex_jsonl(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent>",
     "cli/src/agents.rs::parse_gemini_json": "fn parse_gemini_json(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent>",
+    "cli/src/agents.rs::parse_gemini_jsonl": "fn parse_gemini_jsonl(path: &Path, last_n: usize, opts: ReadOptions) -> Result<ParsedContent>",
     "cli/src/agents.rs::path_contains": "fn path_contains(path: &Path, needle: &str) -> bool",
     "cli/src/agents.rs::pick_roast": "fn pick_roast(agent: &str, content: &str, message_count: usize) -> &'static str",
     "cli/src/agents.rs::read_claude_session": "pub fn read_claude_session(id: Option<&str>, cwd: &str) -> Result<Session>",
@@ -497,7 +499,7 @@
     "scripts/read_session.cjs::writeFileEnsured": "function writeFileEnsured(filePath, content)"
   },
   "dependencies_snapshot": {
-    "npm": "c81f164713d1ceadf6e37c5a9da4e33754247b902ba211abbdf34d8ba49fc4cf"
+    "npm": "218506f08a5738c0bf850448ee5d7f01b50468bc3fee8e12a2e3d0739db180be"
   },
   "tool_hashes": {}
 }
