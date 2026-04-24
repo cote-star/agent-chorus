@@ -1,0 +1,3 @@
+{"sessionId":"gemini-jsonl-fixture","startTime":"2026-04-24T17:45:31.574Z","lastUpdated":"2026-04-24T17:45:31.575Z","kind":"main"}
+{"id":"e89a23e3","timestamp":"2026-04-24T17:48:52.144Z","type":"user","content":[{"text":"hello from jsonl"}]}
+{"id":"f9a12bc4","timestamp":"2026-04-24T17:48:53.000Z","type":"gemini","content":[{"text":"Gemini jsonl assistant output."}]}

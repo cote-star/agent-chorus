@@ -26,6 +26,10 @@
       },
       "match_snippet": {
         "type": ["string", "null"]
+      },
+      "scope_hash": {
+        "type": "string",
+        "description": "For Gemini sessions only: the hex-hash scope directory (SHA-256 of an absolute cwd) when the scope segment is not a human-named directory. Present only when cwd inference fell back to a hex scope; absent otherwise."
       }
     }
   }

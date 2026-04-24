@@ -295,4 +295,47 @@ run_report_case
 run_list_case codex Codex /workspace/demo
 run_search_case codex Codex "Codex fixture assistant output." /workspace/demo
 
+# --- Gemini list parity: proves .jsonl files are indexed and cwd is not null ---
+#
+# The Gemini list path had two pre-existing bugs fixed in v0.14.0:
+#   1. filter only matched *.json — .jsonl sessions (newer Gemini CLI) were
+#      silently excluded.
+#   2. cwd was hardcoded null in listings.
+# This case scans the fixture store's tmp base (no --cwd scope) and asserts
+# that Node and Rust both emit the same shape, that the .jsonl fixture is
+# present, and that the named scope `demo` bubbles up as the cwd hint.
+run_gemini_list_case() {
+  local node_out="$TMP_DIR/list-gemini-node.json"
+  local rust_out="$TMP_DIR/list-gemini-rust.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  node "$ROOT/scripts/read_session.cjs" list --agent=gemini --limit=20 --json > "$node_out"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- list --agent gemini --limit 20 --json > "$rust_out"
+
+  # Node-vs-Rust shape equivalence.
+  node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "list-gemini"
+
+  # Behavior assertions: .jsonl indexed, cwd inferred from named scope.
+  if ! node -e "
+    const rows = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+    const jsonl = rows.find(r => r.file_path && r.file_path.endsWith('.jsonl'));
+    if (!jsonl) { console.error('FAIL list-gemini-jsonl: no .jsonl session indexed'); process.exit(1); }
+    if (jsonl.cwd !== 'demo') { console.error('FAIL list-gemini-cwd: .jsonl cwd should be demo, got ' + JSON.stringify(jsonl.cwd)); process.exit(1); }
+    const json = rows.find(r => r.file_path && r.file_path.endsWith('.json') && !r.file_path.endsWith('.jsonl'));
+    if (!json) { console.error('FAIL list-gemini-json: no .json session indexed'); process.exit(1); }
+    if (json.cwd !== 'demo') { console.error('FAIL list-gemini-cwd-json: .json cwd should be demo, got ' + JSON.stringify(json.cwd)); process.exit(1); }
+    console.log('PASS list-gemini-assertions (.jsonl indexed, cwd=demo)');
+  " "$rust_out"; then
+    exit 1
+  fi
+}
+
+run_gemini_list_case
+
 echo "Conformance complete: Node and Rust outputs match for read/compare/report/list/search, plus v0.13 summary/timeline/doctor/setup/read-flags (including golden file diffs)."

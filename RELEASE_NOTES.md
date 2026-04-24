@@ -45,6 +45,15 @@ v0.14.0 ships the thirteen-pass hardening effort planned in `research/agent-cont
 - Each `chorus agent-context verify` / `check-freshness` warning now writes `.agent-context/current/.last_freshness.json` with `{changed_files, affected_sections, timestamp}`. On a subsequent pack-only push the hook reads this state, checks whether the push touches the section files the prior warning named, and prints `warning appears addressed: sections [X, Y] updated`.
 - New opt-in flag `chorus agent-context verify --ci --enforce-separate-commits`. When set, verify inspects `base..HEAD` and fails if any commit mixes `.agent-context/**` with non-pack paths. **Off by default;** the gate is intended for teams that have adopted the "pack edits land as their own commit" convention. See `docs/CLI_REFERENCE.md` for the JSON schema additions (`separate_commits`, `mixed_commits`).
 
+### Fixed
+
+- **Gemini adapter: `.jsonl` files now indexed.** Pre-existing bug where the list/scope discovery
+  only picked up `.json`; newer Gemini CLI writes `.jsonl`. Listings now include both.
+- **Gemini adapter: cwd inference from scope directory.** Listings used to emit `cwd: null`
+  for every Gemini session. The scope directory name (e.g. `play`) is now returned as the cwd
+  hint, so `chorus read --agent gemini --cwd <X>` filtering works for named scopes.
+  Hex-hash scopes still return the hash (lossy; users can set `--chats-dir` to pin).
+
 ### Known Limitations
 
 - **Markdown merge conflicts (#11):** Parallel PRs that both edit the same pack markdown file (e.g. `20_CODE_MAP.md`) can conflict on merge. The tooling cannot auto-resolve these. Mitigation: keep pack files organized around stable H2 section headings so edits cluster inside bounded sections and conflicts stay localized. Re-seal after the human conflict resolution.

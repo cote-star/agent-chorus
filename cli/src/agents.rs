@@ -1950,7 +1950,11 @@ pub fn list_gemini_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
     let mut candidates = Vec::new();
     for dir in &dirs {
         let mut files = collect_matching_files(dir, false, &|p| {
-            has_extension(p, "json") && p.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("session-")).unwrap_or(false)
+            (has_extension(p, "json") || has_extension(p, "jsonl"))
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("session-"))
+                    .unwrap_or(false)
         })?;
         candidates.append(&mut files);
     }
@@ -1958,15 +1962,63 @@ pub fn list_gemini_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
     let mut entries = Vec::new();
     for file in candidates.iter().take(limit) {
         let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
-        entries.push(serde_json::json!({
+        let (cwd_hint, scope_hash) = infer_gemini_scope(&file.path);
+        let mut entry = serde_json::json!({
             "session_id": session_id,
             "agent": "gemini",
-            "cwd": serde_json::Value::Null,
+            "cwd": cwd_hint,
             "modified_at": file_modified_iso(&file.path),
             "file_path": file.path.to_string_lossy().to_string(),
-        }));
+        });
+        if let Some(hash) = scope_hash {
+            entry["scope_hash"] = serde_json::Value::String(hash);
+        }
+        entries.push(entry);
     }
     Ok(entries)
+}
+
+/// Best-effort inference of the Gemini session's "cwd" from its scope segment.
+///
+/// Gemini CLI lays out session files under `~/.gemini/tmp/<scope>/chats/`.
+/// The `<scope>` segment is either:
+///   - a named directory (e.g. `play`, `sandbox`) — user-named scope; return
+///     it verbatim as the cwd hint so `--cwd <X>` filtering can fuzzy-match;
+///   - a hex hash (SHA-256 of an absolute cwd, via `hash_path`) — we cannot
+///     reverse it without a scope map, so return the scope directory itself
+///     as the cwd hint (lossy but still useful as a bucket) and surface the
+///     hex string under `scope_hash` so downstream tools can match by hash.
+///
+/// Returns `(cwd_value_for_json, optional_scope_hash)`. The cwd value is a
+/// JSON value (String) rather than `Option<String>` so the listing keeps its
+/// stable shape; callers unable to infer a scope still get a valid `cwd`
+/// field instead of `null`.
+fn infer_gemini_scope(session_path: &Path) -> (serde_json::Value, Option<String>) {
+    // Layout: .../tmp/<scope>/chats/session-*.json[l]
+    //   grandparent of the file is <scope>/chats
+    //   great-grandparent (one more up) is <scope>
+    let scope_dir = session_path
+        .parent()           // <scope>/chats
+        .and_then(|p| p.parent()); // <scope>
+    let scope_name = scope_dir
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    match scope_name {
+        Some(name) => {
+            // Hex-hash scopes are a known lossy case — we still return the
+            // scope dir as the cwd bucket, but flag the hash so callers can
+            // opt into a lookup map.
+            let is_hex_hash = name.len() >= 40
+                && name.chars().all(|c| c.is_ascii_hexdigit());
+            if is_hex_hash {
+                (serde_json::Value::String(name.clone()), Some(name))
+            } else {
+                (serde_json::Value::String(name), None)
+            }
+        }
+        None => (serde_json::Value::Null, None),
+    }
 }
 
 // --- Search functions ---
@@ -2054,15 +2106,19 @@ pub fn search_gemini_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
     let mut candidates = Vec::new();
     for dir in &dirs {
         let mut files = collect_matching_files(dir, false, &|p| {
-            has_extension(p, "json") && p.file_name().and_then(|n| n.to_str()).map(|n| n.starts_with("session-")).unwrap_or(false)
+            (has_extension(p, "json") || has_extension(p, "jsonl"))
+                && p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.starts_with("session-"))
+                    .unwrap_or(false)
         })?;
         candidates.append(&mut files);
     }
     sort_files_by_mtime_desc(&mut candidates);
-    
+
     let query_lower = query.to_ascii_lowercase();
     let mut entries = Vec::new();
-    
+
     for file in candidates {
         if entries.len() >= limit { break; }
 
@@ -2070,14 +2126,19 @@ pub fn search_gemini_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
         if assistant_text.to_ascii_lowercase().contains(&query_lower) {
             let snippet = compute_match_snippet(&assistant_text, query);
             let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
-            entries.push(serde_json::json!({
+            let (cwd_hint, scope_hash) = infer_gemini_scope(&file.path);
+            let mut entry = serde_json::json!({
                 "session_id": session_id,
                 "agent": "gemini",
-                "cwd": serde_json::Value::Null,
+                "cwd": cwd_hint,
                 "modified_at": file_modified_iso(&file.path),
                 "file_path": file.path.to_string_lossy().to_string(),
                 "match_snippet": snippet,
-            }));
+            });
+            if let Some(hash) = scope_hash {
+                entry["scope_hash"] = serde_json::Value::String(hash);
+            }
+            entries.push(entry);
         }
     }
     Ok(entries)
@@ -3316,5 +3377,142 @@ mod tests {
         assert!(out.contains("[TOOL: shell]"));
         assert!(out.contains("\"x\":1"));
         assert!(out.contains("[/TOOL]"));
+    }
+
+    // --- Gemini list: .jsonl indexing + cwd inference from scope dir ---
+
+    fn gemini_list_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        use std::sync::{Mutex, OnceLock};
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn gemini_list_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("chorus_gemini_list_{}", name));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create fixture dir");
+        dir
+    }
+
+    #[test]
+    fn gemini_list_indexes_both_json_and_jsonl() {
+        let _guard = gemini_list_env_lock();
+        let fixture = gemini_list_fixture("mixed_ext");
+        // Layout: <fixture>/play/chats/session-*.{json,jsonl}
+        let chats = fixture.join("play").join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(
+            chats.join("session-alpha.json"),
+            serde_json::json!({ "messages": [] }).to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            chats.join("session-beta.jsonl"),
+            "{\"sessionId\":\"beta\"}\n{\"type\":\"user\",\"content\":\"hi\"}\n",
+        )
+        .unwrap();
+        // A non-matching file should be ignored.
+        std::fs::write(chats.join("ignore.txt"), b"not a session").unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_TMP_DIR", &fixture);
+        let out = super::list_gemini_sessions(None, 10).expect("list_gemini_sessions");
+        std::env::remove_var("CHORUS_GEMINI_TMP_DIR");
+
+        let ids: Vec<String> = out
+            .iter()
+            .map(|e| e["session_id"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert!(ids.contains(&"session-alpha".to_string()), "missing .json: {:?}", ids);
+        assert!(ids.contains(&"session-beta".to_string()), "missing .jsonl: {:?}", ids);
+        assert_eq!(out.len(), 2, "expected exactly 2 entries, got: {:?}", ids);
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn gemini_list_named_scope_returns_cwd_hint_not_null() {
+        let _guard = gemini_list_env_lock();
+        let fixture = gemini_list_fixture("named_scope");
+        let chats = fixture.join("play").join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(
+            chats.join("session-one.json"),
+            serde_json::json!({ "messages": [] }).to_string(),
+        )
+        .unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_TMP_DIR", &fixture);
+        let out = super::list_gemini_sessions(None, 10).expect("list_gemini_sessions");
+        std::env::remove_var("CHORUS_GEMINI_TMP_DIR");
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0]["cwd"].as_str(),
+            Some("play"),
+            "expected cwd=play, got {:?}",
+            out[0]["cwd"]
+        );
+        // Named scope must NOT emit a scope_hash field.
+        assert!(
+            out[0].get("scope_hash").is_none(),
+            "named scope should not have scope_hash: {:?}",
+            out[0]
+        );
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn gemini_list_hex_hash_scope_reports_scope_hash() {
+        let _guard = gemini_list_env_lock();
+        let fixture = gemini_list_fixture("hex_scope");
+        // 64-char hex scope (SHA-256-shaped).
+        let hex = "a".repeat(64);
+        let chats = fixture.join(&hex).join("chats");
+        std::fs::create_dir_all(&chats).unwrap();
+        std::fs::write(
+            chats.join("session-hx.jsonl"),
+            "{\"sessionId\":\"hx\"}\n",
+        )
+        .unwrap();
+
+        std::env::set_var("CHORUS_GEMINI_TMP_DIR", &fixture);
+        let out = super::list_gemini_sessions(None, 10).expect("list_gemini_sessions");
+        std::env::remove_var("CHORUS_GEMINI_TMP_DIR");
+
+        assert_eq!(out.len(), 1);
+        // Hex scope is lossy — we return the scope dir as the cwd bucket
+        // AND surface it under scope_hash so callers can opt into a map.
+        assert_eq!(out[0]["cwd"].as_str(), Some(hex.as_str()));
+        assert_eq!(out[0]["scope_hash"].as_str(), Some(hex.as_str()));
+
+        let _ = std::fs::remove_dir_all(&fixture);
+    }
+
+    #[test]
+    fn infer_gemini_scope_classifies_named_vs_hex() {
+        use super::infer_gemini_scope;
+        use std::path::PathBuf;
+
+        // Named scope: just a word.
+        let named = PathBuf::from("/tmp/.gemini/tmp/play/chats/session-a.jsonl");
+        let (cwd, hash) = infer_gemini_scope(&named);
+        assert_eq!(cwd, serde_json::Value::String("play".into()));
+        assert_eq!(hash, None);
+
+        // Hex scope: 64 hex chars.
+        let hex = "c".repeat(64);
+        let hexp = PathBuf::from(format!("/tmp/.gemini/tmp/{}/chats/session-b.json", hex));
+        let (cwd2, hash2) = infer_gemini_scope(&hexp);
+        assert_eq!(cwd2, serde_json::Value::String(hex.clone()));
+        assert_eq!(hash2.as_deref(), Some(hex.as_str()));
+
+        // Short hex-looking (<40) stays named — not flagged as a hash.
+        let shortish = PathBuf::from("/tmp/.gemini/tmp/abc/chats/session-c.json");
+        let (cwd3, hash3) = infer_gemini_scope(&shortish);
+        assert_eq!(cwd3, serde_json::Value::String("abc".into()));
+        assert_eq!(hash3, None);
     }
 }

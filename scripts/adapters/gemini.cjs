@@ -93,6 +93,10 @@ function resolve(id, cwd, opts) {
   const candidates = [];
   for (const dir of dirs) {
     const files = collectMatchingFiles(dir, (fullPath, name) => {
+      // resolve() feeds read(), which parses .json (single-document). The
+      // .jsonl layout has a different schema — list/search index it, but
+      // read does not yet support it. Keep resolve narrow to .json so reads
+      // don't surface a .jsonl file that read() can't parse.
       if (!name.endsWith('.json')) return false;
       if (id) return fullPath.includes(id);
       return name.startsWith('session-');
@@ -190,6 +194,27 @@ function read(filePath, lastN, opts = {}) {
   };
 }
 
+// Best-effort inference of cwd from the Gemini session's scope segment.
+// Layout: .../tmp/<scope>/chats/session-*.json[l]
+// If <scope> is a named directory (e.g. "play"), return it as the cwd hint.
+// If <scope> is a hex hash (>=40 hex chars — SHA-256 of an absolute path),
+// we can't reverse it without a scope map; still return the scope dir as
+// the cwd bucket and surface the hash via a separate scope_hash field.
+function inferGeminiScope(sessionPath) {
+  // parent() -> <scope>/chats ; parent() again -> <scope>
+  const chatsDir = path.dirname(sessionPath);
+  const scopeDir = path.dirname(chatsDir);
+  const scopeName = path.basename(scopeDir);
+  if (!scopeName || scopeName === '.' || scopeName === path.sep) {
+    return { cwd: null, scopeHash: null };
+  }
+  const isHexHash = scopeName.length >= 40 && /^[0-9a-f]+$/.test(scopeName);
+  if (isHexHash) {
+    return { cwd: scopeName, scopeHash: scopeName };
+  }
+  return { cwd: scopeName, scopeHash: null };
+}
+
 function list(cwd, limit) {
   limit = limit || 10;
   const dirs = cwd
@@ -200,17 +225,26 @@ function list(cwd, limit) {
     : listGeminiChatDirs();
   const candidates = [];
   for (const dir of dirs) {
-    const files = collectMatchingFiles(dir, (fp, name) => name.endsWith('.json') && name.startsWith('session-'), false);
+    const files = collectMatchingFiles(
+      dir,
+      (fp, name) => (name.endsWith('.json') || name.endsWith('.jsonl')) && name.startsWith('session-'),
+      false,
+    );
     for (const f of files) candidates.push(f);
   }
   candidates.sort(compareByMtimeDesc);
-  return candidates.slice(0, limit).map(f => ({
-    session_id: path.basename(f.path, path.extname(f.path)),
-    agent: 'gemini',
-    cwd: null,
-    modified_at: getFileTimestamp(f.path),
-    file_path: f.path,
-  }));
+  return candidates.slice(0, limit).map(f => {
+    const scope = inferGeminiScope(f.path);
+    const entry = {
+      session_id: path.basename(f.path, path.extname(f.path)),
+      agent: 'gemini',
+      cwd: scope.cwd,
+      modified_at: getFileTimestamp(f.path),
+      file_path: f.path,
+    };
+    if (scope.scopeHash) entry.scope_hash = scope.scopeHash;
+    return entry;
+  });
 }
 
 function search(query, cwd, limit) {
@@ -224,7 +258,11 @@ function search(query, cwd, limit) {
     : listGeminiChatDirs();
   const candidates = [];
   for (const dir of dirs) {
-    const files = collectMatchingFiles(dir, (fp, name) => name.endsWith('.json') && name.startsWith('session-'), false);
+    const files = collectMatchingFiles(
+      dir,
+      (fp, name) => (name.endsWith('.json') || name.endsWith('.jsonl')) && name.startsWith('session-'),
+      false,
+    );
     for (const f of files) candidates.push(f);
   }
   candidates.sort(compareByMtimeDesc);
@@ -283,14 +321,17 @@ function search(query, cwd, limit) {
     const snippetEnd = Math.min(assistantText.length, idx + queryLower.length + 60);
     const match_snippet = assistantText.slice(snippetStart, snippetEnd).replace(/\n/g, ' ');
 
-    entries.push({
+    const scope = inferGeminiScope(f.path);
+    const entry = {
       session_id: path.basename(f.path, path.extname(f.path)),
       agent: 'gemini',
-      cwd: null,
+      cwd: scope.cwd,
       modified_at: getFileTimestamp(f.path),
       file_path: f.path,
       match_snippet,
-    });
+    };
+    if (scope.scopeHash) entry.scope_hash = scope.scopeHash;
+    entries.push(entry);
   }
 
   return entries;
