@@ -25,11 +25,11 @@
 
 | Change type | Files that must change together |
 | --- | --- |
-| New CLI command | `cli/src/main.rs`, `scripts/read_session.cjs`, `schemas/<cmd>.json`, `fixtures/golden/<cmd>.json`, `scripts/conformance.sh`, `PROTOCOL.md`, `docs/CLI_REFERENCE.md` |
+| New CLI command | `cli/src/main.rs`, `scripts/read_session.cjs`, Rust implementation location (`cli/src/<cmd>.rs` for module-per-subcommand commands, or an explicit inline-dispatch rationale in `main.rs`), `schemas/<cmd>.json`, `fixtures/golden/<cmd>.json`, `scripts/conformance.sh`, `PROTOCOL.md`, `docs/CLI_REFERENCE.md` |
 | New CLI flag on existing command | `cli/src/main.rs` (Clap struct), `scripts/read_session.cjs` (arg parse), `schemas/<cmd>.json` (if output changes), `fixtures/golden/<cmd>.json` (if output changes), `docs/CLI_REFERENCE.md` |
 | New agent adapter | `cli/src/agents.rs` (Agent enum + match arm), `scripts/adapters/<agent>.cjs`, `fixtures/session-store/<agent>/`, `fixtures/golden/read-<agent>.json`, `scripts/conformance.sh`, `PROTOCOL.md` |
 | Output format change | `cli/src/agents.rs` or relevant module, `scripts/read_session.cjs` or relevant adapter, `schemas/<cmd>.json`, ALL `fixtures/golden/*.json` that cover the changed output |
-| New redaction pattern | `cli/src/agents.rs` (`redact_sensitive_text`), `scripts/adapters/utils.cjs` (`redactSecrets`). Silent failure if one is missed — secret passes through in output. |
+| New redaction pattern | `cli/src/agents.rs` (`redact_sensitive_text`, `redact_sensitive_text_with_audit`, helper matcher, Rust tests), `scripts/adapters/utils.cjs` (`redactSensitiveText`, `redactSensitiveTextWithAudit`), `fixtures/adversarial/mixed-secrets.txt`, `scripts/test_adversarial_redaction.sh`, and `PROTOCOL.md` if the public redaction contract changes. Silent failure if one runtime or audit path is missed — the secret can pass through or audit counts can diverge. |
 | New context-pack artifact | `cli/src/agent_context.rs` (build function + init list + seal validation), `scripts/agent_context/init.cjs` (template function + outputs array), `scripts/agent_context/seal.cjs` (validation), `scripts/test_context_pack.sh` |
 | Context-pack template change | `cli/src/agent_context.rs` (Rust template), `scripts/agent_context/init.cjs` (Node template). Must change both — parity tested by `test_context_pack.sh`. |
 | New agent-context subcommand | `cli/src/main.rs` (Clap subcommand enum), `scripts/read_session.cjs` (command dispatch), `scripts/agent_context/<sub>.cjs` (Node implementation), `scripts/test_context_pack.sh` (integration tests), `docs/CLI_REFERENCE.md` |

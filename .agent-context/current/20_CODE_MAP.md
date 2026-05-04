@@ -43,16 +43,17 @@
 | CLI command definition | `cli/src/main.rs` | `#[derive(Subcommand)]` enum |
 | Node command handler | `scripts/read_session.cjs` | `case '<command>':` in the switch |
 | Output schema for a command | `schemas/<command>.json` | JSON Schema root |
-| Redaction patterns | `cli/src/agents.rs` | `fn redact_sensitive_text` |
+| Redaction patterns | `cli/src/agents.rs`, `scripts/adapters/utils.cjs` | Rust: `redact_sensitive_text`, `redact_sensitive_text_with_audit`, helper matcher, tests. Node: `redactSensitiveText`, `redactSensitiveTextWithAudit`. |
 | Gemini `.pb` / Cursor `state.vscdb` probes | `cli/src/agents.rs` | `detect_gemini_pb_fallback_hint`, `detect_cursor_vscdb_fallback_hint`, `gemini_not_found_message`, `cursor_not_found_message`, `gemini_base_dir`, `cursor_base_dir` |
 | Checkpoint broadcast logic | `cli/src/checkpoint.rs` | `fn run`, `compose_state_message` |
 | Read options plumbing (v0.13.0) | `cli/src/agents.rs` | `struct ReadOptions`, `*_with_options` read functions |
-| Summary / timeline / doctor / setup parity (v0.13.0) | `cli/src/{summary,timeline,doctor,setup}.rs` | one module per subcommand, dispatched from `main.rs` |
+| Summary / timeline / doctor / setup parity (v0.13.0) | `cli/src/{summary,timeline,doctor,setup}.rs` | one module per subcommand, dispatched from `main.rs`; new structured Rust subcommands should mention the module-vs-inline decision |
 | Context-pack template content | `cli/src/agent_context.rs` | `fn build_template_*` functions |
 | Conformance test for a command | `scripts/conformance.sh` | `expect_success "<label>"` calls |
 
 ## Cross-Cutting Tracing Flows
-- **New CLI command**: `main.rs` Clap enum → `main.rs` dispatch → `agents.rs` or new module → `read_session.cjs` handler → `schemas/<cmd>.json` → `fixtures/golden/<cmd>.json` → `conformance.sh` → `PROTOCOL.md` → `docs/CLI_REFERENCE.md`
+- **New CLI command**: `main.rs` Clap enum → `main.rs` dispatch → Rust implementation location (`cli/src/<cmd>.rs` if following the one-module-per-structured-subcommand pattern, or explicit inline-dispatch rationale) → `read_session.cjs` handler → `schemas/<cmd>.json` → `fixtures/golden/<cmd>.json` → `conformance.sh` → `PROTOCOL.md` → `docs/CLI_REFERENCE.md`
+- **New redaction pattern**: Rust plain path (`cli/src/agents.rs::redact_sensitive_text`) → Rust audit path (`redact_sensitive_text_with_audit`) → Rust helper/test → Node plain path (`scripts/adapters/utils.cjs::redactSensitiveText`) → Node audit path (`redactSensitiveTextWithAudit`) → adversarial fixture/test → `PROTOCOL.md` if contract text changes.
 - **New agent adapter**: `agents.rs` Agent enum + match arm → `scripts/adapters/<agent>.cjs` → `fixtures/session-store/<agent>/` → `fixtures/golden/read-<agent>.json` → `conformance.sh` → `PROTOCOL.md`
 - **New context-pack artifact**: `agent_context.rs` build function + init list → `scripts/agent_context/init.cjs` template function + outputs array → `scripts/agent_context/seal.cjs` validation → `scripts/test_context_pack.sh` test
 
