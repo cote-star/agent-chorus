@@ -1,5 +1,29 @@
 {
   "schema_version": 1,
+  "version": "0.14.1",
+  "agent_context_version": "0.2.0",
+  "repo": "agent-chorus",
+  "git_revision": "0bdf84d288b1a6af700b0ad26328f017885e3879",
+  "files": {
+    "content": [
+      "00_START_HERE.md",
+      "10_SYSTEM_OVERVIEW.md",
+      "20_CODE_MAP.md",
+      "30_BEHAVIORAL_INVARIANTS.md",
+      "40_OPERATIONS_AND_RELEASE.md"
+    ],
+    "navigation": [
+      "search_scope.json"
+    ],
+    "authority": [
+      "routes.json",
+      "completeness_contract.json",
+      "reporting_rules.json"
+    ],
+    "testing": [
+      "acceptance_tests.md"
+    ]
+  },
   "chorus_version": "0.14.1",
   "skill_version": null,
   "verifier_sha256": "3ff01369efae7933776696f873a4a007cf07c03541bf74ba43ad73afe9a25d76",
@@ -21,7 +45,7 @@
   "bytes_total": 46645,
   "pack_checksum": "6c12432870725f62085a64027f033901afcbf00a1fb53d3cc68523a7a03ceb70",
   "stable_checksum": "d540821597c0ace853008553d9ff183c88c80ded0b9d1e2f36fe8e95c830dcbb",
-  "files": [
+  "file_meta": [
     {
       "path": "00_START_HERE.md",
       "path_lower": "00_start_here.md",
