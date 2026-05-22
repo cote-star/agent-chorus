@@ -1,0 +1,33 @@
+{
+  "version": "1.0.0",
+  "description": "Rules for how agents should report file sets in answers",
+  "groupable_families": [
+    {
+      "glob": "REPLACE: glob pattern for a homogeneous file set (e.g., src/models/*.ts)",
+      "report_as": "REPLACE: family label with verified count (e.g., 'model files (~25 files)')",
+      "reason": "REPLACE: why these files should be grouped, not listed individually"
+    }
+  ],
+  "never_enumerate_individually": [
+    {
+      "glob": "REPLACE: glob for generated/derived files (e.g., dist/**, *.lock)",
+      "reason": "REPLACE: why this file set has no architectural value"
+    }
+  ],
+  "global_rules": {
+    "authoritative_vs_derived_paths": {
+      "authoritative": [
+        "REPLACE: paths that are source-of-truth for architecture decisions"
+      ],
+      "derived_or_generated": [
+        "REPLACE: paths that are generated from authoritative sources"
+      ]
+    }
+  },
+  "_rules": {
+    "groupable_families": "Count must be verified with git ls-files | grep ... | wc -l. Use ~ prefix for approximate counts. Must be within ±20% of actual.",
+    "never_enumerate_individually": "Only for files with zero architectural value. Do not suppress files agents might need to edit.",
+    "authoritative": "Files where changes originate. If in doubt, it's authoritative.",
+    "validation": "After filling, remove all REPLACE markers and _EXAMPLE entries."
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "version": "1.0.0",
+  "agent_context_version": "0.1.0",
+  "generated_at": "YYYY-MM-DDTHH:MM:SSZ",
+  "repo": "REPO_NAME",
+  "git_revision": "FULL_SHA",
+  "files": {
+    "content": [
+      "00_START_HERE.md",
+      "10_SYSTEM_OVERVIEW.md",
+      "20_CODE_MAP.md",
+      "30_BEHAVIORAL_INVARIANTS.md",
+      "40_OPERATIONS_AND_RELEASE.md"
+    ],
+    "navigation": [
+      "search_scope.json"
+    ],
+    "authority": [
+      "routes.json",
+      "completeness_contract.json",
+      "reporting_rules.json"
+    ],
+    "testing": [
+      "acceptance_tests.md"
+    ]
+  }
+}

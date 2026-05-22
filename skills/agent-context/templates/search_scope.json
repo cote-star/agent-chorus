@@ -1,0 +1,28 @@
+{
+  "version": "1.0.0",
+  "description": "Search scoping — search ONLY within scoped directories for each task type",
+  "task_families": {
+    "_EXAMPLE_feature_work": {
+      "description": "REPLACE: describe a common task type for this repo",
+      "search_directories": [
+        "REPLACE: directories to search in (e.g., src/routes/, src/services/)"
+      ],
+      "exclude_from_search": [
+        "REPLACE: directories to exclude (e.g., dist/, node_modules/)"
+      ],
+      "verification_shortcuts": [
+        {
+          "check": "REPLACE: what to verify (e.g., 'Route is registered')",
+          "file": "REPLACE: exact file path to check",
+          "look_for": "REPLACE: string or pattern that must appear in the file"
+        }
+      ]
+    }
+  },
+  "_rules": {
+    "search_directories": "Every directory must exist on disk. Include test directories when the task involves testing.",
+    "exclude_from_search": "Exclude generated, derived, and unrelated directories. Do not blanket-exclude tests/ from task families that involve testing.",
+    "verification_shortcuts": "The look_for string must actually appear in the referenced file. Verify before finalizing.",
+    "validation": "After filling, remove all REPLACE markers and _EXAMPLE entries. Verify all directories exist."
+  }
+}
