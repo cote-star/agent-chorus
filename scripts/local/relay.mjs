@@ -40,34 +40,33 @@ function loadConfig() {
 // ── CLI dispatch ───────────────────────────────────────────────────────────
 
 /**
- * Returns { psCmd, stdin } for runCommand.
- * Directive is piped via stdin. Paths use PowerShell single-quote syntax
- * which handles spaces correctly without further escaping.
+ * Returns { cmd, stdin } for runCommand.
+ * cmd is a shell command string; shell: true resolves .cmd/.ps1 shims on Windows.
+ * Double-quote escaping is used (cmd.exe compatible via shell:true on Windows).
  */
 function buildCliInvocation(agentName, directive, projectPath) {
-  const psq = (s) => `'${s.replace(/'/g, "''")}'`;  // PowerShell single-quote escape
+  // shell: true uses cmd.exe on Windows — escape double-quotes inside the arg.
+  const dq = (s) => `"${s.replace(/"/g, '\\"')}"`;
   switch (agentName) {
     case "claude":
-      // claude --print reads prompt from stdin when no positional arg is provided
-      return { psCmd: "claude --print", stdin: directive };
+      // shell:true finds claude.cmd shim; directive passed as positional arg.
+      return { cmd: `claude --print ${dq(directive)}`, stdin: null };
     case "codex":
-      // codex exec reads from stdin when PROMPT arg is omitted
-      return { psCmd: `codex exec -C ${psq(projectPath)} -s workspace-write`, stdin: directive };
+      // codex exec reads from stdin when PROMPT arg is omitted.
+      return { cmd: `codex exec -C ${dq(projectPath)} -s workspace-write`, stdin: directive };
     default:
       return null; // Gemini has no confirmed non-interactive mode
   }
 }
 
 /**
- * Runs a command via PowerShell with stdin piped.
- * PowerShell handles paths with spaces and passes stdin through to child
- * processes correctly, avoiding cmd.exe double-quoting issues on Windows.
+ * Runs a shell command string with { shell: true } so Windows .cmd/.ps1 shims
+ * resolve correctly without requiring an explicit PowerShell or cmd.exe wrapper.
  */
-function runCommand(psCmd, stdin = null, env = {}) {
+function runCommand(cmd, stdin = null, env = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn("powershell.exe", [
-      "-NoProfile", "-NonInteractive", "-Command", psCmd,
-    ], {
+    const proc = spawn(cmd, {
+      shell: true,
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, ...env },
     });
@@ -122,12 +121,12 @@ async function processTask(chorusRoot, projectPath, agentName, taskFile) {
     return;
   }
 
-  const { psCmd, stdin } = invocation;
+  const { cmd, stdin } = invocation;
   // CHORUS_PROJECT_ROOT tells scripts inside the spawned agent which project to operate on
   const env = { CHORUS_PROJECT_ROOT: projectPath };
 
   try {
-    const result = await runCommand(psCmd, stdin, env);
+    const result = await runCommand(cmd, stdin, env);
     const fresh  = readJson(taskFile, task);
     writeJson(taskFile, { ...fresh, status: "done", done_at: nowIso(), result: result.trim() });
     log(`Done [${task.task_id}]`);
