@@ -39,3 +39,4 @@ tmp/
 
 # Runtime data (sessions, messages)
 .agent-chorus/
+.agents/chorus/

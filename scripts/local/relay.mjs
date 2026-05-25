@@ -25,6 +25,8 @@ const BRIDGE_EVERY_N    = 4;     // sync bridge every ~32s per project
 const KNOWN_AGENTS      = ["claude", "codex", "gemini", "hermes"];
 const RELAY_CONFIG_PATH = path.join(os.homedir(), ".agent-chorus", "relay-config.json");
 const BRIDGE_SCRIPT     = path.join(path.dirname(fileURLToPath(import.meta.url)), "bridge.mjs");
+// Option B: per-prompt notify file read by active agent sessions via CARL rule
+const RELAY_NOTIFY_FILE = path.join(os.homedir(), ".agent-chorus", "relay-notify.md");
 
 // ── Config ─────────────────────────────────────────────────────────────────
 
@@ -165,6 +167,42 @@ function sendReply(chorusRoot, originalTask, result) {
   log(`Reply queued: ${originalTask.to} → ${originalTask.from} (re: ${originalTask.task_id})`);
 }
 
+/**
+ * Option B — writes task outcome to ~/.agent-chorus/relay-notify.md.
+ * CARL HERMES rule checks this file before every prompt and clears it after reading.
+ * Gives the active agent session near-instant awareness of relay completions.
+ */
+function writeRelayNotify(agentName, task, payload, status) {
+  const block = [
+    `## [${nowIso()}] relay → ${agentName} [${status}]`,
+    `**task_id:** ${task.task_id}`,
+    `**from:** ${task.from}`,
+    `**directive:** ${task.directive.slice(0, 120)}`,
+    `**${status === "done" ? "result" : "error"}:** ${(payload || "").slice(0, 500)}`,
+    "",
+  ].join("\n");
+  fs.mkdirSync(path.dirname(RELAY_NOTIFY_FILE), { recursive: true });
+  fs.appendFileSync(RELAY_NOTIFY_FILE, block, "utf8");
+}
+
+/**
+ * Option A — sends a chorus message to the target agent so relay completions
+ * are discoverable via `chorus messages --agent <agent>` at next standup.
+ */
+function sendChorusMessage(projectPath, agentName, task, payload, status) {
+  try {
+    const snippet = (payload || "").slice(0, 300).replace(/\n/g, " ");
+    const msg = `[relay-${status}] task ${task.task_id} · "${task.directive.slice(0, 80)}" → ${snippet}`;
+    execFileSync("chorus", [
+      "send", "--from", "relay", "--to", agentName,
+      "--message", msg, "--cwd", projectPath,
+    ], { encoding: "utf8", timeout: 5000, shell: true });
+    log(`Chorus message sent → ${agentName}`);
+  } catch (err) {
+    log(`Chorus send failed (non-fatal): ${err.message.slice(0, 100)}`);
+  }
+}
+
 async function processTask(chorusRoot, projectPath, agentName, taskFile) {
   const task = readJson(taskFile, null);
   if (!task || task.status !== "pending") return;
@@ -190,6 +228,8 @@ async function processTask(chorusRoot, projectPath, agentName, taskFile) {
     const fresh  = readJson(taskFile, task);
     writeJson(taskFile, { ...fresh, status: "done", done_at: nowIso(), result: result.trim() });
     log(`Done [${task.task_id}]`);
+    writeRelayNotify(agentName, task, result.trim(), "done");
+    sendChorusMessage(projectPath, agentName, task, result.trim(), "done");
     if (!task.is_reply && task.from && task.from !== agentName) {
       sendReply(chorusRoot, task, result.trim());
     }
@@ -198,6 +238,8 @@ async function processTask(chorusRoot, projectPath, agentName, taskFile) {
     writeJson(taskFile, { ...fresh, status: "failed", failed_at: nowIso(),
       error: err.message.slice(0, 500) });
     log(`Failed [${task.task_id}]: ${err.message.slice(0, 120)}`);
+    writeRelayNotify(agentName, task, err.message, "failed");
+    sendChorusMessage(projectPath, agentName, task, err.message, "failed");
   }
 }
 
