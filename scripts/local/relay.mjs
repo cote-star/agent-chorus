@@ -56,17 +56,23 @@ function latestClaudeSessionId(projectPath) {
 }
 
 /**
- * Returns true if the Hermes gateway daemon is currently running in WSL.
- * Reads ~/.hermes/gateway_state.json via wsl.exe (3s timeout).
+ * Returns the session ID of the most recent Hermes CLI session, or null.
+ * Calls `hermes sessions list --source cli --limit 1` via wsl.exe (5s timeout).
+ * Session ID is the last whitespace-delimited token on the last non-empty line.
  */
-function hermesGatewayActive() {
+function hermesLatestCliSessionId() {
   try {
     const out = execFileSync("wsl.exe", [
       "bash", "-c",
-      "python3 -c \"import json,pathlib,os; d=json.loads(pathlib.Path(os.path.expanduser('~/.hermes/gateway_state.json')).read_text()); print(d['gateway_state'])\"",
-    ], { encoding: "utf8", timeout: 3000 });
-    return out.trim() === "running";
-  } catch { return false; }
+      "~/.local/bin/hermes sessions list --source cli --limit 1 2>/dev/null | tail -1",
+    ], { encoding: "utf8", timeout: 5000 });
+    const line = out.trim();
+    if (!line) return null;
+    const parts = line.split(/\s+/);
+    const id = parts[parts.length - 1];
+    // Hermes session IDs look like: 20260525_231306_b25baa
+    return /^\d{8}_\d{6}_[0-9a-f]+$/.test(id) ? id : null;
+  } catch { return null; }
 }
 
 /**
@@ -80,10 +86,9 @@ function hermesGatewayActive() {
  *   wsl.exe spawned directly — no cmd.exe layer, no shell-quoting issues.
  *
  * hitchMode reflects which path was taken:
- *   "resume"        — claude resumed an existing session by ID
- *   "fresh"         — claude spawned with no prior session
- *   "gateway-inbox" — hermes directive dropped to live gateway inbox
- *   "fresh-spawn"   — hermes spawned fresh via hermes -z
+ *   "resume"      — agent resumed an existing session by ID
+ *   "fresh"       — claude spawned with no prior session
+ *   "fresh-spawn" — hermes spawned fresh via hermes -z
  */
 function buildCliInvocation(agentName, directive, projectPath) {
   const dq = (s) => `"${s.replace(/"/g, '\\"')}"`;
@@ -102,30 +107,17 @@ function buildCliInvocation(agentName, directive, projectPath) {
     case "codex":
       return { shell: true, cmd: `codex exec -C ${dq(projectPath)} -s workspace-write`, stdin: directive };
     case "hermes": {
-      if (hermesGatewayActive()) {
-        // Drop directive into the live gateway's inbox; daemon picks it up
-        // on its next poll without spawning a new process.
-        const msgFile = path.join(os.tmpdir(), `hermes-relay-${Date.now()}.msg`);
-        fs.writeFileSync(msgFile, directive, "utf8");
-        const wslMsg = msgFile.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
-        return {
-          shell: false,
-          exe: "wsl.exe",
-          args: ["bash", "-c", `cp '${wslMsg}' ~/.hermes/inbox/relay-$(date +%s%N).msg; rm -f '${wslMsg}'; echo "dropped to gateway inbox"`],
-          stdin: null,
-          hitchMode: "gateway-inbox",
-        };
-      }
-      // No active gateway — spawn fresh hermes -z via temp file.
+      const sessionId = hermesLatestCliSessionId();
+      const resumeFlag = sessionId ? `--resume ${sessionId}` : "";
       const tmpFile = path.join(os.tmpdir(), `hermes-relay-${Date.now()}.txt`);
       fs.writeFileSync(tmpFile, directive, "utf8");
       const wslPath = tmpFile.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
       return {
         shell: false,
         exe: "wsl.exe",
-        args: ["bash", "-c", `~/.local/bin/hermes -z "$(cat '${wslPath}')" < /dev/null; rm -f '${wslPath}'`],
+        args: ["bash", "-c", `~/.local/bin/hermes ${resumeFlag} -z "$(cat '${wslPath}')" < /dev/null; rm -f '${wslPath}'`],
         stdin: null,
-        hitchMode: "fresh-spawn",
+        hitchMode: sessionId ? "resume" : "fresh-spawn",
       };
     }
     default:
