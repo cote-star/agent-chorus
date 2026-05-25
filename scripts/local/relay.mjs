@@ -168,21 +168,38 @@ function sendReply(chorusRoot, originalTask, result) {
 }
 
 /**
- * Option B — writes task outcome to ~/.agent-chorus/relay-notify.md.
- * CARL HERMES rule checks this file before every prompt and clears it after reading.
- * Gives the active agent session near-instant awareness of relay completions.
+ * Option B — writes task outcome to two places:
+ *   1. ~/.agent-chorus/relay-notify.md  (for non-hermes agents via CARL rule)
+ *   2. WSL ~/.hermes/inbox/relay-<id>.msg  (for Hermes — chorus-check.sh hook
+ *      reads this at every session start, no LLM compliance required)
  */
 function writeRelayNotify(agentName, task, payload, status) {
+  const snippet = (payload || "").slice(0, 500);
   const block = [
     `## [${nowIso()}] relay → ${agentName} [${status}]`,
     `**task_id:** ${task.task_id}`,
     `**from:** ${task.from}`,
     `**directive:** ${task.directive.slice(0, 120)}`,
-    `**${status === "done" ? "result" : "error"}:** ${(payload || "").slice(0, 500)}`,
+    `**${status === "done" ? "result" : "error"}:** ${snippet}`,
     "",
   ].join("\n");
   fs.mkdirSync(path.dirname(RELAY_NOTIFY_FILE), { recursive: true });
   fs.appendFileSync(RELAY_NOTIFY_FILE, block, "utf8");
+
+  // For Hermes: also write to WSL inbox so chorus-check.sh surfaces it at session start
+  if (agentName === "hermes") {
+    try {
+      const msgBody = `[relay-${status}] ${task.directive.slice(0, 100)}\nresult: ${snippet.slice(0, 300).replace(/\n/g, " ")}`;
+      const msgId = `relay-${task.task_id.slice(0, 8)}-${Date.now()}`;
+      execFileSync("wsl.exe", [
+        "bash", "-c",
+        `echo ${JSON.stringify(msgBody)} > ~/.hermes/inbox/${msgId}.msg`,
+      ], { encoding: "utf8", timeout: 5000 });
+      log(`Hermes inbox msg written: ${msgId}.msg`);
+    } catch (err) {
+      log(`Hermes inbox write failed (non-fatal): ${err.message.slice(0, 80)}`);
+    }
+  }
 }
 
 /**
