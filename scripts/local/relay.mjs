@@ -12,7 +12,7 @@
  *   node scripts/local/relay.mjs
  */
 
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -37,29 +37,86 @@ function loadConfig() {
   return readJson(RELAY_CONFIG_PATH, { projects: [] });
 }
 
-// ── CLI dispatch ───────────────────────────────────────────────────────────
+// ── Active session detection ───────────────────────────────────────────────
+
+/**
+ * Returns the session ID of the most recent Claude Code session for the given
+ * project path, or null if no prior sessions exist.
+ * Session files: ~/.claude/projects/<path-slug>/<session-id>.jsonl
+ */
+function latestClaudeSessionId(projectPath) {
+  const slug = projectPath.replace(/[/\\: ]/g, "-").replace(/^-+|-+$/g, "");
+  const sessionDir = path.join(os.homedir(), ".claude", "projects", slug);
+  if (!fs.existsSync(sessionDir)) return null;
+  const files = fs.readdirSync(sessionDir)
+    .filter(f => f.endsWith(".jsonl"))
+    .map(f => ({ id: f.replace(/\.jsonl$/, ""), mtime: fs.statSync(path.join(sessionDir, f)).mtimeMs }))
+    .sort((a, b) => b.mtime - a.mtime);
+  return files.length > 0 ? files[0].id : null;
+}
+
+/**
+ * Returns true if the Hermes gateway daemon is currently running in WSL.
+ * Reads ~/.hermes/gateway_state.json via wsl.exe (3s timeout).
+ */
+function hermesGatewayActive() {
+  try {
+    const out = execFileSync("wsl.exe", [
+      "bash", "-c",
+      "python3 -c \"import json,pathlib,os; d=json.loads(pathlib.Path(os.path.expanduser('~/.hermes/gateway_state.json')).read_text()); print(d['gateway_state'])\"",
+    ], { encoding: "utf8", timeout: 3000 });
+    return out.trim() === "running";
+  } catch { return false; }
+}
 
 /**
  * Returns an invocation descriptor for runCommand.
  *
- * Shell agents (claude, codex): { shell: true, cmd, stdin }
+ * Shell agents (claude, codex): { shell: true, cmd, stdin, cwd?, hitchMode }
  *   shell:true lets cmd.exe find .cmd/.ps1 shims on Windows.
+ *   cwd is projectPath so --resume finds the right session directory.
  *
- * Direct agents (hermes): { shell: false, exe, args, stdin }
- *   wsl.exe spawned directly — no cmd.exe layer, so multiline directives
- *   with embedded newlines pass cleanly through stdin without quoting issues.
+ * Direct agents (hermes): { shell: false, exe, args, stdin, hitchMode }
+ *   wsl.exe spawned directly — no cmd.exe layer, no shell-quoting issues.
+ *
+ * hitchMode reflects which path was taken:
+ *   "resume"        — claude resumed an existing session by ID
+ *   "fresh"         — claude spawned with no prior session
+ *   "gateway-inbox" — hermes directive dropped to live gateway inbox
+ *   "fresh-spawn"   — hermes spawned fresh via hermes -z
  */
 function buildCliInvocation(agentName, directive, projectPath) {
   const dq = (s) => `"${s.replace(/"/g, '\\"')}"`;
   switch (agentName) {
-    case "claude":
-      return { shell: true, cmd: `claude --print ${dq(directive)}`, stdin: null };
+    case "claude": {
+      const sessionId  = latestClaudeSessionId(projectPath);
+      const resumeFlag = sessionId ? `--resume ${sessionId}` : "";
+      return {
+        shell: true,
+        cmd: `claude --print ${resumeFlag} ${dq(directive)}`.replace(/\s+/g, " ").trim(),
+        stdin: null,
+        cwd: projectPath,
+        hitchMode: sessionId ? "resume" : "fresh",
+      };
+    }
     case "codex":
       return { shell: true, cmd: `codex exec -C ${dq(projectPath)} -s workspace-write`, stdin: directive };
     case "hermes": {
-      // Write directive to a Windows temp file; reference it from WSL via
-      // /mnt/c/... so hermes stdin stays /dev/null (non-interactive).
-      // $(cat file) inside "..." handles newlines correctly in bash.
+      if (hermesGatewayActive()) {
+        // Drop directive into the live gateway's inbox; daemon picks it up
+        // on its next poll without spawning a new process.
+        const msgFile = path.join(os.tmpdir(), `hermes-relay-${Date.now()}.msg`);
+        fs.writeFileSync(msgFile, directive, "utf8");
+        const wslMsg = msgFile.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
+        return {
+          shell: false,
+          exe: "wsl.exe",
+          args: ["bash", "-c", `cp '${wslMsg}' ~/.hermes/inbox/relay-$(date +%s%N).msg; rm -f '${wslMsg}'; echo "dropped to gateway inbox"`],
+          stdin: null,
+          hitchMode: "gateway-inbox",
+        };
+      }
+      // No active gateway — spawn fresh hermes -z via temp file.
       const tmpFile = path.join(os.tmpdir(), `hermes-relay-${Date.now()}.txt`);
       fs.writeFileSync(tmpFile, directive, "utf8");
       const wslPath = tmpFile.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
@@ -68,6 +125,7 @@ function buildCliInvocation(agentName, directive, projectPath) {
         exe: "wsl.exe",
         args: ["bash", "-c", `~/.local/bin/hermes -z "$(cat '${wslPath}')" < /dev/null; rm -f '${wslPath}'`],
         stdin: null,
+        hitchMode: "fresh-spawn",
       };
     }
     default:
@@ -77,10 +135,11 @@ function buildCliInvocation(agentName, directive, projectPath) {
 
 function runCommand(invocation, env = {}) {
   return new Promise((resolve, reject) => {
-    const { shell, cmd, exe, args, stdin } = invocation;
+    const { shell, cmd, exe, args, stdin, cwd } = invocation;
+    const spawnOpts = { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env }, ...(cwd ? { cwd } : {}) };
     const proc = shell
-      ? spawn(cmd, { shell: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env } })
-      : spawn(exe, args, { shell: false, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env } });
+      ? spawn(cmd, { ...spawnOpts, shell: true })
+      : spawn(exe, args, spawnOpts);
     let stdout = "";
     let stderr = "";
     proc.stdout.on("data", (d) => { stdout += d; });
@@ -120,9 +179,10 @@ async function processTask(chorusRoot, projectPath, agentName, taskFile) {
 
   // Mark received atomically to prevent double-dispatch
   writeJson(taskFile, { ...task, status: "received", received_at: nowIso() });
-  log(`Dispatch [${task.task_id}] ${task.from} → ${agentName}@${path.basename(projectPath)}: "${task.directive.slice(0, 70)}"`);
-
   const invocation = buildCliInvocation(agentName, buildDirective(task), projectPath);
+  const hitchTag = invocation?.hitchMode ? ` [${invocation.hitchMode}]` : "";
+  log(`Dispatch [${task.task_id}] ${task.from} → ${agentName}@${path.basename(projectPath)}${hitchTag}: "${task.directive.slice(0, 70)}"`);
+
   if (!invocation) {
     writeJson(taskFile, { ...task, status: "failed", failed_at: nowIso(),
       error: `No non-interactive CLI for: ${agentName}` });
