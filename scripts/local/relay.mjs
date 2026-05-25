@@ -22,7 +22,7 @@ import { nowIso } from "./lib/identity.mjs";
 
 const POLL_INTERVAL_MS  = 8_000;
 const BRIDGE_EVERY_N    = 4;     // sync bridge every ~32s per project
-const KNOWN_AGENTS      = ["claude", "codex", "gemini"];
+const KNOWN_AGENTS      = ["claude", "codex", "gemini", "hermes"];
 const RELAY_CONFIG_PATH = path.join(os.homedir(), ".agent-chorus", "relay-config.json");
 const BRIDGE_SCRIPT     = path.join(path.dirname(fileURLToPath(import.meta.url)), "bridge.mjs");
 
@@ -40,36 +40,47 @@ function loadConfig() {
 // ── CLI dispatch ───────────────────────────────────────────────────────────
 
 /**
- * Returns { cmd, stdin } for runCommand.
- * cmd is a shell command string; shell: true resolves .cmd/.ps1 shims on Windows.
- * Double-quote escaping is used (cmd.exe compatible via shell:true on Windows).
+ * Returns an invocation descriptor for runCommand.
+ *
+ * Shell agents (claude, codex): { shell: true, cmd, stdin }
+ *   shell:true lets cmd.exe find .cmd/.ps1 shims on Windows.
+ *
+ * Direct agents (hermes): { shell: false, exe, args, stdin }
+ *   wsl.exe spawned directly — no cmd.exe layer, so multiline directives
+ *   with embedded newlines pass cleanly through stdin without quoting issues.
  */
 function buildCliInvocation(agentName, directive, projectPath) {
-  // shell: true uses cmd.exe on Windows — escape double-quotes inside the arg.
   const dq = (s) => `"${s.replace(/"/g, '\\"')}"`;
   switch (agentName) {
     case "claude":
-      // shell:true finds claude.cmd shim; directive passed as positional arg.
-      return { cmd: `claude --print ${dq(directive)}`, stdin: null };
+      return { shell: true, cmd: `claude --print ${dq(directive)}`, stdin: null };
     case "codex":
-      // codex exec reads from stdin when PROMPT arg is omitted.
-      return { cmd: `codex exec -C ${dq(projectPath)} -s workspace-write`, stdin: directive };
+      return { shell: true, cmd: `codex exec -C ${dq(projectPath)} -s workspace-write`, stdin: directive };
+    case "hermes": {
+      // Write directive to a Windows temp file; reference it from WSL via
+      // /mnt/c/... so hermes stdin stays /dev/null (non-interactive).
+      // $(cat file) inside "..." handles newlines correctly in bash.
+      const tmpFile = path.join(os.tmpdir(), `hermes-relay-${Date.now()}.txt`);
+      fs.writeFileSync(tmpFile, directive, "utf8");
+      const wslPath = tmpFile.replace(/\\/g, "/").replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
+      return {
+        shell: false,
+        exe: "wsl.exe",
+        args: ["bash", "-c", `~/.local/bin/hermes -z "$(cat '${wslPath}')" < /dev/null; rm -f '${wslPath}'`],
+        stdin: null,
+      };
+    }
     default:
       return null; // Gemini has no confirmed non-interactive mode
   }
 }
 
-/**
- * Runs a shell command string with { shell: true } so Windows .cmd/.ps1 shims
- * resolve correctly without requiring an explicit PowerShell or cmd.exe wrapper.
- */
-function runCommand(cmd, stdin = null, env = {}) {
+function runCommand(invocation, env = {}) {
   return new Promise((resolve, reject) => {
-    const proc = spawn(cmd, {
-      shell: true,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, ...env },
-    });
+    const { shell, cmd, exe, args, stdin } = invocation;
+    const proc = shell
+      ? spawn(cmd, { shell: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env } })
+      : spawn(exe, args, { shell: false, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...env } });
     let stdout = "";
     let stderr = "";
     proc.stdout.on("data", (d) => { stdout += d; });
@@ -79,9 +90,7 @@ function runCommand(cmd, stdin = null, env = {}) {
       else resolve(stdout);
     });
     proc.on("error", reject);
-    if (stdin) {
-      proc.stdin.write(stdin, "utf8");
-    }
+    if (stdin) proc.stdin.write(stdin, "utf8");
     proc.stdin.end();
   });
 }
@@ -121,12 +130,11 @@ async function processTask(chorusRoot, projectPath, agentName, taskFile) {
     return;
   }
 
-  const { cmd, stdin } = invocation;
   // CHORUS_PROJECT_ROOT tells scripts inside the spawned agent which project to operate on
   const env = { CHORUS_PROJECT_ROOT: projectPath };
 
   try {
-    const result = await runCommand(cmd, stdin, env);
+    const result = await runCommand(invocation, env);
     const fresh  = readJson(taskFile, task);
     writeJson(taskFile, { ...fresh, status: "done", done_at: nowIso(), result: result.trim() });
     log(`Done [${task.task_id}]`);
