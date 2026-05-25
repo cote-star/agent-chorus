@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentChorusCheckpoint",
+  "type": "object",
+  "required": ["agent_id", "session_id", "checkpoint_at", "workspace", "type"],
+  "properties": {
+    "agent_id":             { "type": "string" },
+    "agent_name":           { "type": "string" },
+    "session_id":           { "type": "string" },
+    "checkpoint_at":        { "type": "string", "format": "date-time" },
+    "workspace":            { "type": "string" },
+    "type":                 { "type": "string", "enum": ["periodic", "final"] },
+    "current_plan":         { "type": ["string", "null"] },
+    "decisions_made":       { "type": "array", "items": { "type": "string" } },
+    "files_in_flight":      { "type": "array", "items": { "type": "string" } },
+    "next_steps":           { "type": "array", "items": { "type": "string" } },
+    "open_questions":       { "type": "array", "items": { "type": "string" } },
+    "git_branch":           { "type": ["string", "null"] },
+    "git_uncommitted_count":{ "type": ["number", "null"] },
+    "last_events":          { "type": "array", "items": { "type": "object" } }
+  },
+  "additionalProperties": true
+}

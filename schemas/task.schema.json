@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentChorusTask",
+  "type": "object",
+  "required": ["task_id", "from", "to", "directive", "priority", "created_at", "status"],
+  "properties": {
+    "task_id":                  { "type": "string" },
+    "from":                     { "type": "string" },
+    "to":                       { "type": "string" },
+    "directive":                { "type": "string" },
+    "context_checkpoint_ref":   { "type": ["string", "null"] },
+    "priority":                 { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+    "created_at":               { "type": "string", "format": "date-time" },
+    "status":                   { "type": "string", "enum": ["pending", "received", "done", "failed"] },
+    "result":                   { "type": ["string", "null"] }
+  },
+  "additionalProperties": false
+}

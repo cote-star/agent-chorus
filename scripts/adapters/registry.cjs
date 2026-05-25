@@ -7,12 +7,14 @@ const codex = require('./codex.cjs');
 const gemini = require('./gemini.cjs');
 const claude = require('./claude.cjs');
 const cursor = require('./cursor.cjs');
+const hermes = require('./hermes.cjs');
 
 const adapters = {
   codex,
   gemini,
   claude,
   cursor,
+  hermes,
 };
 
 function getAdapter(agent) {
