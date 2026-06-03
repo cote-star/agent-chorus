@@ -149,7 +149,7 @@ impl TimelineResult {
     }
 }
 
-const ALL_AGENTS: &[&str] = &["claude", "codex", "gemini", "cursor"];
+const ALL_AGENTS: &[&str] = &["claude", "codex", "gemini", "cursor", "hermes"];
 
 /// Build a cross-agent timeline.
 pub fn build_timeline(

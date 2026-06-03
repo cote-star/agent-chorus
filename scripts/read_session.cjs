@@ -71,7 +71,7 @@ function printHelp(topic = null) {
   if (topic === 'read') {
     lines.push('');
     lines.push('read options:');
-    lines.push('  --agent <codex|gemini|claude|cursor> (default: codex)');
+    lines.push('  --agent <codex|gemini|claude|cursor|hermes> (default: codex)');
     lines.push('  --id <session-substring> (optional; omitted = latest session in scope)');
     lines.push('  --cwd <path>');
     lines.push('  --chats-dir <path> (gemini)');
@@ -85,7 +85,7 @@ function printHelp(topic = null) {
   } else if (topic === 'list') {
     lines.push('');
     lines.push('list options:');
-    lines.push('  --agent <codex|gemini|claude|cursor>');
+    lines.push('  --agent <codex|gemini|claude|cursor|hermes>');
     lines.push('  --cwd <path>');
     lines.push('  --limit <N> (default: 10)');
     lines.push('  --json');
@@ -93,14 +93,14 @@ function printHelp(topic = null) {
     lines.push('');
     lines.push('search options:');
     lines.push('  <query> (positional, required)');
-    lines.push('  --agent <codex|gemini|claude|cursor> (required)');
+    lines.push('  --agent <codex|gemini|claude|cursor|hermes> (required)');
     lines.push('  --cwd <path>');
     lines.push('  --limit <N> (default: 10)');
     lines.push('  --json');
   } else if (topic === 'summary') {
     lines.push('');
     lines.push('summary options:');
-    lines.push('  --agent <codex|gemini|claude|cursor> (required)');
+    lines.push('  --agent <codex|gemini|claude|cursor|hermes> (required)');
     lines.push('  --id <session-substring> (optional; omitted = latest session in scope)');
     lines.push('  --cwd <path>');
     lines.push('  --chats-dir <path> (gemini)');
@@ -211,7 +211,7 @@ function printHelp(topic = null) {
   } else if (topic === 'diff') {
     lines.push('');
     lines.push('diff options:');
-    lines.push('  --agent <codex|gemini|claude|cursor>');
+    lines.push('  --agent <codex|gemini|claude|cursor|hermes>');
     lines.push('  --from <session-id>   First session ID (substring match)');
     lines.push('  --to <session-id>     Second session ID (substring match)');
     lines.push('  --last <n>            Messages per session (default: 1)');
@@ -1377,7 +1377,7 @@ function parseSourceArg(raw) {
   const agent = (firstColon === -1 ? raw : raw.slice(0, firstColon)).trim().toLowerCase();
   const session = firstColon === -1 ? null : raw.slice(firstColon + 1).trim();
 
-  if (!['codex', 'gemini', 'claude', 'cursor'].includes(agent)) {
+  if (!['codex', 'gemini', 'claude', 'cursor', 'hermes'].includes(agent)) {
     throw new Error(`Unsupported agent: ${agent}`);
   }
 
@@ -1771,7 +1771,7 @@ function runSearch(inputArgs) {
 
   const agent = getOptionValue(inputArgs, '--agent', null);
   if (!agent) {
-    throw new Error('search requires --agent=<codex|gemini|claude|cursor>');
+    throw new Error('search requires --agent=<codex|gemini|claude|cursor|hermes>');
   }
 
   const rawCwd = getOptionValue(inputArgs, '--cwd', null);
@@ -2225,7 +2225,7 @@ function runDoctor(inputArgs) {
     );
   }
 
-  for (const agent of ['codex', 'gemini', 'claude', 'cursor']) {
+  for (const agent of ['codex', 'gemini', 'claude', 'cursor', 'hermes']) {
     try {
       const entries = listSessions(agent, cwd, 1);
       if (entries.length > 0) {
@@ -2415,6 +2415,10 @@ function pickRoast(agent, content, messageCount) {
       "An IDE that thinks it's an agent. Bless its heart.",
       "Cursor: autocomplete with delusions of grandeur.",
     ],
+    hermes: [
+      "Hermes: messenger of the gods, still waiting on its first install.",
+      "Named for speed, shipped as a stretch goal.",
+    ],
   };
   const GENERIC_ROASTS = [
     "Participation trophy earned.",
@@ -2547,7 +2551,7 @@ function composeCheckpointMessage(from, cwd) {
 }
 
 function runCheckpoint(inputArgs) {
-  const ALL_AGENTS = ['claude', 'codex', 'gemini', 'cursor'];
+  const ALL_AGENTS = ['claude', 'codex', 'gemini', 'cursor', 'hermes'];
   const from = getOptionValue(inputArgs, '--from', null);
   if (!from) throw new Error('checkpoint requires --from');
   const validAgents = new Set(require('./adapters/registry.cjs').listAdapters());
@@ -2605,7 +2609,7 @@ function runCheckpoint(inputArgs) {
 
 function runDiff(inputArgs) {
   const agent = getOptionValue(inputArgs, '--agent', null);
-  if (!agent) throw new Error('diff requires --agent=<codex|gemini|claude|cursor>');
+  if (!agent) throw new Error('diff requires --agent=<codex|gemini|claude|cursor|hermes>');
   const fromId = getOptionValue(inputArgs, '--from', null);
   const toId = getOptionValue(inputArgs, '--to', null);
   if (!fromId || !toId) throw new Error('diff requires --from <id> and --to <id>');
@@ -2764,7 +2768,7 @@ function runRelevance(inputArgs) {
 function runTrashTalk(inputArgs) {
   const rawCwd = getOptionValue(inputArgs, '--cwd', null);
   const cwd = rawCwd ? normalizePath(rawCwd) : normalizePath(process.cwd());
-  const agents = ['codex', 'gemini', 'claude', 'cursor'];
+  const agents = ['codex', 'gemini', 'claude', 'cursor', 'hermes'];
   const active = [];
 
   for (const agent of agents) {
@@ -2914,7 +2918,7 @@ function runReport(inputArgs) {
 
   const sourceSpecs = handoff.sources.map(source => {
     const agent = String(source.agent || '').toLowerCase();
-    if (!['codex', 'gemini', 'claude', 'cursor'].includes(agent)) {
+    if (!['codex', 'gemini', 'claude', 'cursor', 'hermes'].includes(agent)) {
       throw new Error(`Unsupported agent: ${agent}`);
     }
 
@@ -3162,7 +3166,7 @@ function runTimeline(inputArgs) {
       idx += 1;
     }
   }
-  const agents = agentArgs.length > 0 ? agentArgs : ['claude', 'codex', 'gemini', 'cursor'];
+  const agents = agentArgs.length > 0 ? agentArgs : ['claude', 'codex', 'gemini', 'cursor', 'hermes'];
 
   const entries = [];
   const agentsIncluded = [];

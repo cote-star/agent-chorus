@@ -5,14 +5,14 @@ Use this page for full command syntax, examples, output contracts, and operation
 ## Command Contract
 
 ```bash
-chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--include-user] [--tool-calls] [--format=<json|markdown>] [--json] [--metadata-only] [--audit-redactions]
-chorus summary --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--format=<json|markdown>] [--json]
+chorus read --agent <codex|gemini|claude|cursor|hermes> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--include-user] [--tool-calls] [--format=<json|markdown>] [--json] [--metadata-only] [--audit-redactions]
+chorus summary --agent <codex|gemini|claude|cursor|hermes> [--cwd=<path>] [--format=<json|markdown>] [--json]
 chorus timeline [--agent <agent>]... [--cwd=<path>] [--limit=<N>] [--format=<json|markdown>] [--json]
 chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--last=<N>] [--json]
 chorus report --handoff <handoff.json> [--cwd=<path>] [--json]
-chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
-chorus search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
-chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<path>] [--last=<N>] [--json]
+chorus list --agent <codex|gemini|claude|cursor|hermes> [--cwd=<path>] [--limit=<N>] [--json]
+chorus search <query> --agent <codex|gemini|claude|cursor|hermes> [--cwd=<path>] [--limit=<N>] [--json]
+chorus diff --agent <codex|gemini|claude|cursor|hermes> --from <id> --to <id> [--cwd=<path>] [--last=<N>] [--json]
 chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
 chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
@@ -981,7 +981,8 @@ Override default paths using environment variables.
 | `CHORUS_CODEX_SESSIONS_DIR`  | Path to Codex sessions    | `~/.codex/sessions`                    |
 | `CHORUS_GEMINI_TMP_DIR`      | Path to Gemini temp chats | `~/.gemini/tmp`                        |
 | `CHORUS_CLAUDE_PROJECTS_DIR` | Path to Claude projects   | `~/.claude/projects`                   |
-| `CHORUS_CURSOR_DATA_DIR`     | Path to Cursor data       | `~/Library/Application Support/Cursor` |
+| `CHORUS_CURSOR_DATA_DIR`     | cursor-agent projects root | `~/.cursor/projects`                   |
+| `CHORUS_HERMES_DATA_DIR`     | Hermes sessions (provisional) | `~/.hermes/sessions`                |
 
 ## Agent-Specific Notes
 
@@ -1008,19 +1009,25 @@ For the full workaround including a JSONL-stub recipe, see
 [`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
 4 — Gemini protobuf fallback".
 
+### Cursor: native cursor-agent transcripts
+
+Chorus reads Cursor sessions from the cursor-agent CLI transcript tree:
+
+`~/.cursor/projects/<project>/agent-transcripts/<session>/<session>.jsonl`
+
+Per-session `--cwd` scoping is derived from `<project>/.workspace-trusted`
+(`workspacePath`, when present) or from a filesystem-validated demangle of the
+project directory name. `--include-user` and `--tool-calls` are supported.
+
+Override the projects root with `CHORUS_CURSOR_DATA_DIR` (or legacy
+`BRIDGE_CURSOR_DATA_DIR`). See `docs/adapters/CURSOR_HERMES_NATIVE_ADAPTER.md`.
+
 ### Cursor: SQLite (`state.vscdb`) fallback
 
-Modern Cursor persists chat/composer data in SQLite
-`state.vscdb` files under
-`~/Library/Application Support/Cursor/User/workspaceStorage/<id>/` on
-macOS, and the equivalent paths on Linux/Windows. Chorus's cursor reader
-currently only scans JSON/JSONL files whose names contain `chat`,
-`composer`, or `conversation`, and does NOT yet parse the SQLite form.
-
-When `chorus read --agent cursor` returns `NOT_FOUND` and the error
-message mentions "SQLite state.vscdb", the install has migrated to the
-SQLite backend. There is no first-class workaround yet — Cursor does not
-offer a stable JSON export for chat history at time of writing.
+When no cursor-agent transcripts are found but SQLite chat data exists under
+`~/Library/Application Support/Cursor/User/workspaceStorage/<id>/state.vscdb`
+(macOS; Linux/Windows use the equivalent application-support paths), `NOT_FOUND`
+errors may mention "SQLite state.vscdb". Chorus does not parse that store yet.
 
 For inspection / debugging, you can dump the relevant rows manually:
 
@@ -1032,6 +1039,13 @@ sqlite3 "$DB" "SELECT key, length(value) FROM ItemTable WHERE key LIKE '%compose
 Full `rusqlite`-backed reading is tracked as a follow-up. See
 [`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
 5 — Cursor SQLite fallback" for the full context.
+
+### Hermes (provisional scaffold)
+
+Hermes is wired as a recognized agent but its on-disk format is unconfirmed.
+The adapter assumes claude-like JSONL under `~/.hermes/sessions` (override via
+`CHORUS_HERMES_DATA_DIR`). It returns cleanly when no data exists. Behavior
+has not been validated against a real Hermes install.
 
 ## Redaction
 

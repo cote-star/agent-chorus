@@ -2,6 +2,7 @@ pub mod codex;
 pub mod gemini;
 pub mod claude;
 pub mod cursor;
+pub mod hermes;
 
 use crate::agents::Session;
 use anyhow::Result;
@@ -54,6 +55,7 @@ pub fn get_adapter(agent: &str) -> Option<Box<dyn AgentAdapter>> {
         "gemini" => Some(Box::new(gemini::GeminiAdapter)),
         "claude" => Some(Box::new(claude::ClaudeAdapter)),
         "cursor" => Some(Box::new(cursor::CursorAdapter)),
+        "hermes" => Some(Box::new(hermes::HermesAdapter)),
         _ => None,
     }
 }

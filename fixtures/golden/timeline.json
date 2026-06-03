@@ -2,7 +2,8 @@
   "agents_included": [
     "claude",
     "codex",
-    "gemini"
+    "gemini",
+    "cursor"
   ],
   "chorus_output_version": 1,
   "cwd": "/workspace/demo",
@@ -54,6 +55,20 @@
       "cwd": "/workspace/demo",
       "session_id": "session-codex-multi",
       "snippet": "Third assistant response.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "cursor",
+      "cwd": "/workspace/demo",
+      "session_id": "session-cursor-fixture-0001",
+      "snippet": "Cursor fixture assistant output.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "cursor",
+      "cwd": "/workspace/demo",
+      "session_id": "session-cursor-tool-calls",
+      "snippet": "Checking the file.Done reading.",
       "timestamp": "__TS__"
     },
     {

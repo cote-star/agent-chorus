@@ -1,0 +1,2 @@
+{"role":"user","message":{"content":[{"type":"text","text":"Run a tool for me."}]}}
+{"role":"assistant","message":{"content":[{"type":"text","text":"Checking the file."},{"type":"tool_use","name":"Read","input":{"path":"/workspace/demo/README.md"}},{"type":"text","text":"Done reading."}]}}

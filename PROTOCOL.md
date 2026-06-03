@@ -1,7 +1,7 @@
 # Agent Chorus Protocol v0.14.0
 
 ## Purpose
-Define a lightweight, local-first standard for reading and coordinating cross-agent session evidence across Codex, Gemini, Claude, and Cursor.
+Define a lightweight, local-first standard for reading and coordinating cross-agent session evidence across Codex, Gemini, Claude, Cursor, and Hermes.
 
 ## Tenets
 1. Local-first: read local session logs only by default.
@@ -20,12 +20,12 @@ Define a lightweight, local-first standard for reading and coordinating cross-ag
 ### Dual-implementation commands (Node + Rust parity required)
 
 ```bash
-chorus read --agent <codex|gemini|claude|cursor> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json] [--metadata-only] [--audit-redactions]
+chorus read --agent <codex|gemini|claude|cursor|hermes> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--json] [--metadata-only] [--audit-redactions]
 chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--last=<N>] [--json]
 chorus report --handoff <path-to-handoff.json> [--cwd=<path>] [--json]
-chorus list --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
-chorus search <query> --agent <codex|gemini|claude|cursor> [--cwd=<path>] [--limit=<N>] [--json]
-chorus diff --agent <codex|gemini|claude|cursor> --from <id> --to <id> [--cwd=<path>] [--last=<N>] [--json]
+chorus list --agent <codex|gemini|claude|cursor|hermes> [--cwd=<path>] [--limit=<N>] [--json]
+chorus search <query> --agent <codex|gemini|claude|cursor|hermes> [--cwd=<path>] [--limit=<N>] [--json]
+chorus diff --agent <codex|gemini|claude|cursor|hermes> --from <id> --to <id> [--cwd=<path>] [--last=<N>] [--json]
 chorus relevance --list | --test <path> | --suggest [--cwd=<path>] [--json]
 chorus send --from <agent> --to <agent> --message <text> [--cwd=<path>]
 chorus messages --agent <agent> [--cwd=<path>] [--clear] [--json]
@@ -117,7 +117,8 @@ Implementations must redact likely secrets from returned content before printing
 - `CHORUS_CODEX_SESSIONS_DIR`
 - `CHORUS_GEMINI_TMP_DIR`
 - `CHORUS_CLAUDE_PROJECTS_DIR`
-- `CHORUS_CURSOR_DATA_DIR`
+- `CHORUS_CURSOR_DATA_DIR` (cursor-agent projects root; default `~/.cursor/projects`)
+- `CHORUS_HERMES_DATA_DIR` (provisional Hermes sessions root; default `~/.hermes/sessions`)
 - `CHORUS_SKIP_UPDATE_CHECK`
 
 ## Doctor Contract

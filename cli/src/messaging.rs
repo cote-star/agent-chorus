@@ -9,7 +9,7 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 /// Valid agent names for messaging.
-const VALID_AGENTS: &[&str] = &["codex", "gemini", "claude", "cursor"];
+const VALID_AGENTS: &[&str] = &["codex", "gemini", "claude", "cursor", "hermes"];
 
 /// Validate that an agent name is recognized.
 fn validate_agent(name: &str, context: &str) -> Result<()> {
