@@ -13,6 +13,14 @@
 const fs = require('fs');
 const path = require('path');
 
+function isDirectory(p) {
+  try {
+    return fs.existsSync(p) && fs.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Walk `tokens` (a path split on '-') as a chain of EXISTING directories under
  * `base`. A single real dir name may span several tokens (names can contain '-').
@@ -21,7 +29,18 @@ const path = require('path');
  * @param {string} base @param {string[]} tokens @returns {string|null}
  */
 function walkExisting(base, tokens) {
-  throw new Error("Unit A': not implemented — see docs/adapters/CURSOR_HERMES_NATIVE_ADAPTER.md §6");
+  if (tokens.length === 0) {
+    return isDirectory(base) ? base : null;
+  }
+  for (let j = tokens.length; j >= 1; j--) {
+    const name = tokens.slice(0, j).join('-');
+    const child = path.join(base, name);
+    if (isDirectory(child)) {
+      const got = walkExisting(child, tokens.slice(j));
+      if (got !== null) return got;
+    }
+  }
+  return null;
 }
 
 /**
@@ -29,7 +48,7 @@ function walkExisting(base, tokens) {
  * @param {string} projectName @returns {string|null}
  */
 function demangleProjectDir(projectName) {
-  throw new Error("Unit A': not implemented");
+  return walkExisting('/', projectName.split('-'));
 }
 
 /**
@@ -39,12 +58,109 @@ function demangleProjectDir(projectName) {
  * @param {string} transcriptPath @returns {string|null}
  */
 function resolveCursorCwd(transcriptPath) {
-  throw new Error("Unit A': not implemented");
+  const projectDir = path.dirname(path.dirname(path.dirname(transcriptPath)));
+
+  const trustedPath = path.join(projectDir, '.workspace-trusted');
+  try {
+    if (fs.existsSync(trustedPath)) {
+      const raw = fs.readFileSync(trustedPath, 'utf-8');
+      const obj = JSON.parse(raw);
+      if (
+        obj &&
+        typeof obj.workspacePath === 'string' &&
+        obj.workspacePath.length > 0
+      ) {
+        return obj.workspacePath;
+      }
+    }
+  } catch {
+    // fall through to demangle
+  }
+
+  const projectName = path.basename(projectDir);
+  if (projectName) {
+    return demangleProjectDir(projectName);
+  }
+  return null;
 }
 
 module.exports = { walkExisting, demangleProjectDir, resolveCursorCwd };
 
 if (require.main === module && process.argv.includes('--selftest')) {
-  // Implementer: add assertions per spec §6 Unit A' (use require('assert') + fs temp dirs).
-  throw new Error("Unit A': selftest not implemented");
+  const assert = require('assert');
+  const os = require('os');
+
+  function freshDir(name) {
+    const dir = path.join(os.tmpdir(), name);
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  const baseSimple = freshDir('cursor_cwd_walk_simple');
+  fs.mkdirSync(path.join(baseSimple, 'a', 'b'), { recursive: true });
+  assert.strictEqual(walkExisting(baseSimple, ['a', 'b']), path.join(baseSimple, 'a', 'b'));
+
+  const baseDashed = freshDir('cursor_cwd_walk_dashed');
+  const dashedTarget = path.join(baseDashed, 'trust-stream', 'trust-stream-backend');
+  fs.mkdirSync(dashedTarget, { recursive: true });
+  assert.strictEqual(
+    walkExisting(baseDashed, ['trust', 'stream', 'trust', 'stream', 'backend']),
+    dashedTarget,
+  );
+
+  const baseNope = freshDir('cursor_cwd_walk_nope');
+  assert.strictEqual(walkExisting(baseNope, ['nope']), null);
+
+  const basePlayFoo = freshDir('cursor_cwd_walk_play_dash');
+  fs.mkdirSync(path.join(basePlayFoo, 'play-foo'), { recursive: true });
+  assert.strictEqual(
+    walkExisting(basePlayFoo, ['play', 'foo']),
+    path.join(basePlayFoo, 'play-foo'),
+  );
+
+  const basePlaySlashFoo = freshDir('cursor_cwd_walk_play_slash');
+  fs.mkdirSync(path.join(basePlaySlashFoo, 'play', 'foo'), { recursive: true });
+  assert.strictEqual(
+    walkExisting(basePlaySlashFoo, ['play', 'foo']),
+    path.join(basePlaySlashFoo, 'play', 'foo'),
+  );
+
+  const workspacePath = freshDir('cursor_cwd_resolve_workspace');
+  const session = 'sess-abc';
+  const projectDir = freshDir('cursor_cwd_resolve_project');
+  const transcriptPath = path.join(
+    projectDir,
+    'agent-transcripts',
+    session,
+    `${session}.jsonl`,
+  );
+  fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+  fs.writeFileSync(transcriptPath, '');
+  fs.writeFileSync(
+    path.join(projectDir, '.workspace-trusted'),
+    JSON.stringify({ workspacePath }),
+  );
+  assert.strictEqual(resolveCursorCwd(transcriptPath), workspacePath);
+
+  const missingProject = 'cursor-cwd-nonexistent-project-zzzz-no-match';
+  const nullProjectDir = path.join(
+    os.tmpdir(),
+    'cursor_cwd_resolve_null',
+    missingProject,
+  );
+  fs.rmSync(nullProjectDir, { recursive: true, force: true });
+  fs.mkdirSync(path.join(nullProjectDir, 'agent-transcripts', session), {
+    recursive: true,
+  });
+  const nullTranscript = path.join(
+    nullProjectDir,
+    'agent-transcripts',
+    session,
+    `${session}.jsonl`,
+  );
+  fs.writeFileSync(nullTranscript, '');
+  assert.strictEqual(resolveCursorCwd(nullTranscript), null);
+
+  console.log('cursor_cwd selftest: OK');
 }
