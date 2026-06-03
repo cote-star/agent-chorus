@@ -1,5 +1,23 @@
 # Release Notes
 
+## v0.15.0 — 2026-06-03
+
+**Native Cursor adapter (Rust + Node) — Cursor is now a first-class agent — plus a provisional Hermes adapter and agent-context hardening.**
+
+### Added
+
+- **Native Cursor adapter.** `chorus read/list/search --agent cursor` reads the cursor-agent CLI transcripts directly from `~/.cursor/projects/<project>/agent-transcripts/<session>/<session>.jsonl`, with real `--cwd` project scoping (recovered from `.workspace-trusted` `workspacePath`, else a filesystem-validated demangle of the project dir name) and `--tool-calls` parity. This replaces the external "bridge" stopgap — no environment routing or shell wrapper needed. Rust (`cli/src/cursor_cwd.rs`, `cli/src/cursor_parse.rs`) and Node (`scripts/adapters/cursor_cwd.cjs`, `scripts/adapters/cursor_parse.cjs`) stay byte-identical under conformance.
+- **Hermes adapter (provisional, untested).** Wired across both runtimes and every agent enumeration (`AgentType`, adapter registry, doctor, timeline, checkpoint, messaging, report). Hermes is not yet released; its transcript format is assumed (claude-like JSONL under `~/.hermes/sessions`, override `CHORUS_HERMES_DATA_DIR`) and has no behavior tests yet.
+
+### Changed
+
+- `CHORUS_CURSOR_DATA_DIR` now points at the cursor-agent projects root (default `~/.cursor/projects`). The legacy SQLite `state.vscdb` probe moved to `CHORUS_CURSOR_LEGACY_DIR` as a secondary `NOT_FOUND` diagnostic.
+- **agent-context:** `.agent-context/GUIDE.md` gains an explicit update contract (update the Markdown *and* structured-JSON halves; always finish with `seal` + `verify`; a `check-freshness` PASS does not mean the pack is correct). `seal` now rejects a drifted `verification_shortcuts` array shape with a clear, actionable error instead of a cryptic "missing file" failure.
+
+### Repo hygiene
+
+- Untracked local-only `research/` + `.feature-test-report-v4.md` (kept on disk) to match `.gitignore`; documented the local-only policy in `docs/DEVELOPMENT.md`.
+
 ## v0.14.1 — 2026-04-24
 
 **Packaging-only patch — fixes crates.io publish that failed silently on v0.14.0.**
