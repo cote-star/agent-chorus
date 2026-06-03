@@ -12,10 +12,39 @@ const fs = require('fs');
 const path = require('path');
 const {
   normalizePath, collectMatchingFiles, getFileTimestamp, redactSensitiveText,
-  isSystemDirectory, cwdMatchesProject, findLatestByCwd,
+  isSystemDirectory, cwdMatchesProject, findLatestByCwd, extractContentWithToolCalls,
 } = require('./utils.cjs');
 const { resolveCursorCwd } = require('./cursor_cwd.cjs');
 const { readCursorTurns } = require('./cursor_parse.cjs');
+
+// Build turns for the read path. Text-only by default; with --tool-calls, render
+// tool_use/tool_result segments too. Cursor's content array matches the shape
+// utils.extractContentWithToolCalls already handles, so reuse it (parity).
+function readCursorTurnsRich(filePath, includeToolCalls) {
+  if (!includeToolCalls) return readCursorTurns(filePath);
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return [];
+  }
+  const turns = [];
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '') continue;
+    let obj;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (obj.role !== 'user' && obj.role !== 'assistant') continue;
+    const content = obj.message && obj.message.content;
+    const text = extractContentWithToolCalls(content).trim();
+    if (text === '') continue;
+    turns.push({ role: obj.role, text });
+  }
+  return turns;
+}
 
 const cursorDataBase = normalizePath(
   process.env.CHORUS_CURSOR_DATA_DIR
@@ -85,7 +114,7 @@ function resolve(id, cwd, opts) {
 function read(filePath, lastN, opts = {}) {
   lastN = lastN || 1;
 
-  const turns = readCursorTurns(filePath);
+  const turns = readCursorTurnsRich(filePath, opts.includeToolCalls === true);
   const assistantMsgs = turns.filter(t => t.role === 'assistant').map(t => t.text);
   const messageCount = assistantMsgs.length;
 

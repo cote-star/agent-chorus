@@ -2436,11 +2436,9 @@ pub fn read_cursor_session_with_options(
         }
     };
 
-    // Parse the cursor-agent transcript into ordered turns via the native module.
-    let turns: Vec<ConversationTurn> = crate::cursor_parse::read_cursor_turns(&target_file)
-        .into_iter()
-        .map(|t| ConversationTurn { role: t.role, text: t.text })
-        .collect();
+    // Parse the cursor-agent transcript into ordered turns. Text-only by default;
+    // with --tool-calls, tool_use/tool_result segments are rendered too.
+    let turns: Vec<ConversationTurn> = cursor_turns_for_read(&target_file, opts.include_tool_calls);
 
     let assistant_msgs: Vec<String> = turns
         .iter()
@@ -2501,6 +2499,45 @@ fn collect_cursor_transcripts(base_dir: &Path, id: Option<&str>) -> Result<Vec<F
 /// originating workspace directory (delegates to the native cursor_cwd module).
 fn get_cursor_session_cwd(path: &Path) -> Option<PathBuf> {
     crate::cursor_cwd::resolve_cursor_cwd(path)
+}
+
+/// Build cursor turns for the read path. Text-only via the native parser, or —
+/// when `--tool-calls` is requested — re-flatten each message's `content` array
+/// with the shared tool-call renderer. Cursor's content segments
+/// (`text` / `tool_use` / `tool_result`) match Claude's shape, so the existing
+/// `extract_claude_content_with_tool_calls` renders them at parity.
+fn cursor_turns_for_read(path: &Path, include_tool_calls: bool) -> Vec<ConversationTurn> {
+    if !include_tool_calls {
+        return crate::cursor_parse::read_cursor_turns(path)
+            .into_iter()
+            .map(|t| ConversationTurn { role: t.role, text: t.text })
+            .collect();
+    }
+    let contents = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let mut turns = Vec::new();
+    for line in contents.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let role = match v.get("role").and_then(|r| r.as_str()) {
+            Some(r) if r == "user" || r == "assistant" => r.to_string(),
+            _ => continue,
+        };
+        let text = extract_claude_content_with_tool_calls(&v["message"]["content"]);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        turns.push(ConversationTurn { role, text: text.to_string() });
+    }
+    turns
 }
 
 pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
