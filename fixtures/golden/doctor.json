@@ -66,9 +66,9 @@
       "status": "warn"
     },
     {
-      "detail": "Hermes not configured (data directory absent: __PATH__",
+      "detail": "At least one hermes session discovered",
       "id": "sessions_hermes",
-      "status": "info"
+      "status": "pass"
     },
     {
       "detail": "Missing: __PATH__",

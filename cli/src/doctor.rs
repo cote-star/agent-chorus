@@ -445,6 +445,8 @@ fn env_override_checks(checks: &mut Vec<Check>) {
         ("BRIDGE_CURSOR_DATA_DIR", "cursor-agent CLI (legacy)"),
         ("CHORUS_CURSOR_APP_DATA_DIR", "Cursor IDE"),
         ("BRIDGE_CURSOR_APP_DATA_DIR", "Cursor IDE (legacy)"),
+        ("CHORUS_HERMES_DATA_DIR", "hermes"),
+        ("BRIDGE_HERMES_DATA_DIR", "hermes (legacy)"),
     ];
     for (var, label) in overrides.iter() {
         if let Ok(value) = std::env::var(var) {

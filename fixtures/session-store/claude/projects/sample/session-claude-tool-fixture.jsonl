@@ -1,0 +1,2 @@
+{"cwd":"/workspace/demo"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Checking the file."},{"type":"tool_use","name":"Read","input":{"path":"/workspace/demo/example.txt"}},{"type":"text","text":"Done reading."}]}}

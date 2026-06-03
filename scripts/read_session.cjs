@@ -2508,7 +2508,7 @@ function runDoctor(inputArgs) {
   // Hermes is provisional (F12 parity with cursor surfaces). Report
   // `info` when the data directory is absent.
   try {
-    const hermesBase = normalizePath(process.env.CHORUS_HERMES_SESSIONS_DIR || '~/.hermes/sessions');
+    const hermesBase = normalizePath(process.env.CHORUS_HERMES_DATA_DIR || process.env.BRIDGE_HERMES_DATA_DIR || '~/.hermes/sessions');
     if (!fs.existsSync(hermesBase)) {
       addCheck(
         'sessions_hermes',
@@ -2516,7 +2516,10 @@ function runDoctor(inputArgs) {
         `Hermes not configured (data directory absent: ${hermesBase})`,
       );
     } else {
-      const entries = listSessions('hermes', cwd, 1);
+      // Presence-only check (matches Rust + cursor surface checks): is
+      // the surface reachable from this host, not "does it have sessions
+      // matching this specific cwd".
+      const entries = listSessions('hermes', null, 1);
       if (entries.length > 0) {
         addCheck('sessions_hermes', 'pass', 'At least one hermes session discovered');
       } else {
@@ -2542,6 +2545,8 @@ function runDoctor(inputArgs) {
     ['BRIDGE_CURSOR_DATA_DIR', 'cursor-agent CLI (legacy)'],
     ['CHORUS_CURSOR_APP_DATA_DIR', 'Cursor IDE'],
     ['BRIDGE_CURSOR_APP_DATA_DIR', 'Cursor IDE (legacy)'],
+    ['CHORUS_HERMES_DATA_DIR', 'hermes'],
+    ['BRIDGE_HERMES_DATA_DIR', 'hermes (legacy)'],
   ];
   for (const [varName, label] of envOverrides) {
     const value = process.env[varName];

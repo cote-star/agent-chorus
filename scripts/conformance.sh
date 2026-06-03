@@ -28,6 +28,7 @@ run_read_case() {
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   "${node_cmd[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
@@ -35,6 +36,7 @@ run_read_case() {
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   "${rust_cmd[@]}" > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "read-${label}"
@@ -205,6 +207,7 @@ run_parity_case() {
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   node "$ROOT/scripts/read_session.cjs" "${node_args[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
@@ -212,6 +215,7 @@ run_parity_case() {
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- "${rust_args[@]}" > "$rust_out"
 
   node "$SCRUB" "$node_out" "$node_scrubbed" "$kind"
@@ -321,6 +325,29 @@ run_parity_case read read-cursor-app read-cursor-app.json \
   read --agent=cursor --id=cursor-app-fixture-uuid --json :: \
   read --agent cursor --id cursor-app-fixture-uuid --json
 
+# F8: redaction must apply to SQLite-sourced content the same way it
+# applies to JSONL content. This fixture embeds an API-token-shaped
+# string and a Bearer-token-shaped string inside cursor IDE blobs;
+# both runtimes' redaction pipeline must replace them with [REDACTED].
+# See research/uat-replay-followups-2026-06-03.md F8.
+run_parity_case read read-cursor-app-redaction read-cursor-app-redaction.json \
+  read --agent=cursor --id=cursor-app-redaction-uuid --json :: \
+  read --agent cursor --id cursor-app-redaction-uuid --json
+
+# F6: dedicated tool-call fixtures for claude and codex. The existing
+# `claude-fixture` / `codex-fixture` underlying sessions contain no
+# `tool_use` / `function_call` entries, so `read-{claude,codex}-tool-calls`
+# only proves the flag is honored — not that the renderer emits
+# `[TOOL: <name>]` blocks. These cases exercise the renderer for real.
+# See research/uat-replay-followups-2026-06-03.md F6.
+run_parity_case read read-claude-tool-fixture read-claude-tool-fixture.json \
+  read --agent=claude --id=claude-tool-fixture --tool-calls --json :: \
+  read --agent claude --id claude-tool-fixture --tool-calls --json
+
+run_parity_case read read-codex-tool-fixture read-codex-tool-fixture.json \
+  read --agent=codex --id=codex-tool-fixture --tool-calls --json :: \
+  read --agent codex --id codex-tool-fixture --tool-calls --json
+
 # N6: --tool-calls parity for cursor IDE (app) sessions. Cursor's content
 # array uses the same {type:"text"} / {type:"tool_use"} / {type:"tool_result"}
 # shape as Claude, so the existing extractor renders them at parity.
@@ -335,6 +362,19 @@ run_parity_case read read-cursor-app-tool-calls read-cursor-app-tool-calls.json 
 run_parity_case read read-gemini-tool-calls "" \
   read --agent=gemini --id=gemini-fixture --tool-calls --json :: \
   read --agent gemini --id gemini-fixture --tool-calls --json
+
+# F7: hermes is the second adapter in the AGENTS_WITHOUT_TOOL_CALLS set
+# (alongside gemini). Pre-fix there was no live hermes fixture so the
+# uniform no-tool-calls warning path was logically asserted only via
+# code review. The synthetic fixture under
+# fixtures/session-store/hermes/sessions/ exercises it end-to-end.
+run_parity_case read read-hermes "" \
+  read --agent=hermes --id=hermes-fixture --json :: \
+  read --agent hermes --id hermes-fixture --json
+
+run_parity_case read read-hermes-tool-calls "" \
+  read --agent=hermes --id=hermes-fixture --tool-calls --json :: \
+  read --agent hermes --id hermes-fixture --tool-calls --json
 
 # N7: --history flag scaffolds the on-demand default contract. `eager`
 # emits a uniform warning; `none` zeros content (alias for
@@ -371,6 +411,7 @@ run_search_read_parity() {
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   node "$ROOT/scripts/read_session.cjs" search "$query" --agent="$agent" --json > "$TMP_DIR/srp-${agent}-node.json"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
@@ -378,6 +419,7 @@ run_search_read_parity() {
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- search "$query" --agent "$agent" --json > "$TMP_DIR/srp-${agent}-rust.json"
 
   for runtime in node rust; do

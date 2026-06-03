@@ -1,0 +1,16 @@
+{
+  "agent": "claude",
+  "chorus_output_version": 1,
+  "content": "Checking the file.\n[TOOL: Read]\n{\n  \"path\": \"/workspace/demo/example.txt\"\n}\n[/TOOL]\nDone reading.",
+  "cwd": "/workspace/demo",
+  "included_roles": [
+    "assistant"
+  ],
+  "included_tool_calls": true,
+  "message_count": 1,
+  "messages_returned": 1,
+  "session_id": "session-claude-tool-fixture",
+  "source": "session-claude-tool-fixture.jsonl",
+  "timestamp": "__TS__",
+  "warnings": []
+}
