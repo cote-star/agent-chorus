@@ -321,6 +321,21 @@ run_parity_case read read-cursor-app read-cursor-app.json \
   read --agent=cursor --id=cursor-app-fixture-uuid --json :: \
   read --agent cursor --id cursor-app-fixture-uuid --json
 
+# N6: --tool-calls parity for cursor IDE (app) sessions. Cursor's content
+# array uses the same {type:"text"} / {type:"tool_use"} / {type:"tool_result"}
+# shape as Claude, so the existing extractor renders them at parity.
+run_parity_case read read-cursor-app-tool-calls read-cursor-app-tool-calls.json \
+  read --agent=cursor --id=cursor-app-fixture-uuid --tool-calls --json :: \
+  read --agent cursor --id cursor-app-fixture-uuid --tool-calls --json
+
+# N6: agents whose transcript format has no tool-call concept (gemini,
+# hermes) MUST emit a uniform warning when --tool-calls is requested
+# rather than silently returning content unchanged. Mirrors
+# `agent_has_no_tool_calls` in Rust and AGENTS_WITHOUT_TOOL_CALLS in Node.
+run_parity_case read read-gemini-tool-calls "" \
+  read --agent=gemini --id=gemini-fixture --tool-calls --json :: \
+  read --agent gemini --id gemini-fixture --tool-calls --json
+
 run_read_case codex codex-fixture Codex
 run_read_case gemini gemini-fixture Gemini
 run_read_case claude claude-fixture Claude

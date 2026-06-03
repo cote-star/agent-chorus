@@ -1,0 +1,16 @@
+{
+  "agent": "cursor",
+  "chorus_output_version": 1,
+  "content": "Second answer, with a [TOOL:Read] mark.\n[TOOL: Read]\n{\n  \"path\": \"/tmp/x\"\n}\n[/TOOL]",
+  "cwd": "/workspace/demo",
+  "included_roles": [
+    "assistant"
+  ],
+  "included_tool_calls": true,
+  "message_count": 2,
+  "messages_returned": 1,
+  "session_id": "cursor-app-fixture-uuid",
+  "source": "store.db",
+  "timestamp": "__TS__",
+  "warnings": []
+}

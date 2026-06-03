@@ -780,13 +780,26 @@ fn run(cli: Cli) -> Result<()> {
                 include_user,
                 include_tool_calls: tool_calls,
             };
-            let session = adapter.read_session_with_options(
+            let mut session = adapter.read_session_with_options(
                 id.as_deref(),
                 &effective_cwd,
                 chats_dir.as_deref(),
                 last_n,
                 opts,
             )?;
+
+            // N6: agents whose on-disk format does not carry tool calls emit
+            // a uniform warning when --tool-calls is requested, so a silent
+            // no-op never looks like "this agent had no tool calls". The
+            // `included_tool_calls: true` field is still set in the output
+            // since the flag was honored; the warning surfaces that the data
+            // is structurally unavailable.
+            if tool_calls && agent_has_no_tool_calls(agent.as_str()) {
+                session.warnings.push(format!(
+                    "--tool-calls has no effect for {} sessions: this agent's transcript format does not carry tool calls.",
+                    agent.as_str()
+                ));
+            }
 
             // If audit mode requested, re-run redaction with audit on the raw content
             let redaction_audit = if audit_redactions {
@@ -1404,6 +1417,15 @@ fn emit_report_output(report_value: &serde_json::Value, json_output: bool) -> Re
         println!("{}", utils::sanitize_for_terminal(&report::report_to_markdown(report_value)));
     }
     Ok(())
+}
+
+/// Agents whose on-disk transcript format has no tool-call concept.
+/// `--tool-calls` is honored (the flag is acknowledged in
+/// `included_tool_calls`) but a uniform warning surfaces that the data
+/// is structurally unavailable. Mirrors the Node check in
+/// `scripts/read_session.cjs`.
+fn agent_has_no_tool_calls(agent: &str) -> bool {
+    matches!(agent, "gemini" | "hermes")
 }
 
 fn effective_cwd(cwd: Option<String>) -> String {

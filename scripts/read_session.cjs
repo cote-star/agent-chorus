@@ -1879,6 +1879,12 @@ function renderTimelineAsMarkdown(result) {
   console.log(lines.join('\n'));
 }
 
+// Agents whose on-disk transcript format has no tool-call concept.
+// `--tool-calls` is honored (included_tool_calls is still emitted) but
+// a uniform warning surfaces that the data is structurally unavailable.
+// Mirrors `agent_has_no_tool_calls` in cli/src/main.rs.
+const AGENTS_WITHOUT_TOOL_CALLS = new Set(['gemini', 'hermes']);
+
 function runRead(inputArgs) {
   const agent = getOptionValue(inputArgs, '--agent', 'codex');
   const id = getOptionValue(inputArgs, '--id', null);
@@ -1900,6 +1906,16 @@ function runRead(inputArgs) {
     includeUser,
     includeToolCalls,
   });
+
+  // N6: agents whose transcript format has no tool-call concept emit a
+  // uniform warning when --tool-calls is requested, so a silent no-op
+  // never looks like "this agent had no tool calls". included_tool_calls
+  // is still true (the flag was honored); the warning surfaces that the
+  // data is structurally unavailable. Mirrors Rust dispatch.
+  if (includeToolCalls && AGENTS_WITHOUT_TOOL_CALLS.has(agent)) {
+    if (!Array.isArray(result.warnings)) result.warnings = [];
+    result.warnings.push(`--tool-calls has no effect for ${agent} sessions: this agent's transcript format does not carry tool calls.`);
+  }
 
   if (format === 'markdown' || format === 'md') {
     renderReadAsMarkdown(result);
