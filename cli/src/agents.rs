@@ -2573,6 +2573,224 @@ pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
     Ok(entries)
 }
 
+// --- Hermes support (provisional scaffold — UNTESTED) ---
+//
+// Hermes is not yet installed and its on-disk transcript format is unconfirmed.
+// This path is wired for parity but has NOT been validated against real data.
+// Assumed shape (claude-like JSONL; override root via CHORUS_HERMES_DATA_DIR):
+//   <base>/**/*.jsonl  with lines {"role":"user"|"assistant","content":"<str>","cwd":"<path?>"}
+// Revisit and add behavior tests once Hermes is available.
+
+fn hermes_base_dir() -> PathBuf {
+    std::env::var("CHORUS_HERMES_DATA_DIR")
+        .or_else(|_| std::env::var("BRIDGE_HERMES_DATA_DIR"))
+        .ok()
+        .and_then(|value| expand_home(&value))
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .map(|h| h.join(".hermes").join("sessions"))
+                .unwrap_or_else(|| PathBuf::from("~/.hermes/sessions"))
+        })
+}
+
+fn collect_hermes_sessions(base_dir: &Path, id: Option<&str>) -> Result<Vec<FileEntry>> {
+    collect_matching_files(base_dir, true, &|p| {
+        has_extension(p, "jsonl") && id.map(|needle| path_contains(p, needle)).unwrap_or(true)
+    })
+}
+
+fn get_hermes_session_cwd(path: &Path) -> Option<PathBuf> {
+    let lines = read_jsonl_lines(path).ok()?;
+    for line in lines {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+                if let Ok(p) = normalize_path(cwd) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn hermes_turn_text(content: &Value, include_tool_calls: bool) -> String {
+    if include_tool_calls {
+        return extract_text_with_tool_calls(content);
+    }
+    match content.as_str() {
+        Some(s) => s.to_string(),
+        None => extract_text_with_tool_calls(content),
+    }
+}
+
+#[allow(dead_code)]
+pub fn read_hermes_session(id: Option<&str>, cwd: &str) -> Result<Session> {
+    read_hermes_session_with_options(id, cwd, 1, ReadOptions::default())
+}
+
+pub fn read_hermes_session_with_options(
+    id: Option<&str>,
+    cwd: &str,
+    last_n: usize,
+    opts: ReadOptions,
+) -> Result<Session> {
+    let base_dir = hermes_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
+    if !base_dir.exists() {
+        return Err(anyhow!("No Hermes session found. Data directory not found: {}", base_dir.display()));
+    }
+    let files = collect_hermes_sessions(&base_dir, id)?;
+    if files.is_empty() {
+        return Err(anyhow!("No Hermes session found."));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let target_file = if id.is_some() {
+        files[0].path.clone()
+    } else {
+        match normalize_path(cwd) {
+            Ok(expected) => match find_latest_by_cwd(&files, &expected, get_hermes_session_cwd) {
+                Some(p) => p,
+                None => {
+                    warnings.push(format!(
+                        "No Hermes session matched cwd {}; falling back to latest session.",
+                        expected.display()
+                    ));
+                    files[0].path.clone()
+                }
+            },
+            Err(_) => files[0].path.clone(),
+        }
+    };
+
+    let mut turns: Vec<ConversationTurn> = Vec::new();
+    if let Ok(lines) = read_jsonl_lines(&target_file) {
+        for line in lines {
+            let v: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let role = match v.get("role").and_then(|r| r.as_str()) {
+                Some(r) if r == "user" || r == "assistant" => r.to_string(),
+                _ => continue,
+            };
+            let content = v.get("content").cloned().unwrap_or(Value::Null);
+            let text = hermes_turn_text(&content, opts.include_tool_calls);
+            let text = text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            turns.push(ConversationTurn { role, text: text.to_string() });
+        }
+    }
+
+    let assistant_msgs: Vec<String> = turns
+        .iter()
+        .filter(|t| t.role == "assistant")
+        .map(|t| t.text.clone())
+        .collect();
+    let message_count = assistant_msgs.len();
+
+    let (content, messages_returned) = if opts.include_user && !assistant_msgs.is_empty() {
+        let selected = select_conversation_turns(&turns, last_n);
+        let n = selected.len();
+        (
+            selected
+                .iter()
+                .map(|t| format!("{}:\n{}", t.role.to_uppercase(), t.text))
+                .collect::<Vec<String>>()
+                .join("\n---\n"),
+            n,
+        )
+    } else if last_n > 1 && !assistant_msgs.is_empty() {
+        let start = assistant_msgs.len().saturating_sub(last_n);
+        let sel: Vec<&String> = assistant_msgs[start..].iter().collect();
+        (sel.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n"), sel.len())
+    } else if let Some(last) = assistant_msgs.last() {
+        (last.clone(), 1)
+    } else {
+        ("[No assistant messages found]".to_string(), 0)
+    };
+
+    Ok(Session {
+        agent: "hermes",
+        content: redact_sensitive_text(&content),
+        source: target_file.to_string_lossy().to_string(),
+        warnings,
+        session_id: target_file.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
+        cwd: get_hermes_session_cwd(&target_file).map(|p| p.to_string_lossy().to_string()),
+        timestamp: file_modified_iso(&target_file),
+        message_count,
+        messages_returned,
+    })
+}
+
+pub fn list_hermes_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
+    let base_dir = hermes_base_dir();
+    if !base_dir.exists() { return Ok(Vec::new()); }
+    let files = collect_hermes_sessions(&base_dir, None)?;
+    let expected_cwd = cwd.map(normalize_path).transpose()?;
+    let mut entries = Vec::new();
+    for file in files {
+        let session_cwd = get_hermes_session_cwd(&file.path);
+        if let Some(expected) = expected_cwd.as_ref() {
+            match session_cwd.as_ref() {
+                Some(sc) if cwd_matches_project(sc, expected) => {}
+                _ => continue,
+            }
+        }
+        entries.push(serde_json::json!({
+            "session_id": file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string(),
+            "agent": "hermes",
+            "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+            "modified_at": file_modified_iso(&file.path),
+            "file_path": file.path.to_string_lossy().to_string(),
+        }));
+        if entries.len() >= limit { break; }
+    }
+    Ok(entries)
+}
+
+pub fn search_hermes_sessions(query: &str, cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
+    let base_dir = hermes_base_dir();
+    if !base_dir.exists() { return Ok(Vec::new()); }
+    let files = collect_hermes_sessions(&base_dir, None)?;
+    let query_lower = query.to_ascii_lowercase();
+    let expected_cwd = cwd.map(normalize_path).transpose()?;
+    let mut entries = Vec::new();
+    for file in files {
+        if entries.len() >= limit { break; }
+        let session_cwd = get_hermes_session_cwd(&file.path);
+        if let Some(expected) = expected_cwd.as_ref() {
+            match session_cwd.as_ref() {
+                Some(sc) if cwd_matches_project(sc, expected) => {}
+                _ => continue,
+            }
+        }
+        let assistant_text = read_jsonl_lines(&file.path)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+            .filter_map(|v| v.get("content").and_then(|c| c.as_str()).map(|s| s.to_string()))
+            .collect::<Vec<String>>()
+            .join("\n");
+        if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+            entries.push(serde_json::json!({
+                "session_id": file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string(),
+                "agent": "hermes",
+                "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+                "modified_at": file_modified_iso(&file.path),
+                "file_path": file.path.to_string_lossy().to_string(),
+                "match_snippet": compute_match_snippet(&assistant_text, query),
+            }));
+        }
+    }
+    Ok(entries)
+}
+
 pub(crate) fn codex_base_dir() -> PathBuf {
     std::env::var("CHORUS_CODEX_SESSIONS_DIR")
         .or_else(|_| std::env::var("BRIDGE_CODEX_SESSIONS_DIR"))
@@ -2781,6 +2999,10 @@ fn pick_roast(agent: &str, content: &str, message_count: usize) -> &'static str 
         "An IDE that thinks it's an agent. Bless its heart.",
         "Cursor: autocomplete with delusions of grandeur.",
     ];
+    const HERMES_ROASTS: &[&str] = &[
+        "Hermes: messenger of the gods, still waiting on its first install.",
+        "Named for speed, shipped as a stretch goal.",
+    ];
     const GENERIC_ROASTS: &[&str] = &[
         "Participation trophy earned.",
         "Well, at least the process exited cleanly.",
@@ -2807,6 +3029,7 @@ fn pick_roast(agent: &str, content: &str, message_count: usize) -> &'static str 
         "claude" => roasts.extend_from_slice(CLAUDE_ROASTS),
         "gemini" => roasts.extend_from_slice(GEMINI_ROASTS),
         "cursor" => roasts.extend_from_slice(CURSOR_ROASTS),
+        "hermes" => roasts.extend_from_slice(HERMES_ROASTS),
         _ => {}
     }
     roasts.extend_from_slice(GENERIC_ROASTS);

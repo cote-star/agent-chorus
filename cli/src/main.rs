@@ -664,6 +664,7 @@ enum AgentType {
     Gemini,
     Claude,
     Cursor,
+    Hermes,
 }
 
 impl AgentType {
@@ -673,6 +674,7 @@ impl AgentType {
             AgentType::Gemini => "gemini",
             AgentType::Claude => "claude",
             AgentType::Cursor => "cursor",
+            AgentType::Hermes => "hermes",
         }
     }
 }
@@ -1458,6 +1460,7 @@ fn format_agent_name(agent: &str) -> &'static str {
         "gemini" => "Gemini",
         "claude" => "Claude",
         "cursor" => "Cursor",
+        "hermes" => "Hermes",
         _ => "Unknown",
     }
 }

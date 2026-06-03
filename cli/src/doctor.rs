@@ -25,7 +25,7 @@ const PROVIDERS: &[Provider] = &[
     Provider { agent: "gemini", target_file: "GEMINI.md" },
 ];
 
-const ALL_AGENTS: &[&str] = &["codex", "gemini", "claude", "cursor"];
+const ALL_AGENTS: &[&str] = &["codex", "gemini", "claude", "cursor", "hermes"];
 
 #[derive(Debug)]
 pub struct Check {

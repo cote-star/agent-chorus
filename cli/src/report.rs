@@ -403,7 +403,7 @@ fn compute_verdict(mode: &str, missing: &[(SourceSpec, String, String)], unique_
 
 fn validate_agent(agent: &str) -> Result<()> {
     match agent {
-        "codex" | "gemini" | "claude" | "cursor" => Ok(()),
+        "codex" | "gemini" | "claude" | "cursor" | "hermes" => Ok(()),
         _ => Err(anyhow!("Unsupported agent: {}", agent)),
     }
 }
