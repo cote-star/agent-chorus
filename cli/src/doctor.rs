@@ -25,7 +25,10 @@ const PROVIDERS: &[Provider] = &[
     Provider { agent: "gemini", target_file: "GEMINI.md" },
 ];
 
-const ALL_AGENTS: &[&str] = &["codex", "gemini", "claude", "cursor", "hermes"];
+// Agents enumerated for session-discovery checks. `cursor` is intentionally
+// absent: it has two surfaces (CLI JSONL and IDE SQLite) reported by the
+// `cursor_session_checks` helper below, not a single combined `sessions_cursor`.
+const ALL_AGENTS: &[&str] = &["codex", "gemini", "claude", "hermes"];
 
 #[derive(Debug)]
 pub struct Check {
@@ -153,7 +156,7 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
         );
     }
 
-    // Session discovery per agent
+    // Session discovery per agent.
     let normalized_cwd = utils::normalize_path(cwd)
         .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| cwd.to_string());
@@ -187,6 +190,12 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
             ),
         }
     }
+
+    // Cursor has two on-disk surfaces; report each independently. The
+    // surface check answers "is this surface reachable from this host?",
+    // not "are there sessions for this specific cwd?" — pass-with-no-cwd
+    // matches Node's semantic.
+    cursor_surface_checks(&mut checks);
 
     // Context pack state
     let pack_dir = cwd_path.join(".agent-context").join("current");
@@ -325,6 +334,45 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
         overall: overall.to_string(),
         checks,
     })
+}
+
+fn cursor_surface_checks(checks: &mut Vec<Check>) {
+    let cli_base = crate::agents::cursor_base_dir_public();
+    let app_base = crate::cursor_app::cursor_app_base_dir();
+
+    let cli_has = if cli_base.exists() {
+        crate::agents::list_cursor_cli_sessions_count(None, 1) > 0
+    } else {
+        false
+    };
+    push(
+        checks,
+        "sessions_cursor_cli",
+        if cli_has { "pass" } else { "warn" },
+        if cli_has {
+            "At least one cursor-agent CLI transcript discovered".to_string()
+        } else {
+            format!("No cursor-agent CLI transcripts discovered at {}", cli_base.display())
+        }
+        .as_str(),
+    );
+
+    let app_has = if app_base.exists() {
+        !crate::cursor_app::collect_cursor_app_sessions(&app_base).is_empty()
+    } else {
+        false
+    };
+    push(
+        checks,
+        "sessions_cursor_app",
+        if app_has { "pass" } else { "warn" },
+        if app_has {
+            "At least one Cursor IDE store.db discovered".to_string()
+        } else {
+            format!("No Cursor IDE store.db sessions discovered at {}", app_base.display())
+        }
+        .as_str(),
+    );
 }
 
 fn push(checks: &mut Vec<Check>, id: &str, status: &str, detail: &str) {

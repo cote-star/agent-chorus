@@ -204,9 +204,14 @@ pub fn build_timeline(
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
 
-                    // Try to read a snippet from the session
-                    let snippet = if !file_path.is_empty() {
-                        read_snippet(agent, file_path)
+                    // Try to read a snippet from the session. Pass the session_id
+                    // straight through rather than re-deriving from file_path:
+                    // for cursor IDE app sessions the file is `.../<uuid>/store.db`,
+                    // so file_stem() returns "store" and the lookup misses.
+                    let snippet = if !session_id.is_empty() {
+                        read_snippet(agent, &session_id)
+                    } else if !file_path.is_empty() {
+                        read_snippet_by_file(agent, file_path)
                     } else {
                         None
                     };
@@ -241,27 +246,29 @@ pub fn build_timeline(
     })
 }
 
-/// Try to read the first assistant snippet from a session file.
-fn read_snippet(agent: &str, file_path: &str) -> Option<String> {
+/// Try to read the first assistant snippet from a session by id.
+fn read_snippet(agent: &str, session_id: &str) -> Option<String> {
     let adapter = adapters::get_adapter(agent)?;
     let session = adapter
-        .read_session(
-            Some(
-                std::path::Path::new(file_path)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or(""),
-            ),
-            ".",
-            None,
-            1,
-        )
+        .read_session(Some(session_id), ".", None, 1)
         .ok()?;
-
     if session.content.is_empty() {
         None
     } else {
-        let short: String = session.content.chars().take(200).collect();
-        Some(short)
+        Some(session.content.chars().take(200).collect())
+    }
+}
+
+/// Fallback: derive id from file path's stem. Used only when the listing
+/// didn't carry a session_id (defensive — current adapters all populate it).
+fn read_snippet_by_file(agent: &str, file_path: &str) -> Option<String> {
+    let id = std::path::Path::new(file_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    if id.is_empty() {
+        None
+    } else {
+        read_snippet(agent, id)
     }
 }

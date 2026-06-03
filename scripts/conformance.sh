@@ -27,12 +27,14 @@ run_read_case() {
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
   "${node_cmd[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
   "${rust_cmd[@]}" > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "read-${label}"
@@ -202,12 +204,14 @@ run_parity_case() {
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
   node "$ROOT/scripts/read_session.cjs" "${node_args[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- "${rust_args[@]}" > "$rust_out"
 
   node "$SCRUB" "$node_out" "$node_scrubbed" "$kind"
@@ -307,6 +311,15 @@ run_parity_case read read-claude-tool-calls read-claude-tool-calls.json \
 run_parity_case read read-cursor-tool-calls read-cursor-tool-calls.json \
   read --agent=cursor --id=session-cursor-tool-calls --tool-calls --json :: \
   read --agent cursor --id session-cursor-tool-calls --tool-calls --json
+
+# --- read --agent cursor against the IDE SQLite fixture (N1) ---
+# Exercises ~/.cursor/chats/<dir-hash>/<session-uuid>/store.db reading and
+# the Workspace Path cwd-recovery path. Both surfaces (CLI JSONL + IDE
+# SQLite) are wired into the cursor adapter; this case proves the SQLite
+# leg works at parity. Requires Node >= 22.5 (built-in node:sqlite).
+run_parity_case read read-cursor-app read-cursor-app.json \
+  read --agent=cursor --id=cursor-app-fixture-uuid --json :: \
+  read --agent cursor --id cursor-app-fixture-uuid --json
 
 run_read_case codex codex-fixture Codex
 run_read_case gemini gemini-fixture Gemini

@@ -60,6 +60,13 @@
     {
       "agent": "cursor",
       "cwd": "/workspace/demo",
+      "session_id": "cursor-app-fixture-uuid",
+      "snippet": "Second answer, with a [TOOL:Read] mark.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "cursor",
+      "cwd": "/workspace/demo",
       "session_id": "session-cursor-fixture-0001",
       "snippet": "Cursor fixture assistant output.",
       "timestamp": "__TS__"

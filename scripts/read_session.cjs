@@ -2382,7 +2382,8 @@ function runDoctor(inputArgs) {
     );
   }
 
-  for (const agent of ['codex', 'gemini', 'claude', 'cursor', 'hermes']) {
+  // Single-surface agents.
+  for (const agent of ['codex', 'gemini', 'claude', 'hermes']) {
     try {
       const entries = listSessions(agent, cwd, 1);
       if (entries.length > 0) {
@@ -2393,6 +2394,39 @@ function runDoctor(inputArgs) {
     } catch (error) {
       addCheck(`sessions_${agent}`, 'fail', error.message || String(error));
     }
+  }
+
+  // Cursor has two on-disk surfaces; report each independently so the
+  // doctor view tells the truth about what's actually reachable. The
+  // surface check answers "is this surface reachable from this host?",
+  // not "are there sessions for this specific cwd?" — passing null cwd
+  // matches the semantic Rust uses (presence-only check). Mirrors
+  // cli/src/doctor.rs::cursor_surface_checks.
+  try {
+    const cursorAdapter = getAdapter('cursor');
+    const cursorEntries = cursorAdapter.list(null, 50);
+    const cliCount = cursorEntries.filter((e) => e && e.source === 'cli').length;
+    const appCount = cursorEntries.filter((e) => e && e.source === 'app').length;
+    addCheck(
+      'sessions_cursor_cli',
+      cliCount > 0 ? 'pass' : 'warn',
+      cliCount > 0
+        ? 'At least one cursor-agent CLI transcript discovered'
+        : `No cursor-agent CLI transcripts discovered at ${normalizePath(process.env.CHORUS_CURSOR_DATA_DIR || '~/.cursor/projects')}`,
+    );
+    const cursorApp = require('./adapters/cursor_app.cjs');
+    addCheck(
+      'sessions_cursor_app',
+      appCount > 0 ? 'pass' : 'warn',
+      appCount > 0
+        ? 'At least one Cursor IDE store.db discovered'
+        : (cursorApp.isSqliteAvailable()
+          ? `No Cursor IDE store.db sessions discovered at ${cursorApp.cursorAppBaseDir()}`
+          : 'Cursor IDE SQLite reader unavailable (requires Node >= 22.5 with node:sqlite)'),
+    );
+  } catch (error) {
+    addCheck('sessions_cursor_cli', 'fail', error.message || String(error));
+    addCheck('sessions_cursor_app', 'fail', error.message || String(error));
   }
 
   const packDir = path.join(cwd, '.agent-context', 'current');

@@ -2,6 +2,7 @@ mod adapters;
 mod agents;
 mod agent_context;
 mod checkpoint;
+mod cursor_app;
 mod cursor_cwd;
 mod cursor_parse;
 pub mod diff;

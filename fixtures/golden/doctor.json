@@ -51,9 +51,14 @@
       "status": "warn"
     },
     {
-      "detail": "No cursor sessions discovered",
-      "id": "sessions_cursor",
-      "status": "warn"
+      "detail": "At least one Cursor IDE store.db discovered",
+      "id": "sessions_cursor_app",
+      "status": "pass"
+    },
+    {
+      "detail": "At least one cursor-agent CLI transcript discovered",
+      "id": "sessions_cursor_cli",
+      "status": "pass"
     },
     {
       "detail": "No gemini sessions discovered",

@@ -26,6 +26,11 @@ anyhow = "1.0.101"
 clap = { version = "4.5.57", features = ["derive"] }
 dirs = "6.0.0"
 globset = "0.4.14"
+# `bundled` ships SQLite inside the crate so the chorus binary has no host
+# SQLite dependency. Required by the Cursor IDE adapter (`~/.cursor/chats/
+# <hash>/<uuid>/store.db`) introduced in v0.16.0 — see N1 in
+# research/next-scopes-post-v0.15.0-2026-06-03.md.
+rusqlite = { version = "0.31", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.10.9"
