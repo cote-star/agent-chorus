@@ -2,7 +2,7 @@
 
 ## Snapshot
 - Repo: `agent-chorus`
-- Branch at generation: `fix/v0.14.1-crates-packaging`
+- Branch at generation: `feat/native-cursor-hermes-adapter`
 - Pack version: 0.14.1
 - Generated at seal time (fields populated by `chorus agent-context seal`)
 
