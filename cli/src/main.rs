@@ -885,6 +885,23 @@ fn run(cli: Cli) -> Result<()> {
                         serde_json::Value::Bool(true),
                     );
                 }
+                // F1: surface fallback as a structured boolean in addition
+                // to the existing `warnings[]` push. JSON-only consumers
+                // can rely on this without scanning warning strings.
+                // Also echo the cwd_mismatch warning to stderr so humans
+                // watching the terminal see the fallback even when stdout
+                // is being piped into another tool.
+                if session.cwd_mismatch {
+                    report.as_object_mut().unwrap().insert(
+                        "cwd_mismatch".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                    for w in &session.warnings {
+                        if w.contains("falling back to latest session") {
+                            eprintln!("chorus: {}", w);
+                        }
+                    }
+                }
                 if let Some(ref audit) = redaction_audit {
                     report.as_object_mut().unwrap().insert(
                         "redactions".to_string(),

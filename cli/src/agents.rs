@@ -65,6 +65,12 @@ pub struct Session {
     pub timestamp: Option<String>,
     pub message_count: usize,
     pub messages_returned: usize,
+    /// F1: true when the caller passed `--cwd <X>` but no session matched
+    /// that cwd, and the adapter fell back to the latest session. The
+    /// fallback is intentional (a warning is also pushed to `warnings`)
+    /// but consumers that parse the JSON without scanning the warnings
+    /// array can use this boolean to detect the silent-fallback case.
+    pub cwd_mismatch: bool,
 }
 
 #[derive(Clone)]
@@ -97,6 +103,7 @@ pub fn read_codex_session_with_options(
     }
 
     let mut warnings = Vec::new();
+    let mut cwd_mismatch = false;
     let target_file = if let Some(id_value) = id {
         let files = collect_matching_files(&base_dir, true, &|file_path| {
             has_extension(file_path, "jsonl") && path_contains(file_path, id_value)
@@ -119,6 +126,7 @@ pub fn read_codex_session_with_options(
                 "Warning: no Codex session matched cwd {}; falling back to latest session.",
                 expected_cwd.display()
             ));
+            cwd_mismatch = true;
             files[0].path.clone()
         }
     };
@@ -136,6 +144,7 @@ pub fn read_codex_session_with_options(
         timestamp: parsed.timestamp,
         message_count: parsed.message_count,
         messages_returned: parsed.messages_returned,
+        cwd_mismatch,
     })
 }
 
@@ -163,6 +172,7 @@ pub fn read_claude_session_with_options(
     }
 
     let mut warnings = Vec::new();
+    let mut cwd_mismatch = false;
     let target_file = if let Some(id_value) = id {
         let files = collect_matching_files(&base_dir, true, &|file_path| {
             has_extension(file_path, "jsonl") && path_contains(file_path, id_value)
@@ -185,6 +195,7 @@ pub fn read_claude_session_with_options(
                 "Warning: no Claude session matched cwd {}; falling back to latest session.",
                 expected_cwd.display()
             ));
+            cwd_mismatch = true;
             files[0].path.clone()
         }
     };
@@ -202,6 +213,7 @@ pub fn read_claude_session_with_options(
         timestamp: parsed.timestamp,
         message_count: parsed.message_count,
         messages_returned: parsed.messages_returned,
+        cwd_mismatch,
     })
 }
 
@@ -291,6 +303,10 @@ pub fn read_gemini_session_with_options(
         timestamp: parsed.timestamp,
         message_count: parsed.message_count,
         messages_returned: parsed.messages_returned,
+        // gemini scopes by project nickname rather than absolute cwd; the
+        // cwd_mismatch concept (cwd given but no session matched) does
+        // not apply here.
+        cwd_mismatch: false,
     })
 }
 
@@ -2564,6 +2580,7 @@ pub fn read_cursor_session_with_options(
     };
 
     let mut warnings: Vec<String> = Vec::new();
+    let mut cwd_mismatch = false;
     let target: &Candidate = if id.is_some() {
         &candidates[0]
     } else {
@@ -2581,6 +2598,7 @@ pub fn read_cursor_session_with_options(
                             "No Cursor session matched cwd {}; falling back to latest session.",
                             expected.display()
                         ));
+                        cwd_mismatch = true;
                         &candidates[0]
                     }
                 }
@@ -2644,6 +2662,7 @@ pub fn read_cursor_session_with_options(
         timestamp,
         message_count,
         messages_returned,
+        cwd_mismatch,
     })
 }
 
@@ -2838,6 +2857,7 @@ pub fn read_hermes_session_with_options(
     }
 
     let mut warnings: Vec<String> = Vec::new();
+    let mut cwd_mismatch = false;
     let target_file = if id.is_some() {
         files[0].path.clone()
     } else {
@@ -2849,6 +2869,7 @@ pub fn read_hermes_session_with_options(
                         "No Hermes session matched cwd {}; falling back to latest session.",
                         expected.display()
                     ));
+                    cwd_mismatch = true;
                     files[0].path.clone()
                 }
             },
@@ -2915,6 +2936,7 @@ pub fn read_hermes_session_with_options(
         timestamp: file_modified_iso(&target_file),
         message_count,
         messages_returned,
+        cwd_mismatch,
     })
 }
 

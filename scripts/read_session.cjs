@@ -1935,6 +1935,22 @@ function runRead(inputArgs) {
     result.warnings.push(`--tool-calls has no effect for ${agent} sessions: this agent's transcript format does not carry tool calls.`);
   }
 
+  // F1: surface cwd-mismatch fallback as a structured boolean on the
+  // output AND escalate the warning to stderr. Adapters push a
+  // "falling back to latest session" warning string when --cwd was
+  // given but no session matched; JSON-only consumers can use
+  // cwd_mismatch=true to detect this without scanning warning strings,
+  // and stderr-watching humans see the message immediately.
+  if (Array.isArray(result.warnings)
+      && result.warnings.some((w) => typeof w === 'string' && w.includes('falling back to latest session'))) {
+    result.cwd_mismatch = true;
+    for (const w of result.warnings) {
+      if (typeof w === 'string' && w.includes('falling back to latest session')) {
+        process.stderr.write(`chorus: ${w}\n`);
+      }
+    }
+  }
+
   // N7: --history=eager is reserved; emit a warning rather than silently
   // honoring the flag with on-demand behavior. Mirrors Rust dispatch.
   if (history === 'eager') {
