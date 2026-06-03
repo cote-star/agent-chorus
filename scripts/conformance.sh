@@ -336,6 +336,17 @@ run_parity_case read read-gemini-tool-calls "" \
   read --agent=gemini --id=gemini-fixture --tool-calls --json :: \
   read --agent gemini --id gemini-fixture --tool-calls --json
 
+# N7: --history flag scaffolds the on-demand default contract. `eager`
+# emits a uniform warning; `none` zeros content (alias for
+# --metadata-only). Both must be byte-identical across runtimes.
+run_parity_case read read-codex-history-eager "" \
+  read --agent=codex --id=codex-fixture --history=eager --json :: \
+  read --agent codex --id codex-fixture --history eager --json
+
+run_parity_case read read-codex-history-none "" \
+  read --agent=codex --id=codex-fixture --history=none --json :: \
+  read --agent codex --id codex-fixture --history none --json
+
 run_read_case codex codex-fixture Codex
 run_read_case gemini gemini-fixture Gemini
 run_read_case claude claude-fixture Claude

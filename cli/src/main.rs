@@ -74,6 +74,16 @@ enum Commands {
         #[arg(long = "tool-calls")]
         tool_calls: bool,
 
+        /// History scope. Default `on-demand` returns only the latest session
+        /// for the cwd — chorus does NOT auto-pull prior sessions into the
+        /// returned content; consumers should call `chorus list / timeline /
+        /// search` explicitly when they need historical context. `none` is
+        /// equivalent to `--metadata-only`. `eager` is reserved for a future
+        /// multi-session merge and behaves identically to `on-demand` today
+        /// (rejected with a warning so consumers don't silently rely on it).
+        #[arg(long, default_value = "on-demand")]
+        history: String,
+
         /// Output format: json | md | markdown (default: text)
         #[arg(long)]
         format: Option<String>,
@@ -770,8 +780,26 @@ fn run(cli: Cli) -> Result<()> {
             audit_redactions,
             include_user,
             tool_calls,
+            history,
             format,
         } => {
+            // N7: validate --history early. The flag is forward-compat
+            // scaffolding for an eventual multi-session merge; today the
+            // chorus default is `on-demand` (latest session for cwd, no
+            // auto-recall of older sessions). `none` is an alias for
+            // --metadata-only; `eager` is reserved and behaves identically
+            // to `on-demand` with a warning so consumers don't silently
+            // rely on a behavior chorus doesn't yet implement.
+            let history_mode = match history.as_str() {
+                "on-demand" | "none" | "eager" => history.clone(),
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Invalid --history value: {}. Allowed: on-demand | none | eager.",
+                        other
+                    ));
+                }
+            };
+            let history_metadata_only = history_mode == "none" || metadata_only;
             let effective_cwd = effective_cwd(cwd);
             let last_n = last.max(1);
             let adapter = adapters::get_adapter(agent.as_str())
@@ -801,6 +829,15 @@ fn run(cli: Cli) -> Result<()> {
                 ));
             }
 
+            // N7: --history=eager is reserved for a future multi-session
+            // merge. Today chorus does not implement it; emit a warning so
+            // consumers don't silently rely on the option being honored.
+            if history_mode == "eager" {
+                session.warnings.push(
+                    "--history=eager is reserved for a future multi-session merge and currently behaves identically to --history=on-demand. Use `chorus list / timeline / search` to pull additional sessions explicitly.".to_string()
+                );
+            }
+
             // If audit mode requested, re-run redaction with audit on the raw content
             let redaction_audit = if audit_redactions {
                 let (_, audit) = agents::redact_sensitive_text_with_audit(&session.content);
@@ -824,7 +861,7 @@ fn run(cli: Cli) -> Result<()> {
             let want_markdown = !want_json && is_markdown_format(format_str);
 
             if want_json {
-                let content_value = if metadata_only {
+                let content_value = if history_metadata_only {
                     serde_json::Value::Null
                 } else {
                     serde_json::Value::String(session.content.clone())

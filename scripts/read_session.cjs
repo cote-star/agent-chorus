@@ -45,6 +45,10 @@ const SUBCOMMAND_HELP = {
     '  --last <N>                                   Last N assistant messages',
     '  --include-user                               Include user prompts that anchor responses',
     '  --tool-calls                                 Include tool call content (Read, Edit, Bash, ...)',
+    '  --history <mode>                             History scope: on-demand (default) | none | eager',
+    '                                               on-demand: latest session for cwd only',
+    '                                               none:      metadata only (alias for --metadata-only)',
+    '                                               eager:     reserved; behaves as on-demand + warning',
     '  --format <fmt>                               Output format: json (default with --json) | markdown',
     '  --metadata-only                              Return session metadata without content',
     '  --audit-redactions                           Include redaction audit trail',
@@ -1898,6 +1902,20 @@ function runRead(inputArgs) {
   const includeToolCalls = hasFlag(inputArgs, '--tool-calls');
   const format = getOptionValue(inputArgs, '--format', null);
 
+  // N7: --history=on-demand|none|eager. Default `on-demand` returns only
+  // the latest session for the cwd — chorus does NOT auto-pull prior
+  // sessions; consumers call `chorus list/timeline/search` explicitly
+  // when they need historical context. `none` is an alias for
+  // --metadata-only; `eager` is reserved for a future multi-session
+  // merge and currently emits a warning so consumers don't silently
+  // rely on it.
+  const history = getOptionValue(inputArgs, '--history', 'on-demand');
+  const validHistory = new Set(['on-demand', 'none', 'eager']);
+  if (!validHistory.has(history)) {
+    throw new Error(`Invalid --history value: ${history}. Allowed: on-demand | none | eager.`);
+  }
+  const historyMetadataOnly = history === 'none' || metadataOnly;
+
   const result = readSessionViaAdapter(agent, {
     id,
     cwd,
@@ -1917,10 +1935,18 @@ function runRead(inputArgs) {
     result.warnings.push(`--tool-calls has no effect for ${agent} sessions: this agent's transcript format does not carry tool calls.`);
   }
 
+  // N7: --history=eager is reserved; emit a warning rather than silently
+  // honoring the flag with on-demand behavior. Mirrors Rust dispatch.
+  if (history === 'eager') {
+    if (!Array.isArray(result.warnings)) result.warnings = [];
+    result.warnings.push('--history=eager is reserved for a future multi-session merge and currently behaves identically to --history=on-demand. Use `chorus list / timeline / search` to pull additional sessions explicitly.');
+  }
+
+
   if (format === 'markdown' || format === 'md') {
     renderReadAsMarkdown(result);
   } else {
-    renderReadResult(result, asJson, metadataOnly, auditRedactions);
+    renderReadResult(result, asJson, historyMetadataOnly, auditRedactions);
   }
 }
 
