@@ -35,12 +35,21 @@ use crate::agents::ConversationTurn;
 use crate::agents::extract_claude_content_with_tool_calls;
 
 /// One Cursor IDE session as enumerated from the chats root.
+///
+/// `name`, `mode`, `created_at_ms` are collected from the `meta` table
+/// but not yet surfaced in any chorus output. They're reserved for a
+/// future `chorus list --verbose` (or similar) that exposes IDE-side
+/// metadata; collecting them now means no schema change is required
+/// when that lands.
 #[derive(Debug, Clone)]
 pub struct CursorAppSession {
     pub agent_id: String,
     pub db_path: PathBuf,
+    #[allow(dead_code)]
     pub name: Option<String>,
+    #[allow(dead_code)]
     pub mode: Option<String>,
+    #[allow(dead_code)]
     pub created_at_ms: Option<i64>,
 }
 
@@ -350,7 +359,9 @@ pub fn cursor_app_session_workspace(db_path: &Path) -> Option<PathBuf> {
 }
 
 /// Convenience: return the path to a session's store.db given the chats
-/// base directory and a session id (the UUID). Used by id-targeted reads.
+/// base directory and a session id (the UUID). Reserved for future
+/// id-targeted reads that don't want to walk every meta entry.
+#[allow(dead_code)]
 pub fn find_session_db(base: &Path, id: &str) -> Option<PathBuf> {
     let hash_iter = std::fs::read_dir(base).ok()?;
     for hash_entry in hash_iter.flatten() {

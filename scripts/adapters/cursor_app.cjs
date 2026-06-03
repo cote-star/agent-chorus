@@ -23,6 +23,28 @@ const fs = require('fs');
 const path = require('path');
 const { normalizePath } = require('./utils.cjs');
 
+// F10: node:sqlite is experimental and Node emits an ExperimentalWarning
+// the first time it's required (or sometimes asynchronously when first
+// used). The default warning listener writes to stderr, which spams every
+// chorus invocation that touches the cursor adapter. Replace the default
+// listener with one that filters out specifically the SQLite warning
+// while forwarding every other warning category through. Doing this once
+// at module load (before the require) is what makes it stick across both
+// synchronous and async emit paths.
+const NODE_DEFAULT_WARNING_LISTENER = process.listeners('warning').slice();
+process.removeAllListeners('warning');
+process.on('warning', (warning) => {
+  if (warning
+      && warning.name === 'ExperimentalWarning'
+      && typeof warning.message === 'string'
+      && warning.message.includes('SQLite')) {
+    return;
+  }
+  for (const listener of NODE_DEFAULT_WARNING_LISTENER) {
+    try { listener(warning); } catch (_err) { /* swallow */ }
+  }
+});
+
 // Optional dependency: Node 22.5+ ships node:sqlite as experimental.
 // Older Node returns null and the app surface is invisible (graceful).
 let nodeSqlite = null;

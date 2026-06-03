@@ -109,6 +109,38 @@ enum Commands {
     },
 
     /// Build a report from a handoff packet JSON file
+    #[command(long_about = "Build a report from a handoff packet JSON file.
+
+The handoff JSON must conform to this exact shape (unknown fields produce INVALID_HANDOFF):
+
+  {
+    \"mode\": \"analyze\",                         // required
+    \"task\": \"<short description>\",             // required
+    \"success_criteria\": [\"<criterion>\", ...],  // required, non-empty
+    \"sources\": [
+      {
+        \"agent\": \"claude\",                     //   required
+        \"session_id\": \"<id>\",                  //   OR set current_session:true
+        \"current_session\": true,               //   use latest for cwd
+        \"cwd\": \"<path>\",                       //   optional override
+        \"last_n\": 10                           //   optional N msgs/source
+      }
+    ],
+    \"constraints\": [\"<constraint>\", ...]       // optional
+  }
+
+Minimal copy-pasteable example (write to handoff.json):
+
+  {
+    \"mode\": \"analyze\",
+    \"task\": \"Compare claude and codex outputs\",
+    \"success_criteria\": [\"Identify agreements and contradictions\"],
+    \"sources\": [
+      {\"agent\": \"claude\", \"current_session\": true},
+      {\"agent\": \"codex\",  \"current_session\": true}
+    ]
+  }
+")]
     Report {
         /// Path to handoff JSON file
         #[arg(long)]
@@ -368,6 +400,17 @@ enum Commands {
     },
 
     /// Diagnostic checks across the agent-chorus install
+    #[command(long_about = "Diagnostic checks across the agent-chorus install.
+
+Severity levels:
+  pass  Check succeeded.
+  info  Informational; not a problem (e.g. optional feature not configured).
+  warn  Actionable; the install can run but something should be fixed.
+  fail  Broken/unrecoverable.
+
+Overall is elevated only by warn or fail; info does not elevate it.
+
+Checks: version, session directories, setup completeness, provider instruction wiring, session availability, context pack state, Claude Code plugin installation, update status, hooks path + pre-push.")]
     Doctor {
         /// Working directory to scope checks
         #[arg(long)]

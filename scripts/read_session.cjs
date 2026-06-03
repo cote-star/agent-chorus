@@ -3603,7 +3603,46 @@ function runTimeline(inputArgs) {
   }
 }
 
+// F11: reject unknown flags at dispatch. The hand-rolled parser
+// previously silently ignored typos like `--Json` or `--limt 3`, which
+// then quietly behaved as if the flag were absent. The Rust CLI (clap)
+// already fails closed on unknown flags; this brings Node to parity.
+//
+// agent-context is excluded because it has its own nested subcommand
+// parser (the args after `chorus agent-context <sub>` belong to that
+// sub). Same for trash-talk which takes a freeform agent list.
+const ALLOWED_FLAGS = {
+  read: ['--agent', '--id', '--cwd', '--chats-dir', '--last', '--include-user', '--tool-calls', '--history', '--format', '--metadata-only', '--audit-redactions', '--json'],
+  list: ['--agent', '--cwd', '--limit', '--json'],
+  search: ['--agent', '--cwd', '--limit', '--json'],
+  compare: ['--source', '--cwd', '--normalize', '--last', '--json'],
+  diff: ['--agent', '--from', '--to', '--last', '--cwd', '--json'],
+  report: ['--handoff', '--cwd', '--json'],
+  send: ['--from', '--to', '--message', '--cwd', '--json'],
+  messages: ['--agent', '--clear', '--cwd', '--json'],
+  checkpoint: ['--from', '--message', '--cwd', '--json'],
+  setup: ['--cwd', '--dry-run', '--force', '--context-pack', '--json'],
+  teardown: ['--cwd', '--dry-run', '--global', '--json'],
+  doctor: ['--cwd', '--json'],
+  summary: ['--agent', '--id', '--cwd', '--chats-dir', '--format', '--json'],
+  timeline: ['--agent', '--cwd', '--limit', '--format', '--json'],
+  relevance: ['--list', '--test', '--suggest', '--cwd', '--json'],
+};
+function validateFlags(cmd, inputArgs) {
+  const allowed = ALLOWED_FLAGS[cmd];
+  if (!allowed) return;
+  const set = new Set(allowed);
+  for (const arg of inputArgs) {
+    if (typeof arg !== 'string' || !arg.startsWith('--')) continue;
+    const name = arg.split('=')[0];
+    if (!set.has(name)) {
+      throw new Error(`Unknown flag for '${cmd}': ${name}. Run \`chorus ${cmd} --help\` to see allowed flags.`);
+    }
+  }
+}
+
 try {
+  validateFlags(command, args);
   if (command === 'read') {
     runRead(args);
   } else if (command === 'compare') {
