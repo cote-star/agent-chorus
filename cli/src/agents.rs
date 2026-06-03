@@ -2446,6 +2446,10 @@ pub fn cursor_base_dir_public() -> PathBuf {
 
 /// Count cursor-agent CLI transcripts matching `cwd` (capped to keep
 /// doctor cheap). Used by the per-surface doctor split.
+pub fn hermes_base_dir_public() -> PathBuf {
+    hermes_base_dir()
+}
+
 pub fn list_cursor_cli_sessions_count(cwd: Option<&str>, limit: usize) -> usize {
     let base_dir = cursor_base_dir();
     if !base_dir.exists() {

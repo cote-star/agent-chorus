@@ -28,7 +28,10 @@ const PROVIDERS: &[Provider] = &[
 // Agents enumerated for session-discovery checks. `cursor` is intentionally
 // absent: it has two surfaces (CLI JSONL and IDE SQLite) reported by the
 // `cursor_session_checks` helper below, not a single combined `sessions_cursor`.
-const ALL_AGENTS: &[&str] = &["codex", "gemini", "claude", "hermes"];
+// `hermes` is also absent: it's a provisional adapter whose presence we report
+// via the `hermes_surface_check` helper so we can downgrade to `info` when the
+// hermes data directory is absent (F12 parity with cursor).
+const ALL_AGENTS: &[&str] = &["codex", "gemini", "claude"];
 
 #[derive(Debug)]
 pub struct Check {
@@ -196,6 +199,8 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
     // not "are there sessions for this specific cwd?" — pass-with-no-cwd
     // matches Node's semantic.
     cursor_surface_checks(&mut checks);
+    hermes_surface_check(&mut checks);
+    env_override_checks(&mut checks);
 
     // Context pack state
     let pack_dir = cwd_path.join(".agent-context").join("current");
@@ -276,48 +281,57 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
 
     // Git hooks path + pre-push.
     //
-    // `context_pack_hooks_path` is informational: it reports the *effective*
-    // hooks path git will use (the configured value, or the default
-    // `.git/hooks` when unset). It does not warn — the truth check is
-    // `context_pack_pre_push` below.
-    //
-    // `context_pack_pre_push` looks for a pre-push hook at the effective
-    // path. Both `.githooks/pre-push` (chorus's preferred install target)
-    // and `.git/hooks/pre-push` (git's default) are valid installs; warning
-    // only fires when no pre-push is discoverable at the effective path.
-    //
-    // This split eliminates the prior self-contradiction where the path
-    // check warned about `.git/hooks` while the pre-push check happily
-    // reported the hook installed at the same location.
-    let configured = git_hooks_path(cwd_path);
-    let (effective_path, source) = match configured.as_deref() {
-        Some(hp) => (hp.to_string(), "configured"),
-        None => (".git/hooks".to_string(), "default"),
-    };
-    push(
-        &mut checks,
-        "context_pack_hooks_path",
-        "info",
-        &format!("Effective git hooks path: {} ({})", effective_path, source),
-    );
-    let pre_push = if Path::new(&effective_path).is_absolute() {
-        PathBuf::from(&effective_path).join("pre-push")
-    } else {
-        cwd_path.join(&effective_path).join("pre-push")
-    };
-    push(
-        &mut checks,
-        "context_pack_pre_push",
-        if pre_push.exists() { "pass" } else { "warn" },
-        &if pre_push.exists() {
-            format!("Found: {}", pre_push.display())
+    // F3: doctor reports the *local* health of this install in this cwd.
+    // If the cwd is not a git repository, neither hooks_path nor pre_push
+    // checks are meaningful — `git config core.hooksPath` would resolve to
+    // a global value (the user's `~/.git-hooks` or similar), and we'd
+    // truthfully report a hook as "installed" even though the cwd has no
+    // `.git/` at all. That's a local lie. Gate both checks on the cwd
+    // actually being a git repo and report `info` otherwise.
+    if is_git_repo(cwd_path) {
+        let configured = git_hooks_path(cwd_path);
+        let (effective_path, source) = match configured.as_deref() {
+            Some(hp) => (hp.to_string(), "configured"),
+            None => (".git/hooks".to_string(), "default"),
+        };
+        push(
+            &mut checks,
+            "context_pack_hooks_path",
+            "info",
+            &format!("Effective git hooks path: {} ({})", effective_path, source),
+        );
+        let pre_push = if Path::new(&effective_path).is_absolute() {
+            PathBuf::from(&effective_path).join("pre-push")
         } else {
-            format!(
-                "Missing: {} (run: chorus agent-context install-hooks)",
-                pre_push.display()
-            )
-        },
-    );
+            cwd_path.join(&effective_path).join("pre-push")
+        };
+        push(
+            &mut checks,
+            "context_pack_pre_push",
+            if pre_push.exists() { "pass" } else { "warn" },
+            &if pre_push.exists() {
+                format!("Found: {}", pre_push.display())
+            } else {
+                format!(
+                    "Missing: {} (run: chorus agent-context install-hooks)",
+                    pre_push.display()
+                )
+            },
+        );
+    } else {
+        push(
+            &mut checks,
+            "context_pack_hooks_path",
+            "info",
+            "cwd is not a git repository; git hooks checks skipped",
+        );
+        push(
+            &mut checks,
+            "context_pack_pre_push",
+            "info",
+            "cwd is not a git repository; pre-push hook check skipped",
+        );
+    }
 
     let has_fail = checks.iter().any(|c| c.status == "fail");
     let has_warn = checks.iter().any(|c| c.status == "warn");
@@ -337,42 +351,126 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
 }
 
 fn cursor_surface_checks(checks: &mut Vec<Check>) {
+    // F12: cursor-cli and Cursor-IDE surfaces are independently optional.
+    // When *neither* surface has sessions AND the surface's data directory
+    // doesn't exist, the user simply hasn't installed cursor-agent or the
+    // Cursor IDE in any usable way — that's intentional state, not broken
+    // state. Report `info` in that case. Report `warn` only when the data
+    // directory exists but contains zero sessions (meaning the user has
+    // the tool installed but produces no sessions — worth flagging).
     let cli_base = crate::agents::cursor_base_dir_public();
     let app_base = crate::cursor_app::cursor_app_base_dir();
 
-    let cli_has = if cli_base.exists() {
-        crate::agents::list_cursor_cli_sessions_count(None, 1) > 0
+    let (cli_status, cli_detail) = if !cli_base.exists() {
+        (
+            "info",
+            format!(
+                "cursor-agent CLI not configured (data directory absent: {})",
+                cli_base.display()
+            ),
+        )
+    } else if crate::agents::list_cursor_cli_sessions_count(None, 1) > 0 {
+        ("pass", "At least one cursor-agent CLI transcript discovered".to_string())
     } else {
-        false
+        (
+            "warn",
+            format!("No cursor-agent CLI transcripts discovered at {}", cli_base.display()),
+        )
     };
-    push(
-        checks,
-        "sessions_cursor_cli",
-        if cli_has { "pass" } else { "warn" },
-        if cli_has {
-            "At least one cursor-agent CLI transcript discovered".to_string()
-        } else {
-            format!("No cursor-agent CLI transcripts discovered at {}", cli_base.display())
-        }
-        .as_str(),
-    );
+    push(checks, "sessions_cursor_cli", cli_status, &cli_detail);
 
-    let app_has = if app_base.exists() {
-        !crate::cursor_app::collect_cursor_app_sessions(&app_base).is_empty()
+    let (app_status, app_detail) = if !app_base.exists() {
+        (
+            "info",
+            format!(
+                "Cursor IDE not configured (data directory absent: {})",
+                app_base.display()
+            ),
+        )
+    } else if !crate::cursor_app::collect_cursor_app_sessions(&app_base).is_empty() {
+        ("pass", "At least one Cursor IDE store.db discovered".to_string())
     } else {
-        false
+        (
+            "warn",
+            format!("No Cursor IDE store.db sessions discovered at {}", app_base.display()),
+        )
     };
-    push(
-        checks,
-        "sessions_cursor_app",
-        if app_has { "pass" } else { "warn" },
-        if app_has {
-            "At least one Cursor IDE store.db discovered".to_string()
-        } else {
-            format!("No Cursor IDE store.db sessions discovered at {}", app_base.display())
+    push(checks, "sessions_cursor_app", app_status, &app_detail);
+}
+
+fn hermes_surface_check(checks: &mut Vec<Check>) {
+    // F12 parity: hermes is provisional. When its data directory is
+    // absent, the user simply hasn't installed hermes — report `info`,
+    // not `warn`. `warn` is reserved for "directory exists but no
+    // sessions" (installed but quiet).
+    let base = crate::agents::hermes_base_dir_public();
+    let (status, detail) = if !base.exists() {
+        (
+            "info",
+            format!(
+                "Hermes not configured (data directory absent: {})",
+                base.display()
+            ),
+        )
+    } else {
+        match crate::adapters::get_adapter("hermes")
+            .and_then(|a| a.list_sessions(None, 1).ok())
+        {
+            Some(entries) if !entries.is_empty() => {
+                ("pass", "At least one hermes session discovered".to_string())
+            }
+            _ => (
+                "warn",
+                format!("No hermes sessions discovered at {}", base.display()),
+            ),
         }
-        .as_str(),
-    );
+    };
+    push(checks, "sessions_hermes", status, &detail);
+}
+
+/// F2: env-var overrides pointing at non-existent directories produce
+/// silent partial coverage that looks identical to a working install.
+/// Doctor explicitly flags these as `warn` so users know their env is
+/// misconfigured. The override variable name and the dangling path are
+/// both included in the detail for easy diagnosis.
+fn env_override_checks(checks: &mut Vec<Check>) {
+    let overrides = [
+        ("CHORUS_CODEX_SESSIONS_DIR", "codex"),
+        ("BRIDGE_CODEX_SESSIONS_DIR", "codex (legacy)"),
+        ("CHORUS_CLAUDE_PROJECTS_DIR", "claude"),
+        ("BRIDGE_CLAUDE_PROJECTS_DIR", "claude (legacy)"),
+        ("CHORUS_GEMINI_TMP_DIR", "gemini"),
+        ("BRIDGE_GEMINI_TMP_DIR", "gemini (legacy)"),
+        ("CHORUS_CURSOR_DATA_DIR", "cursor-agent CLI"),
+        ("BRIDGE_CURSOR_DATA_DIR", "cursor-agent CLI (legacy)"),
+        ("CHORUS_CURSOR_APP_DATA_DIR", "Cursor IDE"),
+        ("BRIDGE_CURSOR_APP_DATA_DIR", "Cursor IDE (legacy)"),
+    ];
+    for (var, label) in overrides.iter() {
+        if let Ok(value) = std::env::var(var) {
+            if value.is_empty() {
+                continue;
+            }
+            let expanded = if let Some(stripped) = value.strip_prefix("~/") {
+                dirs::home_dir()
+                    .map(|h| h.join(stripped))
+                    .unwrap_or_else(|| std::path::PathBuf::from(&value))
+            } else {
+                std::path::PathBuf::from(&value)
+            };
+            if !expanded.exists() {
+                push(
+                    checks,
+                    "env_override_dangling",
+                    "warn",
+                    &format!(
+                        "{} ({}) points at non-existent directory: {}. Sessions from this adapter will be invisible until the env var is cleared or the directory exists.",
+                        var, label, expanded.display()
+                    ),
+                );
+            }
+        }
+    }
 }
 
 fn push(checks: &mut Vec<Check>, id: &str, status: &str, detail: &str) {
@@ -428,6 +526,18 @@ fn claude_plugin_installed() -> bool {
         .args(["plugin", "list"])
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).contains("agent-chorus"))
+        .unwrap_or(false)
+}
+
+/// Whether the given directory (or any ancestor) is a git repository.
+/// Used to gate the hooks-path / pre-push checks so we never claim a
+/// hook is installed when the cwd has no `.git/` at all.
+fn is_git_repo(cwd: &Path) -> bool {
+    Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(cwd)
+        .output()
+        .map(|o| o.status.success())
         .unwrap_or(false)
 }
 

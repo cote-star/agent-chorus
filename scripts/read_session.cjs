@@ -2424,8 +2424,10 @@ function runDoctor(inputArgs) {
     );
   }
 
-  // Single-surface agents.
-  for (const agent of ['codex', 'gemini', 'claude', 'hermes']) {
+  // Single-surface agents. Hermes is handled below with surface
+  // detection (F12 parity with cursor) so it can report `info` when
+  // its data directory is absent.
+  for (const agent of ['codex', 'gemini', 'claude']) {
     try {
       const entries = listSessions(agent, cwd, 1);
       if (entries.length > 0) {
@@ -2438,37 +2440,104 @@ function runDoctor(inputArgs) {
     }
   }
 
-  // Cursor has two on-disk surfaces; report each independently so the
-  // doctor view tells the truth about what's actually reachable. The
-  // surface check answers "is this surface reachable from this host?",
-  // not "are there sessions for this specific cwd?" — passing null cwd
-  // matches the semantic Rust uses (presence-only check). Mirrors
-  // cli/src/doctor.rs::cursor_surface_checks.
+  // Cursor has two on-disk surfaces; report each independently. F12: a
+  // surface whose data directory does not exist at all is intentional
+  // un-installed state, not broken state — report `info` rather than
+  // `warn`. `warn` is reserved for "directory exists but zero sessions
+  // discoverable" (an installed tool that's not producing data, which
+  // is worth flagging). Mirrors cli/src/doctor.rs::cursor_surface_checks.
   try {
     const cursorAdapter = getAdapter('cursor');
     const cursorEntries = cursorAdapter.list(null, 50);
     const cliCount = cursorEntries.filter((e) => e && e.source === 'cli').length;
     const appCount = cursorEntries.filter((e) => e && e.source === 'app').length;
-    addCheck(
-      'sessions_cursor_cli',
-      cliCount > 0 ? 'pass' : 'warn',
-      cliCount > 0
-        ? 'At least one cursor-agent CLI transcript discovered'
-        : `No cursor-agent CLI transcripts discovered at ${normalizePath(process.env.CHORUS_CURSOR_DATA_DIR || '~/.cursor/projects')}`,
-    );
+    const cliBase = normalizePath(process.env.CHORUS_CURSOR_DATA_DIR || '~/.cursor/projects');
+    const cliBaseExists = fs.existsSync(cliBase);
+    if (!cliBaseExists) {
+      addCheck(
+        'sessions_cursor_cli',
+        'info',
+        `cursor-agent CLI not configured (data directory absent: ${cliBase})`,
+      );
+    } else if (cliCount > 0) {
+      addCheck('sessions_cursor_cli', 'pass', 'At least one cursor-agent CLI transcript discovered');
+    } else {
+      addCheck('sessions_cursor_cli', 'warn', `No cursor-agent CLI transcripts discovered at ${cliBase}`);
+    }
     const cursorApp = require('./adapters/cursor_app.cjs');
-    addCheck(
-      'sessions_cursor_app',
-      appCount > 0 ? 'pass' : 'warn',
-      appCount > 0
-        ? 'At least one Cursor IDE store.db discovered'
-        : (cursorApp.isSqliteAvailable()
-          ? `No Cursor IDE store.db sessions discovered at ${cursorApp.cursorAppBaseDir()}`
-          : 'Cursor IDE SQLite reader unavailable (requires Node >= 22.5 with node:sqlite)'),
-    );
+    const appBase = cursorApp.cursorAppBaseDir();
+    const appBaseExists = fs.existsSync(appBase);
+    if (!appBaseExists) {
+      addCheck(
+        'sessions_cursor_app',
+        'info',
+        `Cursor IDE not configured (data directory absent: ${appBase})`,
+      );
+    } else if (appCount > 0) {
+      addCheck('sessions_cursor_app', 'pass', 'At least one Cursor IDE store.db discovered');
+    } else {
+      addCheck(
+        'sessions_cursor_app',
+        'warn',
+        cursorApp.isSqliteAvailable()
+          ? `No Cursor IDE store.db sessions discovered at ${appBase}`
+          : 'Cursor IDE SQLite reader unavailable (requires Node >= 22.5 with node:sqlite)',
+      );
+    }
   } catch (error) {
     addCheck('sessions_cursor_cli', 'fail', error.message || String(error));
     addCheck('sessions_cursor_app', 'fail', error.message || String(error));
+  }
+
+  // Hermes is provisional (F12 parity with cursor surfaces). Report
+  // `info` when the data directory is absent.
+  try {
+    const hermesBase = normalizePath(process.env.CHORUS_HERMES_SESSIONS_DIR || '~/.hermes/sessions');
+    if (!fs.existsSync(hermesBase)) {
+      addCheck(
+        'sessions_hermes',
+        'info',
+        `Hermes not configured (data directory absent: ${hermesBase})`,
+      );
+    } else {
+      const entries = listSessions('hermes', cwd, 1);
+      if (entries.length > 0) {
+        addCheck('sessions_hermes', 'pass', 'At least one hermes session discovered');
+      } else {
+        addCheck('sessions_hermes', 'warn', `No hermes sessions discovered at ${hermesBase}`);
+      }
+    }
+  } catch (error) {
+    addCheck('sessions_hermes', 'fail', error.message || String(error));
+  }
+
+  // F2: env-var overrides pointing at non-existent directories produce
+  // silent partial coverage that looks identical to a working install.
+  // Flag these as `warn` so users know their env is misconfigured.
+  // Mirrors cli/src/doctor.rs::env_override_checks.
+  const envOverrides = [
+    ['CHORUS_CODEX_SESSIONS_DIR', 'codex'],
+    ['BRIDGE_CODEX_SESSIONS_DIR', 'codex (legacy)'],
+    ['CHORUS_CLAUDE_PROJECTS_DIR', 'claude'],
+    ['BRIDGE_CLAUDE_PROJECTS_DIR', 'claude (legacy)'],
+    ['CHORUS_GEMINI_TMP_DIR', 'gemini'],
+    ['BRIDGE_GEMINI_TMP_DIR', 'gemini (legacy)'],
+    ['CHORUS_CURSOR_DATA_DIR', 'cursor-agent CLI'],
+    ['BRIDGE_CURSOR_DATA_DIR', 'cursor-agent CLI (legacy)'],
+    ['CHORUS_CURSOR_APP_DATA_DIR', 'Cursor IDE'],
+    ['BRIDGE_CURSOR_APP_DATA_DIR', 'Cursor IDE (legacy)'],
+  ];
+  for (const [varName, label] of envOverrides) {
+    const value = process.env[varName];
+    if (!value) continue;
+    const expanded = normalizePath(value);
+    if (!fs.existsSync(expanded)) {
+      addCheck(
+        'env_override_dangling',
+        'warn',
+        `${varName} (${label}) points at non-existent directory: ${expanded}. Sessions from this adapter will be invisible until the env var is cleared or the directory exists.`,
+      );
+    }
   }
 
   const packDir = path.join(cwd, '.agent-context', 'current');
@@ -2542,41 +2611,64 @@ function runDoctor(inputArgs) {
     addCheck('claude_plugin', 'warn', 'claude CLI not found — Claude Code plugin status unknown');
   }
 
-  // Git hooks path + pre-push. `context_pack_hooks_path` is informational
-  // (reports the effective hooks path git will use — configured value or
-  // default `.git/hooks`). `context_pack_pre_push` is the truth check:
-  // warn only when no pre-push is discoverable at the effective path. This
-  // eliminates the prior self-contradiction where the path check warned
-  // about `.git/hooks` while pre-push happily reported the hook installed
-  // there. Mirrors Rust doctor.
-  let configuredHooksPath = null;
+  // Git hooks path + pre-push. F3: doctor reports the LOCAL health of
+  // this install in this cwd. If the cwd is not a git repo, neither
+  // check is meaningful — `git config core.hooksPath` would resolve to
+  // a global value and we'd truthfully report a hook as installed even
+  // though the cwd has no `.git/`. Gate both checks on the cwd being a
+  // git repo. Mirrors Rust doctor.
+  let cwdIsGitRepo = false;
   try {
-    configuredHooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+    execFileSync('git', ['rev-parse', '--git-dir'], {
       cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim() || null;
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    cwdIsGitRepo = true;
   } catch (_error) {
-    configuredHooksPath = null;
+    cwdIsGitRepo = false;
   }
-  const effectiveHooksPath = configuredHooksPath || '.git/hooks';
-  const hooksPathSource = configuredHooksPath ? 'configured' : 'default';
-  addCheck(
-    'context_pack_hooks_path',
-    'info',
-    `Effective git hooks path: ${effectiveHooksPath} (${hooksPathSource})`
-  );
-  const prePushPath = path.isAbsolute(effectiveHooksPath)
-    ? path.join(effectiveHooksPath, 'pre-push')
-    : path.join(cwd, effectiveHooksPath, 'pre-push');
-  const prePushExists = fs.existsSync(prePushPath);
-  addCheck(
-    'context_pack_pre_push',
-    prePushExists ? 'pass' : 'warn',
-    prePushExists
-      ? `Found: ${prePushPath}`
-      : `Missing: ${prePushPath} (run: chorus agent-context install-hooks)`
-  );
+
+  if (cwdIsGitRepo) {
+    let configuredHooksPath = null;
+    try {
+      configuredHooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }).trim() || null;
+    } catch (_error) {
+      configuredHooksPath = null;
+    }
+    const effectiveHooksPath = configuredHooksPath || '.git/hooks';
+    const hooksPathSource = configuredHooksPath ? 'configured' : 'default';
+    addCheck(
+      'context_pack_hooks_path',
+      'info',
+      `Effective git hooks path: ${effectiveHooksPath} (${hooksPathSource})`
+    );
+    const prePushPath = path.isAbsolute(effectiveHooksPath)
+      ? path.join(effectiveHooksPath, 'pre-push')
+      : path.join(cwd, effectiveHooksPath, 'pre-push');
+    const prePushExists = fs.existsSync(prePushPath);
+    addCheck(
+      'context_pack_pre_push',
+      prePushExists ? 'pass' : 'warn',
+      prePushExists
+        ? `Found: ${prePushPath}`
+        : `Missing: ${prePushPath} (run: chorus agent-context install-hooks)`
+    );
+  } else {
+    addCheck(
+      'context_pack_hooks_path',
+      'info',
+      'cwd is not a git repository; git hooks checks skipped'
+    );
+    addCheck(
+      'context_pack_pre_push',
+      'info',
+      'cwd is not a git repository; pre-push hook check skipped'
+    );
+  }
 
   const hasFail = checks.some(c => c.status === 'fail');
   const hasWarn = checks.some(c => c.status === 'warn');
