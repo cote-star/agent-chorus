@@ -198,14 +198,31 @@ function search(query, cwd, limit) {
       continue;
     }
 
+    // Codex stores messages in two nested envelopes:
+    //   - {type:"response_item", payload:{type:"message", role:"assistant",
+    //     content:[{text:"..."}, ...]}}
+    //   - {type:"event_msg", payload:{type:"agent_message", message:"..."}}
+    // The previous shape (role/content at top level) never existed in any
+    // real codex session and produced an unconditionally empty result for
+    // search — UAT P3. Aligns with parse path in read().
     let assistantText = '';
     try {
       const lines = readJsonlLines(f.path);
       for (const line of lines) {
         try {
           const obj = JSON.parse(line);
-          if (obj.role === 'assistant' && obj.content) {
-            assistantText += (typeof obj.content === 'string' ? obj.content : JSON.stringify(obj.content)) + '\n';
+          const envType = obj && obj.type;
+          const payload = obj && obj.payload;
+          if (envType === 'response_item' && payload
+              && payload.type === 'message' && payload.role === 'assistant') {
+            const t = extractText(payload.content);
+            if (t) assistantText += t + '\n';
+          } else if (envType === 'event_msg' && payload
+              && payload.type === 'agent_message') {
+            const t = typeof payload.message === 'string'
+              ? payload.message
+              : extractText(payload.message);
+            if (t) assistantText += t + '\n';
           }
         } catch (_e) { /* skip */ }
       }

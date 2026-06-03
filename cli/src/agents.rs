@@ -1207,10 +1207,40 @@ fn extract_assistant_text_jsonl(path: &Path, agent: &str) -> String {
         };
         match agent {
             "codex" => {
-                if json.get("role").and_then(|v| v.as_str()) == Some("assistant") {
-                    if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
-                        text.push_str(content);
-                        text.push('\n');
+                // Codex stores messages in two nested envelopes:
+                //   - {type:"response_item", payload:{type:"message", role:"assistant",
+                //     content:[{text:"..."}, ...]}}
+                //   - {type:"event_msg", payload:{type:"agent_message", message:"..."}}
+                // The previous shape (role/content at top level) never existed in any
+                // real codex session and produced an unconditionally empty result
+                // for search — that was UAT P3.
+                let envelope_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let payload = json.get("payload");
+                if envelope_type == "response_item" {
+                    if let Some(p) = payload {
+                        if p.get("type").and_then(|v| v.as_str()) == Some("message")
+                            && p.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                        {
+                            let t = extract_text(&p["content"]);
+                            if !t.is_empty() {
+                                text.push_str(&t);
+                                text.push('\n');
+                            }
+                        }
+                    }
+                } else if envelope_type == "event_msg" {
+                    if let Some(p) = payload {
+                        if p.get("type").and_then(|v| v.as_str()) == Some("agent_message") {
+                            let t = if let Some(s) = p.get("message").and_then(|v| v.as_str()) {
+                                s.to_string()
+                            } else {
+                                extract_text(&p["message"])
+                            };
+                            if !t.is_empty() {
+                                text.push_str(&t);
+                                text.push('\n');
+                            }
+                        }
                     }
                 }
             }

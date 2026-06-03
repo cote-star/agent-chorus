@@ -330,6 +330,45 @@ run_report_case
 run_list_case codex Codex /workspace/demo
 run_search_case codex Codex "Codex fixture assistant output." /workspace/demo
 
+# N2 regression: search extractor must see the same assistant text that
+# read sees. Pre-fix, codex search returned empty because it walked a
+# top-level role/content schema that codex sessions don't use (the real
+# format is response_item.payload.message). Asserts the invariant
+# read(text) ⊆ search(text-tokens) for both runtimes.
+run_search_read_parity() {
+  local agent="$1"
+  local id="$2"
+  local query="$3"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  node "$ROOT/scripts/read_session.cjs" search "$query" --agent="$agent" --json > "$TMP_DIR/srp-${agent}-node.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- search "$query" --agent "$agent" --json > "$TMP_DIR/srp-${agent}-rust.json"
+
+  for runtime in node rust; do
+    local out="$TMP_DIR/srp-${agent}-${runtime}.json"
+    if ! node -e "
+      const rows = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+      const hit = rows.find(r => r.session_id && r.session_id.includes(process.argv[2]));
+      if (!hit) { console.error('FAIL search-read-parity ${agent} ${runtime}: search did not surface ${id} for query ${query}'); process.exit(1); }
+    " "$out" "$id"; then
+      exit 1
+    fi
+  done
+  echo "PASS search-read-parity ${agent} (read(text) ⊆ search(text-tokens))"
+}
+
+run_search_read_parity codex codex-fixture "Codex fixture assistant output"
+
 # --- Gemini list parity: proves .jsonl files are indexed and cwd is not null ---
 #
 # The Gemini list path had two pre-existing bugs fixed in v0.14.0:
