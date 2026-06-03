@@ -28,17 +28,17 @@
     {
       "detail": "Missing provider instruction file: __PATH__",
       "id": "integration_claude",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing provider instruction file: __PATH__",
       "id": "integration_codex",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing provider instruction file: __PATH__",
       "id": "integration_gemini",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "No claude sessions discovered",
@@ -68,22 +68,22 @@
     {
       "detail": "Missing: __PATH__",
       "id": "setup_intents",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing: __PATH__",
       "id": "snippet_claude",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing: __PATH__",
       "id": "snippet_codex",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing: __PATH__",
       "id": "snippet_gemini",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "__VERSION__",

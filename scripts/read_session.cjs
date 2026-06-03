@@ -2198,21 +2198,33 @@ function runDoctor(inputArgs) {
     addCheck(id, fs.existsSync(dirPath) ? 'pass' : 'warn', fs.existsSync(dirPath) ? `Found: ${dirPath}` : `Missing: ${dirPath}`);
   }
 
+  // Setup scaffolding. The integration/snippet/intents checks emit `info`
+  // rather than `warn` when the repo has not been initialized via
+  // `chorus setup` — un-setup is intentional state, not broken state.
+  //
+  // Initialization is detected by the presence of either INTENTS.md or
+  // the providers/ directory under .agent-chorus/. The bare .agent-chorus/
+  // directory alone is *not* a setup signal: the messaging subsystem
+  // creates .agent-chorus/messages/ on first `send`, independent of any
+  // setup step. Mirrors Rust doctor.
   const setupRoot = path.join(cwd, '.agent-chorus');
+  const setupInitialized = fs.existsSync(path.join(setupRoot, 'INTENTS.md'))
+    || fs.existsSync(path.join(setupRoot, 'providers'));
+  const absentStatus = setupInitialized ? 'warn' : 'info';
   const intentsPath = path.join(setupRoot, 'INTENTS.md');
-  addCheck('setup_intents', fs.existsSync(intentsPath) ? 'pass' : 'warn', fs.existsSync(intentsPath) ? `Found: ${intentsPath}` : `Missing: ${intentsPath}`);
+  addCheck('setup_intents', fs.existsSync(intentsPath) ? 'pass' : absentStatus, fs.existsSync(intentsPath) ? `Found: ${intentsPath}` : `Missing: ${intentsPath}`);
 
   for (const provider of setupProviders) {
     const snippetPath = path.join(setupRoot, 'providers', `${provider.agent}.md`);
     addCheck(
       `snippet_${provider.agent}`,
-      fs.existsSync(snippetPath) ? 'pass' : 'warn',
+      fs.existsSync(snippetPath) ? 'pass' : absentStatus,
       fs.existsSync(snippetPath) ? `Found: ${snippetPath}` : `Missing: ${snippetPath}`
     );
 
     const targetPath = path.join(cwd, provider.targetFile);
     if (!fs.existsSync(targetPath)) {
-      addCheck(`integration_${provider.agent}`, 'warn', `Missing provider instruction file: ${targetPath}`);
+      addCheck(`integration_${provider.agent}`, absentStatus, `Missing provider instruction file: ${targetPath}`);
       continue;
     }
 
@@ -2220,7 +2232,7 @@ function runDoctor(inputArgs) {
     const marker = `agent-chorus:${provider.agent}:start`;
     addCheck(
       `integration_${provider.agent}`,
-      content.includes(marker) ? 'pass' : 'warn',
+      content.includes(marker) ? 'pass' : absentStatus,
       content.includes(marker) ? `Managed block present in ${targetPath}` : `Managed block missing in ${targetPath}`
     );
   }
@@ -2309,39 +2321,41 @@ function runDoctor(inputArgs) {
     addCheck('claude_plugin', 'warn', 'claude CLI not found — Claude Code plugin status unknown');
   }
 
-  let hooksPath = null;
+  // Git hooks path + pre-push. `context_pack_hooks_path` is informational
+  // (reports the effective hooks path git will use — configured value or
+  // default `.git/hooks`). `context_pack_pre_push` is the truth check:
+  // warn only when no pre-push is discoverable at the effective path. This
+  // eliminates the prior self-contradiction where the path check warned
+  // about `.git/hooks` while pre-push happily reported the hook installed
+  // there. Mirrors Rust doctor.
+  let configuredHooksPath = null;
   try {
-    hooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
+    configuredHooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim() || null;
   } catch (_error) {
-    hooksPath = null;
+    configuredHooksPath = null;
   }
-
-  if (hooksPath) {
-    addCheck(
-      'context_pack_hooks_path',
-      hooksPath === '.githooks' ? 'pass' : 'warn',
-      hooksPath === '.githooks'
-        ? 'Git hooks path set to .githooks'
-        : `Git hooks path is ${hooksPath} (expected .githooks for context-pack pre-push automation)`
-    );
-    const prePushPath = path.isAbsolute(hooksPath)
-      ? path.join(hooksPath, 'pre-push')
-      : path.join(cwd, hooksPath, 'pre-push');
-    const prePushExists = fs.existsSync(prePushPath);
-    addCheck(
-      'context_pack_pre_push',
-      prePushExists ? 'pass' : 'warn',
-      prePushExists
-        ? `Found: ${prePushPath}`
-        : `Missing: ${prePushPath} (run: chorus context-pack install-hooks)`
-    );
-  } else {
-    addCheck('context_pack_hooks_path', 'warn', 'Git hooks path not configured');
-  }
+  const effectiveHooksPath = configuredHooksPath || '.git/hooks';
+  const hooksPathSource = configuredHooksPath ? 'configured' : 'default';
+  addCheck(
+    'context_pack_hooks_path',
+    'info',
+    `Effective git hooks path: ${effectiveHooksPath} (${hooksPathSource})`
+  );
+  const prePushPath = path.isAbsolute(effectiveHooksPath)
+    ? path.join(effectiveHooksPath, 'pre-push')
+    : path.join(cwd, effectiveHooksPath, 'pre-push');
+  const prePushExists = fs.existsSync(prePushPath);
+  addCheck(
+    'context_pack_pre_push',
+    prePushExists ? 'pass' : 'warn',
+    prePushExists
+      ? `Found: ${prePushPath}`
+      : `Missing: ${prePushPath} (run: chorus agent-context install-hooks)`
+  );
 
   const hasFail = checks.some(c => c.status === 'fail');
   const hasWarn = checks.some(c => c.status === 'warn');

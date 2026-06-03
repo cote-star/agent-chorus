@@ -93,13 +93,24 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
         &fmt_existence(&gemini_base),
     );
 
-    // Setup scaffolding
+    // Setup scaffolding. The integration/snippet/intents checks emit `info`
+    // rather than `warn` when the repo has not been initialized via
+    // `chorus setup` — un-setup is intentional state, not broken state.
+    //
+    // Initialization is detected by the presence of either INTENTS.md or
+    // the providers/ directory under .agent-chorus/. The bare .agent-chorus/
+    // directory alone is *not* a setup signal: the messaging subsystem
+    // creates .agent-chorus/messages/ for inbox storage on first `send`,
+    // independent of any setup step.
     let setup_root = cwd_path.join(".agent-chorus");
+    let setup_initialized = setup_root.join("INTENTS.md").exists()
+        || setup_root.join("providers").exists();
+    let absent_status = if setup_initialized { "warn" } else { "info" };
     let intents_path = setup_root.join("INTENTS.md");
     push(
         &mut checks,
         "setup_intents",
-        if intents_path.exists() { "pass" } else { "warn" },
+        if intents_path.exists() { "pass" } else { absent_status },
         &fmt_existence(&intents_path),
     );
 
@@ -111,7 +122,7 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
         push(
             &mut checks,
             &format!("snippet_{}", provider.agent),
-            if snippet_path.exists() { "pass" } else { "warn" },
+            if snippet_path.exists() { "pass" } else { absent_status },
             &fmt_existence(&snippet_path),
         );
 
@@ -120,7 +131,7 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
             push(
                 &mut checks,
                 &format!("integration_{}", provider.agent),
-                "warn",
+                absent_status,
                 &format!("Missing provider instruction file: {}", target_path.display()),
             );
             continue;
@@ -133,7 +144,7 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
         push(
             &mut checks,
             &format!("integration_{}", provider.agent),
-            if present { "pass" } else { "warn" },
+            if present { "pass" } else { absent_status },
             &if present {
                 format!("Managed block present in {}", target_path.display())
             } else {
@@ -254,49 +265,50 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
         );
     }
 
-    // Git hooks path + pre-push
-    let hooks_path = git_hooks_path(cwd_path);
-    match hooks_path {
-        Some(ref hp) => {
-            push(
-                &mut checks,
-                "context_pack_hooks_path",
-                if hp == ".githooks" { "pass" } else { "warn" },
-                &if hp == ".githooks" {
-                    "Git hooks path set to .githooks".to_string()
-                } else {
-                    format!(
-                        "Git hooks path is {} (expected .githooks for context-pack pre-push automation)",
-                        hp
-                    )
-                },
-            );
-            let pre_push = if Path::new(hp).is_absolute() {
-                PathBuf::from(hp).join("pre-push")
-            } else {
-                cwd_path.join(hp).join("pre-push")
-            };
-            push(
-                &mut checks,
-                "context_pack_pre_push",
-                if pre_push.exists() { "pass" } else { "warn" },
-                &if pre_push.exists() {
-                    format!("Found: {}", pre_push.display())
-                } else {
-                    format!(
-                        "Missing: {} (run: chorus agent-context install-hooks)",
-                        pre_push.display()
-                    )
-                },
-            );
-        }
-        None => push(
-            &mut checks,
-            "context_pack_hooks_path",
-            "warn",
-            "Git hooks path not configured",
-        ),
-    }
+    // Git hooks path + pre-push.
+    //
+    // `context_pack_hooks_path` is informational: it reports the *effective*
+    // hooks path git will use (the configured value, or the default
+    // `.git/hooks` when unset). It does not warn — the truth check is
+    // `context_pack_pre_push` below.
+    //
+    // `context_pack_pre_push` looks for a pre-push hook at the effective
+    // path. Both `.githooks/pre-push` (chorus's preferred install target)
+    // and `.git/hooks/pre-push` (git's default) are valid installs; warning
+    // only fires when no pre-push is discoverable at the effective path.
+    //
+    // This split eliminates the prior self-contradiction where the path
+    // check warned about `.git/hooks` while the pre-push check happily
+    // reported the hook installed at the same location.
+    let configured = git_hooks_path(cwd_path);
+    let (effective_path, source) = match configured.as_deref() {
+        Some(hp) => (hp.to_string(), "configured"),
+        None => (".git/hooks".to_string(), "default"),
+    };
+    push(
+        &mut checks,
+        "context_pack_hooks_path",
+        "info",
+        &format!("Effective git hooks path: {} ({})", effective_path, source),
+    );
+    let pre_push = if Path::new(&effective_path).is_absolute() {
+        PathBuf::from(&effective_path).join("pre-push")
+    } else {
+        cwd_path.join(&effective_path).join("pre-push")
+    };
+    push(
+        &mut checks,
+        "context_pack_pre_push",
+        if pre_push.exists() { "pass" } else { "warn" },
+        &if pre_push.exists() {
+            format!("Found: {}", pre_push.display())
+        } else {
+            format!(
+                "Missing: {} (run: chorus agent-context install-hooks)",
+                pre_push.display()
+            )
+        },
+    );
 
     let has_fail = checks.iter().any(|c| c.status == "fail");
     let has_warn = checks.iter().any(|c| c.status == "warn");
