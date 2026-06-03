@@ -485,6 +485,12 @@ fn make_managed_block(agent: &str, snippet_rel_path: &str) -> String {
         "When a user asks for another agent status (for example \"What is Claude doing?\"),".to_string(),
         "run Agent Chorus commands first and answer with evidence from session output.".to_string(),
         String::new(),
+        "**History contract (READ FIRST — violating this costs 2.5x tokens):**".to_string(),
+        "- `chorus read` defaults to `--history=on-demand` — latest session for the cwd ONLY.".to_string(),
+        "- Do NOT loop through prior sessions at session start. The field study measured a 2.5x token inflation when agents eagerly read history.".to_string(),
+        "- When you need historical context, call `chorus list / timeline / search` EXPLICITLY. That is the on-demand recall mechanism.".to_string(),
+        "- `--history=eager` is reserved for a future multi-session merge and currently emits a warning; do not depend on it.".to_string(),
+        String::new(),
         "Session routing and defaults:".to_string(),
         "1. For status checks like \"What is Claude doing?\", start with `chorus read --agent <target-agent> --cwd <project-path> --include-user --json` (omit `--id` for latest).".to_string(),
         "2. For plain handoff/output checks, use `chorus read --agent <target-agent> --cwd <project-path> --json`.".to_string(),
@@ -503,11 +509,7 @@ fn make_managed_block(agent: &str, snippet_rel_path: &str) -> String {
         "- `chorus send --from <agent> --to <agent> --message \"<text>\" --cwd <project-path>`".to_string(),
         "- `chorus messages --agent <agent> --cwd <project-path> --json`".to_string(),
         String::new(),
-        "History contract (do NOT eagerly read multiple prior sessions):".to_string(),
-        "- `chorus read` defaults to `--history=on-demand` — latest session for the cwd ONLY.".to_string(),
-        "- Do NOT loop through prior sessions at session start. The field study measured a 2.5x token inflation when agents eagerly read history. Honor on-demand by default.".to_string(),
-        "- When you genuinely need historical context, call `chorus list / timeline / search` explicitly. That's the on-demand recall mechanism.".to_string(),
-        "- `--history=eager` is reserved for a future multi-session merge and currently emits a warning; do not depend on it.".to_string(),
+        "(History contract is at the top of this block — see above.)".to_string(),
         String::new(),
         "If command syntax is unclear, run `chorus --help`.".to_string(),
         format!("<!-- {}:end -->", marker),
@@ -603,11 +605,15 @@ fn is_system_directory(dir: &Path) -> bool {
 
 fn relative_path(base: &Path, target: &Path) -> Option<String> {
     let base = base.canonicalize().unwrap_or_else(|_| base.to_path_buf());
-    // target may not exist yet — canonicalize only components that do, else fall back.
+    // target may not exist yet (we're about to create it). Canonicalize the
+    // nearest existing ancestor and re-append the missing tail, so the
+    // result shares a canonical prefix with `base`. Without this, when
+    // `base` is canonicalized through a symlink (e.g. macOS /tmp →
+    // /private/tmp) and `target` still has the symlink form, the common
+    // prefix is empty and we end up with `../../../tmp/<path>` instead of
+    // a clean relative path.
     let target_buf = target.to_path_buf();
-    let target = target_buf
-        .canonicalize()
-        .unwrap_or_else(|_| target_buf.clone());
+    let target = canonicalize_via_parent(&target_buf);
     let base_components: Vec<_> = base.components().collect();
     let target_components: Vec<_> = target.components().collect();
     // Find common prefix
@@ -628,6 +634,21 @@ fn relative_path(base: &Path, target: &Path) -> Option<String> {
     } else {
         Some(parts.join("/"))
     }
+}
+
+/// Return a canonical-ish PathBuf for a target that may not yet exist.
+/// Walks up to the nearest existing ancestor, canonicalizes that, and
+/// re-appends the remaining tail. Returns the original path verbatim if
+/// no ancestor exists or canonicalization fails.
+fn canonicalize_via_parent(target: &Path) -> PathBuf {
+    let mut ancestors = target.ancestors();
+    while let Some(ancestor) = ancestors.next() {
+        if let Ok(canonical) = ancestor.canonicalize() {
+            let tail = target.strip_prefix(ancestor).unwrap_or(Path::new(""));
+            return canonical.join(tail);
+        }
+    }
+    target.to_path_buf()
 }
 
 fn is_command_available(cmd: &str) -> bool {

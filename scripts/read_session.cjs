@@ -573,6 +573,12 @@ function makeManagedBlock(provider, snippetRelPath) {
     'When a user asks for another agent status (for example "What is Claude doing?"),',
     'run Agent Chorus commands first and answer with evidence from session output.',
     '',
+    '**History contract (READ FIRST — violating this costs 2.5x tokens):**',
+    '- `chorus read` defaults to `--history=on-demand` — latest session for the cwd ONLY.',
+    '- Do NOT loop through prior sessions at session start. The field study measured a 2.5x token inflation when agents eagerly read history.',
+    '- When you need historical context, call `chorus list / timeline / search` EXPLICITLY. That is the on-demand recall mechanism.',
+    '- `--history=eager` is reserved for a future multi-session merge and currently emits a warning; do not depend on it.',
+    '',
     'Session routing and defaults:',
     '1. For status checks like "What is Claude doing?", start with `chorus read --agent <target-agent> --cwd <project-path> --include-user --json` (omit `--id` for latest).',
     '2. For plain handoff/output checks, use `chorus read --agent <target-agent> --cwd <project-path> --json`.',
@@ -591,11 +597,7 @@ function makeManagedBlock(provider, snippetRelPath) {
     '- `chorus send --from <agent> --to <agent> --message "<text>" --cwd <project-path>`',
     '- `chorus messages --agent <agent> --cwd <project-path> --json`',
     '',
-    'History contract (do NOT eagerly read multiple prior sessions):',
-    '- `chorus read` defaults to `--history=on-demand` — latest session for the cwd ONLY.',
-    '- Do NOT loop through prior sessions at session start. The field study measured a 2.5x token inflation when agents eagerly read history. Honor on-demand by default.',
-    '- When you genuinely need historical context, call `chorus list / timeline / search` explicitly. That\'s the on-demand recall mechanism.',
-    '- `--history=eager` is reserved for a future multi-session merge and currently emits a warning; do not depend on it.',
+    '(History contract is at the top of this block — see above.)',
     '',
     'If command syntax is unclear, run `chorus --help`.',
     `<!-- ${marker}:end -->`,
@@ -2547,6 +2549,46 @@ function runDoctor(inputArgs) {
     addCheck('sessions_hermes', 'fail', error.message || String(error));
   }
 
+  // R2-fix: stale-snippet sentinel. A provider snippet or managed block
+  // that exists but predates the v0.16.0 history contract silently
+  // leaves consumer agents without the on-demand rule. `chorus setup
+  // --force` refreshes them; doctor surfaces the gap. Mirrors Rust
+  // stale_snippet_checks.
+  const stalenessProbe = 'History contract';
+  const providersDir = path.join(setupRoot, 'providers');
+  for (const agent of ['codex', 'claude', 'gemini']) {
+    const snippetPath = path.join(providersDir, `${agent}.md`);
+    if (!fs.existsSync(snippetPath)) continue;
+    let content = '';
+    try { content = fs.readFileSync(snippetPath, 'utf-8'); } catch (_) { continue; }
+    if (!content.includes(stalenessProbe)) {
+      addCheck(
+        `snippet_${agent}_stale`,
+        'warn',
+        `${snippetPath} predates the v0.16.0 history contract. Run \`chorus setup --force\` to refresh.`,
+      );
+    }
+  }
+  const integrationFiles = [
+    ['codex', path.join(cwd, 'AGENTS.md')],
+    ['claude', path.join(cwd, 'CLAUDE.md')],
+    ['gemini', path.join(cwd, 'GEMINI.md')],
+  ];
+  for (const [agent, intgPath] of integrationFiles) {
+    if (!fs.existsSync(intgPath)) continue;
+    let content = '';
+    try { content = fs.readFileSync(intgPath, 'utf-8'); } catch (_) { continue; }
+    const marker = `agent-chorus:${agent}:start`;
+    if (!content.includes(marker)) continue;
+    if (!content.includes(stalenessProbe)) {
+      addCheck(
+        `integration_${agent}_stale`,
+        'warn',
+        `Managed block in ${intgPath} predates the v0.16.0 history contract. Run \`chorus setup --force\` to refresh.`,
+      );
+    }
+  }
+
   // F2: env-var overrides pointing at non-existent directories produce
   // silent partial coverage that looks identical to a working install.
   // Flag these as `warn` so users know their env is misconfigured.
@@ -3627,6 +3669,15 @@ const ALLOWED_FLAGS = {
   summary: ['--agent', '--id', '--cwd', '--chats-dir', '--format', '--json'],
   timeline: ['--agent', '--cwd', '--limit', '--format', '--json'],
   relevance: ['--list', '--test', '--suggest', '--cwd', '--json'],
+  // trash-talk is an easter-egg and takes no documented flags. Validating
+  // here ensures users don't accidentally pass a real command's flag and
+  // get silent garbage.
+  'trash-talk': ['--cwd', '--json'],
+  // agent-context dispatches into its own subparser; the top-level flags
+  // we know about are --cwd (passed through) and --json. The nested
+  // subcommands (build/seal/etc.) validate their own flag sets.
+  'agent-context': ['--cwd', '--json', '--reason', '--base', '--head', '--force-snapshot', '--force', '--pack-dir', '--local-ref', '--local-sha', '--remote-ref', '--remote-sha', '--snapshot', '--latest-good', '--ci', '--enforce-separate-commits'],
+  'context-pack': ['--cwd', '--json', '--reason', '--base', '--head', '--force-snapshot', '--force', '--pack-dir', '--local-ref', '--local-sha', '--remote-ref', '--remote-sha', '--snapshot', '--latest-good', '--ci', '--enforce-separate-commits'],
 };
 function validateFlags(cmd, inputArgs) {
   const allowed = ALLOWED_FLAGS[cmd];

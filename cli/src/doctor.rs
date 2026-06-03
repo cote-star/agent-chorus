@@ -201,6 +201,7 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
     cursor_surface_checks(&mut checks);
     hermes_surface_check(&mut checks);
     env_override_checks(&mut checks);
+    stale_snippet_checks(&mut checks, cwd_path);
 
     // Context pack state
     let pack_dir = cwd_path.join(".agent-context").join("current");
@@ -396,6 +397,70 @@ fn cursor_surface_checks(checks: &mut Vec<Check>) {
         )
     };
     push(checks, "sessions_cursor_app", app_status, &app_detail);
+}
+
+/// Stale-snippet sentinel: a provider snippet or managed block that exists
+/// but predates the current contract (no "History contract" section) is
+/// silently leaving consumer agents without the on-demand history rule.
+/// `chorus setup --force` refreshes them; doctor surfaces the gap so the
+/// user knows to do that.
+fn stale_snippet_checks(checks: &mut Vec<Check>, cwd: &Path) {
+    // Look for the load-bearing phrase introduced in v0.16.0. If the file
+    // exists but lacks it, the consumer is on a pre-contract snippet.
+    let probe = "History contract";
+    let providers_dir = cwd.join(".agent-chorus").join("providers");
+    let provider_files = [
+        ("codex", providers_dir.join("codex.md")),
+        ("claude", providers_dir.join("claude.md")),
+        ("gemini", providers_dir.join("gemini.md")),
+    ];
+    for (agent, path) in &provider_files {
+        if !path.exists() {
+            continue;
+        }
+        let stale = std::fs::read_to_string(path)
+            .map(|s| !s.contains(probe))
+            .unwrap_or(false);
+        if stale {
+            push(
+                checks,
+                &format!("snippet_{}_stale", agent),
+                "warn",
+                &format!(
+                    "{} predates the v0.16.0 history contract. Run `chorus setup --force` to refresh.",
+                    path.display()
+                ),
+            );
+        }
+    }
+    // Managed-block check: same probe, in the integration files.
+    let managed_files = [
+        ("codex", cwd.join("AGENTS.md")),
+        ("claude", cwd.join("CLAUDE.md")),
+        ("gemini", cwd.join("GEMINI.md")),
+    ];
+    for (agent, path) in &managed_files {
+        if !path.exists() {
+            continue;
+        }
+        let marker = format!("agent-chorus:{}:start", agent);
+        if let Ok(content) = std::fs::read_to_string(path) {
+            if !content.contains(&marker) {
+                continue; // no managed block; integration check handles this
+            }
+            if !content.contains(probe) {
+                push(
+                    checks,
+                    &format!("integration_{}_stale", agent),
+                    "warn",
+                    &format!(
+                        "Managed block in {} predates the v0.16.0 history contract. Run `chorus setup --force` to refresh.",
+                        path.display()
+                    ),
+                );
+            }
+        }
+    }
 }
 
 fn hermes_surface_check(checks: &mut Vec<Check>) {

@@ -1366,10 +1366,24 @@ fn compute_match_snippet(text: &str, query: &str) -> Option<String> {
 }
 
 /// Hierarchical CWD matching: exact match, ancestor, or descendant.
+///
+/// Uses string-based prefix with an explicit trailing separator to match
+/// Node's `cwdMatchesProject` (scripts/adapters/utils.cjs). The earlier
+/// version used `Path::starts_with`, which is component-wise and treats
+/// root `/` as a prefix of every absolute path — meaning a session whose
+/// recorded cwd was just `/` would silently match every `--cwd <X>`
+/// request and short-circuit the cwd-mismatch fallback. The trailing-`/`
+/// rule rejects that case cleanly while still permitting genuine
+/// ancestor/descendant relationships in a project tree.
 fn cwd_matches_project(session_cwd: &Path, expected_cwd: &Path) -> bool {
-    session_cwd == expected_cwd
-        || expected_cwd.starts_with(session_cwd)
-        || session_cwd.starts_with(expected_cwd)
+    let a = session_cwd.to_string_lossy();
+    let b = expected_cwd.to_string_lossy();
+    if a == b {
+        return true;
+    }
+    let a_pref = format!("{}/", a);
+    let b_pref = format!("{}/", b);
+    b.starts_with(&a_pref) || a.starts_with(&b_pref)
 }
 
 fn find_latest_by_cwd(

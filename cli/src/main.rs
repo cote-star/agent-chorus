@@ -206,6 +206,18 @@ Minimal copy-pasteable example (write to handoff.json):
     },
 
     /// Initialize agent-chorus in the current directory (provider blocks, scaffolding, optional context-pack)
+    #[command(long_about = "Initialize agent-chorus in the current directory.
+
+setup creates or updates:
+  CLAUDE.md / AGENTS.md / GEMINI.md  chorus managed blocks for agent wiring
+  .agent-chorus/                      provider snippets and intent contract
+  .gitignore                          adds .agent-chorus/ to prevent tracking
+  claude plugin                       auto-installs Claude Code plugin if claude CLI is present
+
+Run teardown to reverse all per-project operations.
+
+The Claude Code plugin is global — uninstall separately if desired:
+  claude plugin uninstall agent-chorus")]
     Setup {
         /// Working directory (default: current directory)
         #[arg(long)]
