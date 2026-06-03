@@ -2891,14 +2891,30 @@ fn gemini_not_found_message(base_message: &str) -> String {
     }
 }
 
+/// Legacy Cursor application-support root where SQLite `workspaceStorage` lives.
+/// Distinct from `cursor_base_dir()`, which now points at `~/.cursor/projects`
+/// for cursor-agent CLI transcripts.
+fn cursor_legacy_storage_dir() -> PathBuf {
+    std::env::var("CHORUS_CURSOR_LEGACY_DIR")
+        .ok()
+        .and_then(|value| expand_home(&value))
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                dirs::home_dir()
+                    .map(|h| h.join("Library/Application Support/Cursor"))
+                    .unwrap_or_else(|| PathBuf::from("~/Library/Application Support/Cursor"))
+            } else {
+                expand_home("~/.cursor").unwrap_or_else(|| PathBuf::from("~/.cursor"))
+            }
+        })
+}
+
 /// Probe the Cursor workspace storage for SQLite `state.vscdb` files — the
 /// format used by modern Cursor (VS Code fork) to persist chat/composer data.
-/// chorus's current cursor reader only scans for JSON/JSONL files whose names
-/// match `chat|composer|conversation`, which never hits the SQLite rows, so
-/// a Cursor install with active chats still returns NOT_FOUND. When `.vscdb`
-/// files are present we return a richer hint so users know why.
+/// When no cursor-agent transcripts are found but `.vscdb` files exist under
+/// the legacy application-support tree, return a richer NOT_FOUND hint.
 pub(crate) fn detect_cursor_vscdb_fallback_hint() -> Option<String> {
-    let base = cursor_base_dir();
+    let base = cursor_legacy_storage_dir();
     if !base.exists() {
         return None;
     }
@@ -3372,9 +3388,9 @@ mod tests {
         std::fs::write(ws1.join("state.vscdb-wal"), b"journal").unwrap(); // sibling, ignored
         std::fs::write(ws2.join("state.vscdb"), b"sqlite2").unwrap();
 
-        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        std::env::set_var("CHORUS_CURSOR_LEGACY_DIR", &fixture);
         let hint = detect_cursor_vscdb_fallback_hint();
-        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+        std::env::remove_var("CHORUS_CURSOR_LEGACY_DIR");
 
         let hint = hint.expect("expected a vscdb hint when state.vscdb files are present");
         assert!(hint.contains("SQLite state.vscdb"), "hint missing SQLite phrase: {}", hint);
@@ -3395,9 +3411,9 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(ws.join("workspace.json"), b"{}").unwrap();
 
-        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        std::env::set_var("CHORUS_CURSOR_LEGACY_DIR", &fixture);
         let hint = detect_cursor_vscdb_fallback_hint();
-        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+        std::env::remove_var("CHORUS_CURSOR_LEGACY_DIR");
 
         assert!(hint.is_none(), "expected no hint when no .vscdb files exist: {:?}", hint);
 
@@ -3410,9 +3426,9 @@ mod tests {
         let fixture = cursor_fixture("missing_base");
         let nonexistent = fixture.join("not-real");
 
-        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &nonexistent);
+        std::env::set_var("CHORUS_CURSOR_LEGACY_DIR", &nonexistent);
         let hint = detect_cursor_vscdb_fallback_hint();
-        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+        std::env::remove_var("CHORUS_CURSOR_LEGACY_DIR");
 
         assert!(hint.is_none(), "missing base dir should yield no hint");
 

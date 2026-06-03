@@ -4,8 +4,6 @@
 //! into ordered (role, text) turns, keeping only `type=="text"` segments.
 //!
 //! FULL SPEC: docs/adapters/CURSOR_HERMES_NATIVE_ADAPTER.md  §6 Unit B.
-//! Implementer: fill the function bodies + add the required `#[cfg(test)]` tests.
-//! Do NOT change these signatures and do NOT edit any other file.
 #![allow(dead_code)]
 
 use serde_json::Value;

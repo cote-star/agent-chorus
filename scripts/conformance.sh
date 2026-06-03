@@ -26,11 +26,13 @@ run_read_case() {
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   "${node_cmd[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   "${rust_cmd[@]}" > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "read-${label}"
@@ -199,11 +201,13 @@ run_parity_case() {
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   node "$ROOT/scripts/read_session.cjs" "${node_args[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- "${rust_args[@]}" > "$rust_out"
 
   node "$SCRUB" "$node_out" "$node_scrubbed" "$kind"
@@ -273,9 +277,8 @@ run_parity_case setup setup setup.json \
   setup --cwd="$SETUP_TMP_CWD" --dry-run --json :: \
   setup --cwd "$SETUP_TMP_CWD" --dry-run --json
 
-# --- read --include-user parity (codex, claude, gemini) ---
-# Gemini and Cursor --tool-calls are no-ops (no tool-call schema); only
-# --include-user is meaningful for gemini here.
+# --- read --include-user parity (codex, claude, gemini, cursor) ---
+# Gemini --tool-calls is a no-op (no tool-call schema in fixture data).
 run_parity_case read read-codex-include-user read-codex-include-user.json \
   read --agent=codex --id=codex-fixture --include-user --json :: \
   read --agent codex --id codex-fixture --include-user --json
@@ -288,7 +291,11 @@ run_parity_case read read-gemini-include-user read-gemini-include-user.json \
   read --agent=gemini --id=gemini-fixture --include-user --json :: \
   read --agent gemini --id gemini-fixture --include-user --json
 
-# --- read --tool-calls parity (codex, claude) ---
+run_parity_case read read-cursor-include-user read-cursor-include-user.json \
+  read --agent=cursor --id=session-cursor-fixture-0001 --include-user --json :: \
+  read --agent cursor --id session-cursor-fixture-0001 --include-user --json
+
+# --- read --tool-calls parity (codex, claude, cursor) ---
 run_parity_case read read-codex-tool-calls read-codex-tool-calls.json \
   read --agent=codex --id=codex-fixture --tool-calls --json :: \
   read --agent codex --id codex-fixture --tool-calls --json
@@ -297,9 +304,14 @@ run_parity_case read read-claude-tool-calls read-claude-tool-calls.json \
   read --agent=claude --id=claude-fixture --tool-calls --json :: \
   read --agent claude --id claude-fixture --tool-calls --json
 
+run_parity_case read read-cursor-tool-calls read-cursor-tool-calls.json \
+  read --agent=cursor --id=session-cursor-tool-calls --tool-calls --json :: \
+  read --agent cursor --id session-cursor-tool-calls --tool-calls --json
+
 run_read_case codex codex-fixture Codex
 run_read_case gemini gemini-fixture Gemini
 run_read_case claude claude-fixture Claude
+run_read_case cursor session-cursor-fixture-0001 Cursor
 run_compare_case
 run_report_case
 run_list_case codex Codex /workspace/demo

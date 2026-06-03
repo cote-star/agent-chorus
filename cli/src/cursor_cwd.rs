@@ -5,8 +5,6 @@
 //! 2. demangle the project dir name against the real filesystem.
 //!
 //! FULL SPEC: docs/adapters/CURSOR_HERMES_NATIVE_ADAPTER.md  §6 Unit A.
-//! Implementer: fill the function bodies + add the required `#[cfg(test)]` tests.
-//! Do NOT change these signatures and do NOT edit any other file.
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};

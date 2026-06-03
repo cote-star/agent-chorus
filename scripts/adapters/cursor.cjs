@@ -152,6 +152,7 @@ function read(filePath, lastN, opts = {}) {
     message_count: messageCount,
     messages_returned: messagesReturned,
     included_roles: rolesIncluded,
+    ...(opts.includeToolCalls ? { included_tool_calls: true } : {}),
   };
 }
 

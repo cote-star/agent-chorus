@@ -61,6 +61,11 @@
       "status": "warn"
     },
     {
+      "detail": "No hermes sessions discovered",
+      "id": "sessions_hermes",
+      "status": "warn"
+    },
+    {
       "detail": "Missing: __PATH__",
       "id": "setup_intents",
       "status": "warn"

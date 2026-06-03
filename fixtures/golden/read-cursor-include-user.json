@@ -1,0 +1,16 @@
+{
+  "agent": "cursor",
+  "chorus_output_version": 1,
+  "content": "USER:\nCursor fixture user question.\n---\nASSISTANT:\nCursor fixture assistant output.",
+  "cwd": "/workspace/demo",
+  "included_roles": [
+    "user",
+    "assistant"
+  ],
+  "message_count": 1,
+  "messages_returned": 2,
+  "session_id": "session-cursor-fixture-0001",
+  "source": "session-cursor-fixture-0001.jsonl",
+  "timestamp": "__TS__",
+  "warnings": []
+}
