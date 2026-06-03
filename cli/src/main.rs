@@ -2,6 +2,8 @@ mod adapters;
 mod agents;
 mod agent_context;
 mod checkpoint;
+mod cursor_cwd;
+mod cursor_parse;
 pub mod diff;
 mod doctor;
 pub mod messaging;
@@ -662,6 +664,7 @@ enum AgentType {
     Gemini,
     Claude,
     Cursor,
+    Hermes,
 }
 
 impl AgentType {
@@ -671,6 +674,7 @@ impl AgentType {
             AgentType::Gemini => "gemini",
             AgentType::Claude => "claude",
             AgentType::Cursor => "cursor",
+            AgentType::Hermes => "hermes",
         }
     }
 }
@@ -1456,6 +1460,7 @@ fn format_agent_name(agent: &str) -> &'static str {
         "gemini" => "Gemini",
         "claude" => "Claude",
         "cursor" => "Cursor",
+        "hermes" => "Hermes",
         _ => "Unknown",
     }
 }

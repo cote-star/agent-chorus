@@ -325,6 +325,14 @@ function validateStructuredLayer(repoRoot, currentDir) {
             throw new Error(`[context-pack] seal failed: search_scope.json references missing directory ${dir}`);
           }
         }
+        // Schema-drift guard: an older pack format stored verification_shortcuts
+        // as an array of {file, look_for, check}. `typeof [] === 'object'` is
+        // truthy, so without this check the loop below does Object.keys(array)
+        // → "0","1",… and fails cryptically with "references missing file 0".
+        // Catch it early with an actionable message.
+        if (Array.isArray(entry.verification_shortcuts)) {
+          throw new Error(`[context-pack] seal failed: search_scope.json task '${task}' has verification_shortcuts as an array; it must be an object keyed by file path ("<path>": { look_for, check }). This is schema drift from an older pack format — convert each entry. See .agent-context/GUIDE.md.`);
+        }
         if (entry.verification_shortcuts && typeof entry.verification_shortcuts === 'object') {
           for (const filePath of Object.keys(entry.verification_shortcuts)) {
             const baseFile = filePath.split(':')[0];

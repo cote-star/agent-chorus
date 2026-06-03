@@ -1,0 +1,8 @@
+interface:
+  display_name: "Agent Context"
+  short_description: "Create and maintain checked-in repo context"
+  brand_color: "#F37021"
+  default_prompt: "Use $agent-context to set up a verified .agent-context pack for this repo."
+
+policy:
+  allow_implicit_invocation: true

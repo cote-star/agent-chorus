@@ -1290,45 +1290,8 @@ fn extract_assistant_text_json(path: &Path) -> String {
 }
 
 /// Extract assistant text from a Cursor session file.
-fn extract_assistant_text_cursor(path: &Path) -> String {
-    let raw = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
-    };
-    let mut text = String::new();
-    // Try JSON format first
-    if let Ok(parsed) = serde_json::from_str::<Value>(&raw) {
-        let msgs = if parsed.is_array() {
-            parsed.as_array().cloned().unwrap_or_default()
-        } else if let Some(arr) = parsed.get("messages").and_then(|m| m.as_array()) {
-            arr.clone()
-        } else {
-            Vec::new()
-        };
-        for msg in &msgs {
-            if msg.get("role").and_then(|v| v.as_str()) == Some("assistant") {
-                if let Some(c) = msg.get("content").and_then(|v| v.as_str()) {
-                    text.push_str(c);
-                    text.push('\n');
-                }
-            }
-        }
-    }
-    // Fallback: try JSONL
-    if text.is_empty() {
-        for line in raw.lines() {
-            if let Ok(obj) = serde_json::from_str::<Value>(line) {
-                if obj.get("role").and_then(|v| v.as_str()) == Some("assistant") {
-                    if let Some(c) = obj.get("content").and_then(|v| v.as_str()) {
-                        text.push_str(c);
-                        text.push('\n');
-                    }
-                }
-            }
-        }
-    }
-    if text.is_empty() { raw } else { text }
-}
+// (extract_assistant_text_cursor removed — the native cursor_parse module now
+// supplies assistant text for cursor search, matching the read path.)
 
 /// Compute a ~120 character match snippet centered on the first occurrence of query.
 fn compute_match_snippet(text: &str, query: &str) -> Option<String> {
@@ -2364,20 +2327,10 @@ pub fn search_cursor_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
     let base_dir = cursor_base_dir();
     if !base_dir.exists() { return Ok(Vec::new()); }
 
-    let workspaces_dir = base_dir.join("User").join("workspaceStorage");
-    if !workspaces_dir.exists() { return Ok(Vec::new()); }
-
-    let files = collect_matching_files(&workspaces_dir, true, &|p| {
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        (name.ends_with(".json") || name.ends_with(".jsonl"))
-            && (name.contains("chat") || name.contains("composer") || name.contains("conversation"))
-    })?;
+    let files = collect_cursor_transcripts(&base_dir, None)?;
 
     let query_lower = query.to_ascii_lowercase();
     let expected_cwd = cwd.map(normalize_path).transpose()?;
-    let expected_cwd_text = expected_cwd
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_ascii_lowercase());
     let mut entries = Vec::new();
 
     for file in files {
@@ -2387,25 +2340,29 @@ pub fn search_cursor_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
             continue;
         }
 
-        // CWD filter still needs raw content (cursor files embed workspace paths)
-        if let Some(expected) = expected_cwd_text.as_ref() {
-            let raw = match fs::read_to_string(&file.path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            if !raw.to_ascii_lowercase().contains(expected) {
-                continue;
+        // Project-scope by the session's real cwd (derived from .workspace-trusted
+        // or filesystem-validated demangling), matching codex/claude semantics.
+        let session_cwd = get_cursor_session_cwd(&file.path);
+        if let Some(expected) = expected_cwd.as_ref() {
+            match session_cwd.as_ref() {
+                Some(sc) if cwd_matches_project(sc, expected) => {}
+                _ => continue,
             }
         }
 
-        let assistant_text = extract_assistant_text_cursor(&file.path);
+        let assistant_text = crate::cursor_parse::read_cursor_turns(&file.path)
+            .into_iter()
+            .filter(|t| t.role == "assistant")
+            .map(|t| t.text)
+            .collect::<Vec<_>>()
+            .join("\n");
         if assistant_text.to_ascii_lowercase().contains(&query_lower) {
             let snippet = compute_match_snippet(&assistant_text, query);
             let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
             entries.push(serde_json::json!({
                 "session_id": session_id,
                 "agent": "cursor",
-                "cwd": serde_json::Value::Null,
+                "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
                 "modified_at": file_modified_iso(&file.path),
                 "file_path": file.path.to_string_lossy().to_string(),
                 "match_snippet": snippet,
@@ -2423,15 +2380,13 @@ fn cursor_base_dir() -> PathBuf {
         .ok()
         .and_then(|value| expand_home(&value))
         .unwrap_or_else(|| {
-            // macOS: ~/Library/Application Support/Cursor
-            // Linux: ~/.cursor
-            if cfg!(target_os = "macos") {
-                dirs::home_dir()
-                    .map(|h| h.join("Library/Application Support/Cursor"))
-                    .unwrap_or_else(|| PathBuf::from("~/.cursor"))
-            } else {
-                expand_home("~/.cursor").unwrap_or_else(|| PathBuf::from("~/.cursor"))
-            }
+            // The cursor-agent CLI writes plaintext JSONL transcripts under
+            // ~/.cursor/projects on all platforms:
+            //   <projects>/<project>/agent-transcripts/<session>/<session>.jsonl
+            // (CHORUS_CURSOR_DATA_DIR / BRIDGE_CURSOR_DATA_DIR override this root.)
+            dirs::home_dir()
+                .map(|h| h.join(".cursor").join("projects"))
+                .unwrap_or_else(|| PathBuf::from("~/.cursor/projects"))
         })
 }
 
@@ -2442,7 +2397,7 @@ pub fn read_cursor_session(id: Option<&str>, cwd: &str) -> Result<Session> {
 
 pub fn read_cursor_session_with_options(
     id: Option<&str>,
-    _cwd: &str,
+    cwd: &str,
     last_n: usize,
     opts: ReadOptions,
 ) -> Result<Session> {
@@ -2454,78 +2409,36 @@ pub fn read_cursor_session_with_options(
         return Err(anyhow!(cursor_not_found_message(&format!("No Cursor session found. Data directory not found: {}", base_dir.display()))));
     }
 
-    let workspaces_dir = base_dir.join("User").join("workspaceStorage");
-    if !workspaces_dir.exists() {
-        return Err(anyhow!(cursor_not_found_message(&format!("No Cursor session found. Workspace storage not found: {}", workspaces_dir.display()))));
-    }
-
-    // Look for composer/chat state files in workspace storage
-    let files = collect_matching_files(&workspaces_dir, true, &|p| {
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        (name.ends_with(".json") || name.ends_with(".jsonl"))
-            && (name.contains("chat") || name.contains("composer") || name.contains("conversation"))
-            && id.map(|needle| p.to_string_lossy().contains(needle)).unwrap_or(true)
-    })?;
-
+    let files = collect_cursor_transcripts(&base_dir, id)?;
     if files.is_empty() {
         return Err(anyhow!(cursor_not_found_message("No Cursor session found.")));
     }
 
-    let target_file = files[0].path.clone();
-
-    // Gather turns (user + assistant) and assistant-only messages. Both JSON
-    // and JSONL shapes supported; mirror Node's cursor adapter.
-    let content_str = fs::read_to_string(&target_file)?;
-    let mut turns: Vec<ConversationTurn> = Vec::new();
-    let mut parsed_as_json = false;
-
-    if let Ok(json) = serde_json::from_str::<Value>(&content_str) {
-        parsed_as_json = true;
-        if let Some(messages) = json.get("messages").and_then(|m| m.as_array()) {
-            for m in messages {
-                let role = m["role"].as_str().unwrap_or("").to_string();
-                if role != "assistant" && role != "user" {
-                    continue;
-                }
-                let text = if let Some(s) = m["content"].as_str() {
-                    s.to_string()
-                } else {
-                    serde_json::to_string(&m["content"]).unwrap_or_default()
-                };
-                turns.push(ConversationTurn { role, text });
-            }
-        } else if let Some(text) = json.get("content").and_then(|c| c.as_str()) {
-            // Single-content shape — treat as a lone assistant message.
-            turns.push(ConversationTurn { role: "assistant".to_string(), text: text.to_string() });
-        } else {
-            // Unknown JSON shape — fall back to whole-doc as raw.
-            let raw = json.to_string();
-            return Ok(Session {
-                agent: "cursor",
-                content: redact_sensitive_text(&raw),
-                source: target_file.to_string_lossy().to_string(),
-                warnings: vec![cursor_warning()],
-                session_id: target_file.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
-                cwd: None,
-                timestamp: file_modified_iso(&target_file),
-                message_count: 1,
-                messages_returned: 1,
-            });
-        }
+    // Scope to --cwd when no explicit id was given (mirror codex/claude). The
+    // session's real cwd comes from .workspace-trusted or a filesystem-validated
+    // demangle of the project dir name (see crate::cursor_cwd).
+    let mut warnings: Vec<String> = Vec::new();
+    let target_file = if id.is_some() {
+        files[0].path.clone()
     } else {
-        // JSONL format
-        for line in content_str.lines().filter(|l| !l.is_empty()) {
-            if let Ok(json) = serde_json::from_str::<Value>(line) {
-                let role = json["role"].as_str().unwrap_or("").to_string();
-                if (role == "assistant" || role == "user") && json["content"].is_string() {
-                    turns.push(ConversationTurn {
-                        role,
-                        text: json["content"].as_str().unwrap().to_string(),
-                    });
+        match normalize_path(cwd) {
+            Ok(expected) => match find_latest_by_cwd(&files, &expected, get_cursor_session_cwd) {
+                Some(p) => p,
+                None => {
+                    warnings.push(format!(
+                        "No Cursor session matched cwd {}; falling back to latest session.",
+                        expected.display()
+                    ));
+                    files[0].path.clone()
                 }
-            }
+            },
+            Err(_) => files[0].path.clone(),
         }
-    }
+    };
+
+    // Parse the cursor-agent transcript into ordered turns. Text-only by default;
+    // with --tool-calls, tool_use/tool_result segments are rendered too.
+    let turns: Vec<ConversationTurn> = cursor_turns_for_read(&target_file, opts.include_tool_calls);
 
     let assistant_msgs: Vec<String> = turns
         .iter()
@@ -2550,60 +2463,98 @@ pub fn read_cursor_session_with_options(
         (sel.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n"), n)
     } else if let Some(last) = assistant_msgs.last() {
         (last.clone(), 1)
-    } else if parsed_as_json {
-        ("[No assistant messages found]".to_string(), 0)
     } else {
-        // JSONL fallback: last 20 raw lines
-        let tail: Vec<&str> = content_str.lines().rev().take(20).collect::<Vec<&str>>().into_iter().rev().collect();
-        (tail.join("\n"), 0)
+        ("[No assistant messages found]".to_string(), 0)
     };
 
     let session_id = target_file.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
     let timestamp = file_modified_iso(&target_file);
+    let cwd_out = get_cursor_session_cwd(&target_file).map(|p| p.to_string_lossy().to_string());
 
     Ok(Session {
         agent: "cursor",
         content: redact_sensitive_text(&content),
         source: target_file.to_string_lossy().to_string(),
-        warnings: vec![cursor_warning()],
+        warnings,
         session_id,
-        cwd: None,
+        cwd: cwd_out,
         timestamp,
         message_count,
         messages_returned,
     })
 }
 
-fn cursor_warning() -> String {
-    "Warning: Cursor sessions have no project scoping. Results may include sessions from unrelated projects.".to_string()
+/// Enumerate cursor-agent transcript files under the projects root:
+/// `<base>/<project>/agent-transcripts/<session>/<session>.jsonl`, newest first.
+/// When `id` is given, only paths containing it are returned.
+fn collect_cursor_transcripts(base_dir: &Path, id: Option<&str>) -> Result<Vec<FileEntry>> {
+    collect_matching_files(base_dir, true, &|p| {
+        has_extension(p, "jsonl")
+            && path_contains(p, "agent-transcripts")
+            && id.map(|needle| path_contains(p, needle)).unwrap_or(true)
+    })
+}
+
+/// cwd extractor for `find_latest_by_cwd` — recovers a cursor transcript's
+/// originating workspace directory (delegates to the native cursor_cwd module).
+fn get_cursor_session_cwd(path: &Path) -> Option<PathBuf> {
+    crate::cursor_cwd::resolve_cursor_cwd(path)
+}
+
+/// Build cursor turns for the read path. Text-only via the native parser, or —
+/// when `--tool-calls` is requested — re-flatten each message's `content` array
+/// with the shared tool-call renderer. Cursor's content segments
+/// (`text` / `tool_use` / `tool_result`) match Claude's shape, so the existing
+/// `extract_claude_content_with_tool_calls` renders them at parity.
+fn cursor_turns_for_read(path: &Path, include_tool_calls: bool) -> Vec<ConversationTurn> {
+    if !include_tool_calls {
+        return crate::cursor_parse::read_cursor_turns(path)
+            .into_iter()
+            .map(|t| ConversationTurn { role: t.role, text: t.text })
+            .collect();
+    }
+    let contents = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let mut turns = Vec::new();
+    for line in contents.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let v: Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let role = match v.get("role").and_then(|r| r.as_str()) {
+            Some(r) if r == "user" || r == "assistant" => r.to_string(),
+            _ => continue,
+        };
+        let text = extract_claude_content_with_tool_calls(&v["message"]["content"]);
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        turns.push(ConversationTurn { role, text: text.to_string() });
+    }
+    turns
 }
 
 pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
     let base_dir = cursor_base_dir();
     if !base_dir.exists() { return Ok(Vec::new()); }
 
-    let workspaces_dir = base_dir.join("User").join("workspaceStorage");
-    if !workspaces_dir.exists() { return Ok(Vec::new()); }
-
-    let files = collect_matching_files(&workspaces_dir, true, &|p| {
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        (name.ends_with(".json") || name.ends_with(".jsonl"))
-            && (name.contains("chat") || name.contains("composer") || name.contains("conversation"))
-    })?;
-
+    let files = collect_cursor_transcripts(&base_dir, None)?;
     let expected_cwd = cwd.map(normalize_path).transpose()?;
-    let expected_cwd_text = expected_cwd
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_ascii_lowercase());
+
     let mut entries = Vec::new();
     for file in files {
-        if let Some(expected) = expected_cwd_text.as_ref() {
-            let content = match fs::read_to_string(&file.path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            if !content.to_ascii_lowercase().contains(expected) {
-                continue;
+        // Derive the session's real cwd and project-scope on it (codex/claude parity).
+        let session_cwd = get_cursor_session_cwd(&file.path);
+        if let Some(expected) = expected_cwd.as_ref() {
+            match session_cwd.as_ref() {
+                Some(sc) if cwd_matches_project(sc, expected) => {}
+                _ => continue,
             }
         }
 
@@ -2611,12 +2562,230 @@ pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde
         entries.push(serde_json::json!({
             "session_id": session_id,
             "agent": "cursor",
-            "cwd": serde_json::Value::Null,
+            "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
             "modified_at": file_modified_iso(&file.path),
             "file_path": file.path.to_string_lossy().to_string(),
         }));
         if entries.len() >= limit {
             break;
+        }
+    }
+    Ok(entries)
+}
+
+// --- Hermes support (provisional scaffold — UNTESTED) ---
+//
+// Hermes is not yet installed and its on-disk transcript format is unconfirmed.
+// This path is wired for parity but has NOT been validated against real data.
+// Assumed shape (claude-like JSONL; override root via CHORUS_HERMES_DATA_DIR):
+//   <base>/**/*.jsonl  with lines {"role":"user"|"assistant","content":"<str>","cwd":"<path?>"}
+// Revisit and add behavior tests once Hermes is available.
+
+fn hermes_base_dir() -> PathBuf {
+    std::env::var("CHORUS_HERMES_DATA_DIR")
+        .or_else(|_| std::env::var("BRIDGE_HERMES_DATA_DIR"))
+        .ok()
+        .and_then(|value| expand_home(&value))
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .map(|h| h.join(".hermes").join("sessions"))
+                .unwrap_or_else(|| PathBuf::from("~/.hermes/sessions"))
+        })
+}
+
+fn collect_hermes_sessions(base_dir: &Path, id: Option<&str>) -> Result<Vec<FileEntry>> {
+    collect_matching_files(base_dir, true, &|p| {
+        has_extension(p, "jsonl") && id.map(|needle| path_contains(p, needle)).unwrap_or(true)
+    })
+}
+
+fn get_hermes_session_cwd(path: &Path) -> Option<PathBuf> {
+    let lines = read_jsonl_lines(path).ok()?;
+    for line in lines {
+        if let Ok(v) = serde_json::from_str::<Value>(&line) {
+            if let Some(cwd) = v.get("cwd").and_then(|c| c.as_str()) {
+                if let Ok(p) = normalize_path(cwd) {
+                    return Some(p);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn hermes_turn_text(content: &Value, include_tool_calls: bool) -> String {
+    if include_tool_calls {
+        return extract_text_with_tool_calls(content);
+    }
+    match content.as_str() {
+        Some(s) => s.to_string(),
+        None => extract_text_with_tool_calls(content),
+    }
+}
+
+#[allow(dead_code)]
+pub fn read_hermes_session(id: Option<&str>, cwd: &str) -> Result<Session> {
+    read_hermes_session_with_options(id, cwd, 1, ReadOptions::default())
+}
+
+pub fn read_hermes_session_with_options(
+    id: Option<&str>,
+    cwd: &str,
+    last_n: usize,
+    opts: ReadOptions,
+) -> Result<Session> {
+    let base_dir = hermes_base_dir();
+    if is_system_directory(&base_dir) {
+        return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
+    }
+    if !base_dir.exists() {
+        return Err(anyhow!("No Hermes session found. Data directory not found: {}", base_dir.display()));
+    }
+    let files = collect_hermes_sessions(&base_dir, id)?;
+    if files.is_empty() {
+        return Err(anyhow!("No Hermes session found."));
+    }
+
+    let mut warnings: Vec<String> = Vec::new();
+    let target_file = if id.is_some() {
+        files[0].path.clone()
+    } else {
+        match normalize_path(cwd) {
+            Ok(expected) => match find_latest_by_cwd(&files, &expected, get_hermes_session_cwd) {
+                Some(p) => p,
+                None => {
+                    warnings.push(format!(
+                        "No Hermes session matched cwd {}; falling back to latest session.",
+                        expected.display()
+                    ));
+                    files[0].path.clone()
+                }
+            },
+            Err(_) => files[0].path.clone(),
+        }
+    };
+
+    let mut turns: Vec<ConversationTurn> = Vec::new();
+    if let Ok(lines) = read_jsonl_lines(&target_file) {
+        for line in lines {
+            let v: Value = match serde_json::from_str(&line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let role = match v.get("role").and_then(|r| r.as_str()) {
+                Some(r) if r == "user" || r == "assistant" => r.to_string(),
+                _ => continue,
+            };
+            let content = v.get("content").cloned().unwrap_or(Value::Null);
+            let text = hermes_turn_text(&content, opts.include_tool_calls);
+            let text = text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            turns.push(ConversationTurn { role, text: text.to_string() });
+        }
+    }
+
+    let assistant_msgs: Vec<String> = turns
+        .iter()
+        .filter(|t| t.role == "assistant")
+        .map(|t| t.text.clone())
+        .collect();
+    let message_count = assistant_msgs.len();
+
+    let (content, messages_returned) = if opts.include_user && !assistant_msgs.is_empty() {
+        let selected = select_conversation_turns(&turns, last_n);
+        let n = selected.len();
+        (
+            selected
+                .iter()
+                .map(|t| format!("{}:\n{}", t.role.to_uppercase(), t.text))
+                .collect::<Vec<String>>()
+                .join("\n---\n"),
+            n,
+        )
+    } else if last_n > 1 && !assistant_msgs.is_empty() {
+        let start = assistant_msgs.len().saturating_sub(last_n);
+        let sel: Vec<&String> = assistant_msgs[start..].iter().collect();
+        (sel.iter().map(|s| s.as_str()).collect::<Vec<&str>>().join("\n---\n"), sel.len())
+    } else if let Some(last) = assistant_msgs.last() {
+        (last.clone(), 1)
+    } else {
+        ("[No assistant messages found]".to_string(), 0)
+    };
+
+    Ok(Session {
+        agent: "hermes",
+        content: redact_sensitive_text(&content),
+        source: target_file.to_string_lossy().to_string(),
+        warnings,
+        session_id: target_file.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()),
+        cwd: get_hermes_session_cwd(&target_file).map(|p| p.to_string_lossy().to_string()),
+        timestamp: file_modified_iso(&target_file),
+        message_count,
+        messages_returned,
+    })
+}
+
+pub fn list_hermes_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
+    let base_dir = hermes_base_dir();
+    if !base_dir.exists() { return Ok(Vec::new()); }
+    let files = collect_hermes_sessions(&base_dir, None)?;
+    let expected_cwd = cwd.map(normalize_path).transpose()?;
+    let mut entries = Vec::new();
+    for file in files {
+        let session_cwd = get_hermes_session_cwd(&file.path);
+        if let Some(expected) = expected_cwd.as_ref() {
+            match session_cwd.as_ref() {
+                Some(sc) if cwd_matches_project(sc, expected) => {}
+                _ => continue,
+            }
+        }
+        entries.push(serde_json::json!({
+            "session_id": file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string(),
+            "agent": "hermes",
+            "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+            "modified_at": file_modified_iso(&file.path),
+            "file_path": file.path.to_string_lossy().to_string(),
+        }));
+        if entries.len() >= limit { break; }
+    }
+    Ok(entries)
+}
+
+pub fn search_hermes_sessions(query: &str, cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
+    let base_dir = hermes_base_dir();
+    if !base_dir.exists() { return Ok(Vec::new()); }
+    let files = collect_hermes_sessions(&base_dir, None)?;
+    let query_lower = query.to_ascii_lowercase();
+    let expected_cwd = cwd.map(normalize_path).transpose()?;
+    let mut entries = Vec::new();
+    for file in files {
+        if entries.len() >= limit { break; }
+        let session_cwd = get_hermes_session_cwd(&file.path);
+        if let Some(expected) = expected_cwd.as_ref() {
+            match session_cwd.as_ref() {
+                Some(sc) if cwd_matches_project(sc, expected) => {}
+                _ => continue,
+            }
+        }
+        let assistant_text = read_jsonl_lines(&file.path)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v.get("role").and_then(|r| r.as_str()) == Some("assistant"))
+            .filter_map(|v| v.get("content").and_then(|c| c.as_str()).map(|s| s.to_string()))
+            .collect::<Vec<String>>()
+            .join("\n");
+        if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+            entries.push(serde_json::json!({
+                "session_id": file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string(),
+                "agent": "hermes",
+                "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+                "modified_at": file_modified_iso(&file.path),
+                "file_path": file.path.to_string_lossy().to_string(),
+                "match_snippet": compute_match_snippet(&assistant_text, query),
+            }));
         }
     }
     Ok(entries)
@@ -2722,14 +2891,30 @@ fn gemini_not_found_message(base_message: &str) -> String {
     }
 }
 
+/// Legacy Cursor application-support root where SQLite `workspaceStorage` lives.
+/// Distinct from `cursor_base_dir()`, which now points at `~/.cursor/projects`
+/// for cursor-agent CLI transcripts.
+fn cursor_legacy_storage_dir() -> PathBuf {
+    std::env::var("CHORUS_CURSOR_LEGACY_DIR")
+        .ok()
+        .and_then(|value| expand_home(&value))
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                dirs::home_dir()
+                    .map(|h| h.join("Library/Application Support/Cursor"))
+                    .unwrap_or_else(|| PathBuf::from("~/Library/Application Support/Cursor"))
+            } else {
+                expand_home("~/.cursor").unwrap_or_else(|| PathBuf::from("~/.cursor"))
+            }
+        })
+}
+
 /// Probe the Cursor workspace storage for SQLite `state.vscdb` files — the
 /// format used by modern Cursor (VS Code fork) to persist chat/composer data.
-/// chorus's current cursor reader only scans for JSON/JSONL files whose names
-/// match `chat|composer|conversation`, which never hits the SQLite rows, so
-/// a Cursor install with active chats still returns NOT_FOUND. When `.vscdb`
-/// files are present we return a richer hint so users know why.
+/// When no cursor-agent transcripts are found but `.vscdb` files exist under
+/// the legacy application-support tree, return a richer NOT_FOUND hint.
 pub(crate) fn detect_cursor_vscdb_fallback_hint() -> Option<String> {
-    let base = cursor_base_dir();
+    let base = cursor_legacy_storage_dir();
     if !base.exists() {
         return None;
     }
@@ -2830,6 +3015,10 @@ fn pick_roast(agent: &str, content: &str, message_count: usize) -> &'static str 
         "An IDE that thinks it's an agent. Bless its heart.",
         "Cursor: autocomplete with delusions of grandeur.",
     ];
+    const HERMES_ROASTS: &[&str] = &[
+        "Hermes: messenger of the gods, still waiting on its first install.",
+        "Named for speed, shipped as a stretch goal.",
+    ];
     const GENERIC_ROASTS: &[&str] = &[
         "Participation trophy earned.",
         "Well, at least the process exited cleanly.",
@@ -2856,6 +3045,7 @@ fn pick_roast(agent: &str, content: &str, message_count: usize) -> &'static str 
         "claude" => roasts.extend_from_slice(CLAUDE_ROASTS),
         "gemini" => roasts.extend_from_slice(GEMINI_ROASTS),
         "cursor" => roasts.extend_from_slice(CURSOR_ROASTS),
+        "hermes" => roasts.extend_from_slice(HERMES_ROASTS),
         _ => {}
     }
     roasts.extend_from_slice(GENERIC_ROASTS);
@@ -3198,9 +3388,9 @@ mod tests {
         std::fs::write(ws1.join("state.vscdb-wal"), b"journal").unwrap(); // sibling, ignored
         std::fs::write(ws2.join("state.vscdb"), b"sqlite2").unwrap();
 
-        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        std::env::set_var("CHORUS_CURSOR_LEGACY_DIR", &fixture);
         let hint = detect_cursor_vscdb_fallback_hint();
-        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+        std::env::remove_var("CHORUS_CURSOR_LEGACY_DIR");
 
         let hint = hint.expect("expected a vscdb hint when state.vscdb files are present");
         assert!(hint.contains("SQLite state.vscdb"), "hint missing SQLite phrase: {}", hint);
@@ -3221,9 +3411,9 @@ mod tests {
         std::fs::create_dir_all(&ws).unwrap();
         std::fs::write(ws.join("workspace.json"), b"{}").unwrap();
 
-        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
+        std::env::set_var("CHORUS_CURSOR_LEGACY_DIR", &fixture);
         let hint = detect_cursor_vscdb_fallback_hint();
-        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+        std::env::remove_var("CHORUS_CURSOR_LEGACY_DIR");
 
         assert!(hint.is_none(), "expected no hint when no .vscdb files exist: {:?}", hint);
 
@@ -3236,9 +3426,9 @@ mod tests {
         let fixture = cursor_fixture("missing_base");
         let nonexistent = fixture.join("not-real");
 
-        std::env::set_var("CHORUS_CURSOR_DATA_DIR", &nonexistent);
+        std::env::set_var("CHORUS_CURSOR_LEGACY_DIR", &nonexistent);
         let hint = detect_cursor_vscdb_fallback_hint();
-        std::env::remove_var("CHORUS_CURSOR_DATA_DIR");
+        std::env::remove_var("CHORUS_CURSOR_LEGACY_DIR");
 
         assert!(hint.is_none(), "missing base dir should yield no hint");
 
@@ -3655,18 +3845,18 @@ mod tests {
     fn cursor_include_user_interleaves() {
         let _guard = cursor_read_env_lock();
         let fixture = cursor_fixture_read("include_user");
-        let ws = fixture.join("User").join("workspaceStorage").join("ws1");
-        std::fs::create_dir_all(&ws).unwrap();
-        let chat_file = ws.join("chat.json");
-        let body = json!({
-            "messages": [
-                { "role": "user",      "content": "Hello cursor" },
-                { "role": "assistant", "content": "Hi!" },
-                { "role": "user",      "content": "Second request" },
-                { "role": "assistant", "content": "Second response" }
-            ]
-        });
-        std::fs::write(&chat_file, serde_json::to_string(&body).unwrap()).unwrap();
+        // Native layout: <projects_root>/<project>/agent-transcripts/<session>/<session>.jsonl
+        let sess = "sess-include-user";
+        let tdir = fixture.join("proj1").join("agent-transcripts").join(sess);
+        std::fs::create_dir_all(&tdir).unwrap();
+        let transcript = tdir.join(format!("{sess}.jsonl"));
+        let lines = [
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"Hello cursor"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Hi!"}]}}"#,
+            r#"{"role":"user","message":{"content":[{"type":"text","text":"Second request"}]}}"#,
+            r#"{"role":"assistant","message":{"content":[{"type":"text","text":"Second response"}]}}"#,
+        ].join("\n");
+        std::fs::write(&transcript, lines).unwrap();
 
         std::env::set_var("CHORUS_CURSOR_DATA_DIR", &fixture);
         let opts = ReadOptions { include_user: true, include_tool_calls: false };

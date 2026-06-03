@@ -16,6 +16,9 @@
 | `cli/src/setup.rs` | Rust `chorus setup` subcommand (v0.13.0) | Project scaffolding + managed-block injection + Claude Code plugin install | Parity break regresses conformance; file-writing code, touch with care | authoritative |
 | `scripts/adapters/*.cjs` | Node session adapters | Per-agent JSONL parsing | Adapter-specific | authoritative |
 | `scripts/adapters/utils.cjs` | Shared Node utilities | Redaction, path normalization, JSON parsing | Silent redaction miss | authoritative |
+| `cli/src/cursor_cwd.rs` / `scripts/adapters/cursor_cwd.cjs` | Cursor per-session cwd resolution | `.workspace-trusted` → `workspacePath`, else fs-validated demangle (`walk_existing`) | Wrong cwd ⇒ wrong `--cwd` scoping; keep Rust/Node behavior identical | authoritative |
+| `cli/src/cursor_parse.rs` / `scripts/adapters/cursor_parse.cjs` | Cursor transcript flatten | `{role,message:{content:[…]}}` → text turns (text segments only) | Parser drift breaks reads; keep parity | authoritative |
+| `cli/src/adapters/hermes.rs` / `scripts/adapters/hermes.cjs` | Hermes adapter (provisional, UNTESTED) | Claude-like JSONL under `~/.hermes/sessions`; wired into all enumerations | Format unconfirmed (Hermes not installed); revisit when available | provisional |
 | `cli/src/agent_context.rs` | Rust agent-context commands | Init, seal, verify, build, hooks | Complex but self-contained | authoritative |
 | `scripts/agent_context/*.cjs` | Node agent-context commands (v0.14.0 hardening: `init.cjs`, `seal.cjs`, `verify.cjs`, `rollback.cjs`, `check_freshness.cjs`, `relevance.cjs`, `install_hooks.cjs`, `cp_utils.cjs` all touched by P1–P13) | Mirror of Rust agent-context | Parity break if Rust not updated | authoritative |
 | `scripts/agent_context/verify.cjs` | Node verify subcommand | Context pack verification + CI mode; P6 `--enforce-separate-commits`; P13 `last_known_good_sha` promotion | Must stay in parity with Rust | authoritative |
@@ -43,16 +46,18 @@
 | CLI command definition | `cli/src/main.rs` | `#[derive(Subcommand)]` enum |
 | Node command handler | `scripts/read_session.cjs` | `case '<command>':` in the switch |
 | Output schema for a command | `schemas/<command>.json` | JSON Schema root |
-| Redaction patterns | `cli/src/agents.rs` | `fn redact_sensitive_text` |
-| Gemini `.pb` / Cursor `state.vscdb` probes | `cli/src/agents.rs` | `detect_gemini_pb_fallback_hint`, `detect_cursor_vscdb_fallback_hint`, `gemini_not_found_message`, `cursor_not_found_message`, `gemini_base_dir`, `cursor_base_dir` |
+| Redaction patterns | `cli/src/agents.rs`, `scripts/adapters/utils.cjs` | Rust: `redact_sensitive_text`, `redact_sensitive_text_with_audit`, helper matcher, tests. Node: `redactSensitiveText`, `redactSensitiveTextWithAudit`. |
+| Cursor native read/list/search + cwd scoping | `cli/src/agents.rs`, `scripts/adapters/cursor.cjs` | `read/list/search_cursor_session(s)`, `collect_cursor_transcripts`, `get_cursor_session_cwd`, `cursor_turns_for_read`, `cursor_base_dir` (→ `~/.cursor/projects`) |
+| Gemini `.pb` probe + legacy Cursor `state.vscdb` diagnostic | `cli/src/agents.rs` | `detect_gemini_pb_fallback_hint`, `gemini_not_found_message`, `detect_cursor_vscdb_fallback_hint` (secondary only), `cursor_not_found_message` |
 | Checkpoint broadcast logic | `cli/src/checkpoint.rs` | `fn run`, `compose_state_message` |
 | Read options plumbing (v0.13.0) | `cli/src/agents.rs` | `struct ReadOptions`, `*_with_options` read functions |
-| Summary / timeline / doctor / setup parity (v0.13.0) | `cli/src/{summary,timeline,doctor,setup}.rs` | one module per subcommand, dispatched from `main.rs` |
+| Summary / timeline / doctor / setup parity (v0.13.0) | `cli/src/{summary,timeline,doctor,setup}.rs` | one module per subcommand, dispatched from `main.rs`; new structured Rust subcommands should mention the module-vs-inline decision |
 | Context-pack template content | `cli/src/agent_context.rs` | `fn build_template_*` functions |
 | Conformance test for a command | `scripts/conformance.sh` | `expect_success "<label>"` calls |
 
 ## Cross-Cutting Tracing Flows
-- **New CLI command**: `main.rs` Clap enum → `main.rs` dispatch → `agents.rs` or new module → `read_session.cjs` handler → `schemas/<cmd>.json` → `fixtures/golden/<cmd>.json` → `conformance.sh` → `PROTOCOL.md` → `docs/CLI_REFERENCE.md`
+- **New CLI command**: `main.rs` Clap enum → `main.rs` dispatch → Rust implementation location (`cli/src/<cmd>.rs` if following the one-module-per-structured-subcommand pattern, or explicit inline-dispatch rationale) → `read_session.cjs` handler → `schemas/<cmd>.json` → `fixtures/golden/<cmd>.json` → `conformance.sh` → `PROTOCOL.md` → `docs/CLI_REFERENCE.md`
+- **New redaction pattern**: Rust plain path (`cli/src/agents.rs::redact_sensitive_text`) → Rust audit path (`redact_sensitive_text_with_audit`) → Rust helper/test → Node plain path (`scripts/adapters/utils.cjs::redactSensitiveText`) → Node audit path (`redactSensitiveTextWithAudit`) → adversarial fixture/test → `PROTOCOL.md` if contract text changes.
 - **New agent adapter**: `agents.rs` Agent enum + match arm → `scripts/adapters/<agent>.cjs` → `fixtures/session-store/<agent>/` → `fixtures/golden/read-<agent>.json` → `conformance.sh` → `PROTOCOL.md`
 - **New context-pack artifact**: `agent_context.rs` build function + init list → `scripts/agent_context/init.cjs` template function + outputs array → `scripts/agent_context/seal.cjs` validation → `scripts/test_context_pack.sh` test
 

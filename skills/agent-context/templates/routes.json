@@ -1,0 +1,50 @@
+{
+  "version": "1.0.0",
+  "description": "Task routing — maps task types to pack read orders and named change patterns",
+  "default_routes": {
+    "lookup": {
+      "read_order": [
+        ".agent-context/current/20_CODE_MAP.md",
+        ".agent-context/current/10_SYSTEM_OVERVIEW.md"
+      ],
+      "description": "Find a specific value, definition, config, or file location"
+    },
+    "impact_analysis": {
+      "read_order": [
+        ".agent-context/current/30_BEHAVIORAL_INVARIANTS.md",
+        ".agent-context/current/20_CODE_MAP.md"
+      ],
+      "description": "Determine which files must change for a given modification"
+    },
+    "planning": {
+      "read_order": [
+        ".agent-context/current/10_SYSTEM_OVERVIEW.md",
+        ".agent-context/current/20_CODE_MAP.md",
+        ".agent-context/current/30_BEHAVIORAL_INVARIANTS.md"
+      ],
+      "description": "Design a new feature or architectural change"
+    },
+    "diagnosis": {
+      "read_order": [
+        ".agent-context/current/10_SYSTEM_OVERVIEW.md",
+        ".agent-context/current/20_CODE_MAP.md"
+      ],
+      "description": "Debug an error, investigate a failure, or trace a code path"
+    },
+    "operations": {
+      "read_order": [
+        ".agent-context/current/40_OPERATIONS_AND_RELEASE.md"
+      ],
+      "description": "Run tests, deploy, manage migrations, or check CI"
+    }
+  },
+  "named_patterns": {
+    "_EXAMPLE_add_feature": {
+      "description": "REPLACE: describe a common change pattern for this repo",
+      "steps": [
+        "REPLACE: step 1 — which pack section to read",
+        "REPLACE: step 2 — which checklist or recipe to follow"
+      ]
+    }
+  }
+}

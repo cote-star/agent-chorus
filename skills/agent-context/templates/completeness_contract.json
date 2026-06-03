@@ -1,0 +1,20 @@
+{
+  "version": "1.0.0",
+  "description": "Files that MUST appear in impact analysis answers for common change types",
+  "contracts": {
+    "_EXAMPLE_add_endpoint": {
+      "description": "REPLACE: describe a common change type for this repo",
+      "contractually_required_files": [
+        "REPLACE: exact file paths that ALWAYS change for this type (e.g., src/routes/index.ts)"
+      ],
+      "required_file_families": [
+        "REPLACE: glob patterns using * wildcards (e.g., src/routes/*.ts, tests/routes/test_*.ts)"
+      ]
+    }
+  },
+  "_rules": {
+    "contractually_required_files": "Exact paths only. Every path must exist on disk.",
+    "required_file_families": "Shell glob patterns using * wildcards. Every pattern must match >= 1 real file. Template variables like {name} or {domain} are NOT allowed — use * instead.",
+    "validation": "After filling, run each glob and verify it matches real files. Remove any _EXAMPLE entries."
+  }
+}

@@ -45,15 +45,17 @@
 - `scripts/hooks/chorus-session-end.sh` is a Claude Code `SessionEnd` hook wrapper. Installs via `~/.claude/settings.json`; hardened with `set -euo pipefail`, `realpath` canonicalization of `$CLAUDE_PROJECT_DIR`, and backgrounded+`disown` dispatch.
 - Full protocol, standup/conclude rituals, and interruption recovery: `docs/session-handoff-guide.md` (linked from `CLAUDE.md`, `AGENTS.md`, and the rewritten `GEMINI.md`).
 
-## Gemini / Cursor Fallback Detection (v0.12.0)
-- `chorus read --agent gemini` probes `~/.gemini/<profile>/conversations/*.pb` when JSONL lookup misses. If `.pb` files exist, the `NOT_FOUND` error names the count, the directory, and points at `--chats-dir` + the handoff guide instead of returning the bare message.
-- `chorus read --agent cursor` probes `User/workspaceStorage/<workspace-id>/state.vscdb` when file-based lookup misses. Mirror of the Gemini change. Full SQLite-backed reading is a follow-up; the probe alone turns opaque `NOT_FOUND` into actionable guidance.
-- Both probes live in `cli/src/agents.rs` as `detect_gemini_pb_fallback_hint` / `detect_cursor_vscdb_fallback_hint`; the bare messages are composed by `gemini_not_found_message` / `cursor_not_found_message`.
+## Native Cursor Adapter (supersedes the v0.12.0 SQLite probe)
+- `chorus read/list/search --agent cursor` reads the cursor-agent CLI transcripts directly from `~/.cursor/projects/<project>/agent-transcripts/<session>/<session>.jsonl` (root overridable via `CHORUS_CURSOR_DATA_DIR` / `BRIDGE_CURSOR_DATA_DIR`). No external bridge required.
+- Per-session **cwd** is recovered (so `--cwd` scoping works like codex/claude): `cli/src/cursor_cwd.rs` / `scripts/adapters/cursor_cwd.cjs` read `<project>/.workspace-trusted` → `workspacePath`, else filesystem-validated demangle of the project dir name. Transcript flattening lives in `cli/src/cursor_parse.rs` / `scripts/adapters/cursor_parse.cjs`.
+- The old `state.vscdb` probe (`detect_cursor_vscdb_fallback_hint` / `cursor_not_found_message`) is **retained only as a secondary NOT_FOUND diagnostic** for installs pointed at a legacy Cursor dir; it is no longer the primary read path.
+- `chorus read --agent gemini` still probes `~/.gemini/<profile>/conversations/*.pb` when JSONL lookup misses (`detect_gemini_pb_fallback_hint` / `gemini_not_found_message`).
 
 ## Full Rust Parity (v0.13.0)
 - `cli/src/summary.rs`, `cli/src/timeline.rs`, `cli/src/doctor.rs`, `cli/src/setup.rs` ship the four previously-Node-only subcommands. Output shape matches the Node implementation byte-for-byte against shared golden fixtures in `fixtures/golden/`.
 - `cli/src/agents.rs` carries a `ReadOptions` struct plus `_with_options` variants of the read functions that take `include_user`, `include_tool_calls`, and the rendering format. Rust treats `--format json` as an alias for `--json`; Node has a documented fall-through bug at `scripts/read_session.cjs:1759` where `--format json` produces plain text. Use `--json` on both runtimes for JSON.
-- `--tool-calls` on Gemini and Cursor is a no-op in both runtimes — those adapters do not parse a tool-call schema from their stores yet. Flag succeeds silently; no `[TOOL: ...]` blocks appear in output. Tracked for a follow-up.
+- `--tool-calls` is honored for codex, claude, and **cursor** (cursor's `tool_use`/`tool_result` segments render via the shared extractor). It remains a no-op for Gemini, whose store has no tool-call schema yet.
+- **Hermes** is wired as a provisional adapter across both runtimes (`cli/src/adapters/hermes.rs` + `agents.rs`; `scripts/adapters/hermes.cjs`) — assumed claude-like JSONL under `~/.hermes/sessions` (override `CHORUS_HERMES_DATA_DIR`). UNTESTED against real data: Hermes is not yet installed. It compiles, is registered everywhere, and `doctor` reports `sessions_hermes`.
 - Rust test suite: 139 tests as of v0.14.0 (52 at v0.13.0 baseline, 87 added by the agent-context hardening pass).
 
 ## Agent-Context Hardening (v0.14.0)

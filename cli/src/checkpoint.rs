@@ -12,7 +12,7 @@ use std::process::Command;
 use crate::messaging;
 
 /// Ordered roster of all agents chorus knows how to message.
-pub const ALL_AGENTS: &[&str] = &["claude", "codex", "gemini", "cursor"];
+pub const ALL_AGENTS: &[&str] = &["claude", "codex", "gemini", "cursor", "hermes"];
 
 /// Result of a checkpoint broadcast, suitable for `--json` output.
 #[derive(Debug, Serialize)]
@@ -142,16 +142,16 @@ mod tests {
         let result = run("claude", &cwd, None).expect("checkpoint ok").expect("not guarded");
 
         assert_eq!(result.from, "claude");
-        let mut expected: Vec<String> = ["codex", "gemini", "cursor"]
+        let mut expected: Vec<String> = ["codex", "gemini", "cursor", "hermes"]
             .iter()
             .map(|s| (*s).to_string())
             .collect();
         let mut got = result.recipients.clone();
         got.sort();
         expected.sort();
-        assert_eq!(got, expected, "checkpoint should address the three other agents");
+        assert_eq!(got, expected, "checkpoint should address the other agents");
 
-        for agent in &["codex", "gemini", "cursor"] {
+        for agent in &["codex", "gemini", "cursor", "hermes"] {
             let file = dir
                 .join(".agent-chorus")
                 .join("messages")
@@ -199,7 +199,7 @@ mod tests {
             .expect("not guarded");
 
         assert_eq!(result.message, override_msg);
-        for agent in &["claude", "gemini", "cursor"] {
+        for agent in &["claude", "gemini", "cursor", "hermes"] {
             let file = dir
                 .join(".agent-chorus")
                 .join("messages")
