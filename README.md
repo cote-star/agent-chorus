@@ -2,14 +2,14 @@
 
 ![CI Status](https://github.com/cote-star/agent-chorus/actions/workflows/ci.yml/badge.svg)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Version](https://img.shields.io/badge/version-0.14.1-green.svg)
+![Version](https://img.shields.io/badge/version-0.16.0-green.svg)
 [![Star History](https://img.shields.io/github/stars/cote-star/agent-chorus?style=social)](https://github.com/cote-star/agent-chorus)
 
 **Let your AI agents talk about each other.**
 
 Ask one agent what another is doing, and get an evidence-backed answer. No copy-pasting, no tab-switching, no guessing.
 
-> If you use 2+ AI coding agents (Codex, Claude, Gemini, Cursor), Chorus gives them shared visibility — no orchestrator required.
+> If you use 2+ AI coding agents (Codex, Claude, Gemini, Cursor CLI, Cursor IDE), Chorus gives them shared visibility — no orchestrator required.
 
 ![Before/after workflow](docs/silo-tax-before-after.webp)
 
@@ -35,405 +35,127 @@ Three agents working on checkout. You ask Codex what the others are doing.
 
 ![Status Check Demo](docs/demo-status.webp)
 
-### What You Get Back
+### From Zero to a Working Query
 
-Every response is structured, source-tracked, and redacted:
+`chorus setup` wires every agent on the box in under a minute.
+
+![Setup Demo](docs/demo-setup.webp)
+
+## Quick Start
+
+```bash
+# 1. Install
+npm install -g agent-chorus      # requires Node >= 18
+# or
+cargo install agent-chorus       # requires Rust >= 1.74
+
+# 2. Wire your agents
+chorus setup                     # patches CLAUDE.md / GEMINI.md / AGENTS.md, adds .gitignore entries
+chorus doctor                    # verify session paths, provider wiring, updates
+
+# 3. Ask any agent in natural language
+#    "What is Claude doing?"  /  "Compare Codex and Gemini outputs."  /  "Pick up where Gemini left off."
+```
+
+Or call chorus directly:
 
 ```bash
 chorus read --agent codex --include-user --json
 ```
+
+Every response is structured, source-tracked, and redacted:
 
 ```json
 {
   "agent": "codex",
   "session_id": "session-abc123",
   "content": "USER:\nInvestigate the auth regression...\n---\nASSISTANT:\nI am tracing the auth middleware...",
-  "timestamp": "2026-03-12T10:30:00Z",
+  "timestamp": "2026-06-02T10:30:00Z",
   "message_count": 12,
-  "source": "/home/user/.codex/sessions/2026/03/12/session-abc123.jsonl"
+  "source": "/home/user/.codex/sessions/2026/06/02/session-abc123.jsonl"
 }
 ```
 
-Source file, session ID, and timestamp on every response. Secrets auto-redacted before output.
+Source file, session ID, and timestamp on every response. Secrets auto-redacted before output. Prefer `--format markdown` for human review.
 
-Prefer markdown over JSON for human-facing output:
+To reverse everything `setup` did: `chorus teardown` (add `--global` to also drop `~/.cache/agent-chorus/`).
 
-```bash
-chorus read --agent codex --include-user --format markdown
-```
+## What's New in v0.16.0
 
-Full JSON schema and field reference: [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md)
+- **Cursor IDE adapter.** Chorus now reads both the `cursor-agent` CLI transcripts *and* Cursor IDE app sessions through one adapter. If you use the Cursor app, your sessions are now first-class.
+- **`--history=on-demand` default.** `chorus read` now returns just the latest session for the current `cwd`. Closes the 2.5x token-inflation issue measured in the v0.15 field study. Provider snippets carry the contract so consumer agents inherit it automatically.
+- **`cwd_mismatch` is now explicit.** When `--cwd` matches no session, the output says so. No more silent fallbacks that read like real data.
+- **Doctor honesty pass.** New `info` severity, env-var dangling-path detection, git-aware hooks checks, stale-snippet detection. Doctor tells the truth or stays quiet.
+- **Codex search parity fix.** `chorus search --agent codex` no longer silently returns empty. The `read ⊆ search` invariant is now enforced for every adapter.
+- **`--help` overhaul.** Per-subcommand help leads with that subcommand. `chorus report --help` ships a copy-pasteable handoff JSON schema.
 
-## Quick Start
-
-### 1. Install
-
-```bash
-npm install -g agent-chorus    # requires Node >= 18
-# or
-cargo install agent-chorus     # requires Rust >= 1.74
-```
-
-### 2. Setup
-
-```bash
-chorus setup
-chorus doctor # Check session paths, provider wiring, and updates
-```
-
-`setup` also appends `.agent-chorus/` to `.gitignore` automatically and, if the `claude` CLI is present, installs the Agent Chorus Claude Code plugin.
-
-From zero to a working skill query in under a minute:
-
-![Setup Demo](docs/demo-setup.webp)
-
-This wires skill triggers into your agent configs (`CLAUDE.md`, `GEMINI.md`, `AGENTS.md`) so agents know how to use chorus.
-
-To cleanly reverse everything setup does (managed blocks, scaffolding, hooks):
-
-```bash
-chorus teardown           # reverse setup for this project
-chorus teardown --global  # also remove ~/.cache/agent-chorus/
-```
-
-### Claude Code integration (optional hook)
-
-Wire a `SessionEnd` hook so Claude Code automatically broadcasts its
-state to every other agent's inbox when a session ends — even on crash
-or force-close. Add to `~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionEnd": [{
-      "hooks": [
-        {
-          "type": "command",
-          "command": "bash /absolute/path/to/agent-chorus/scripts/hooks/chorus-session-end.sh",
-          "timeout": 10
-        }
-      ]
-    }]
-  }
-}
-```
-
-The script delegates to `chorus checkpoint --from claude` and no-ops
-silently on projects without `.agent-chorus/`, so it is safe to install
-globally. Full wiring details:
-[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md).
-
-### 3. Ask
-
-Tell any agent:
-
-> "What is Claude doing?"
-> "Compare Codex and Gemini outputs."
-> "Pick up where Gemini left off."
-
-The agent runs chorus commands behind the scenes and gives you an evidence-backed answer.
-
-<details><summary>Session selection behavior</summary>
-
-After `chorus setup`, provider instructions follow this behavior:
-
-- If no session is specified, read the latest session in the current project.
-- "past session" / "previous session" means one session before latest.
-- "last N sessions" includes latest.
-- "past N sessions" excludes latest (older N sessions).
-- Ask for a session ID only if initial fetch fails or exact ID is explicitly requested.
-
-</details>
+Full changelog and upgrade notes: [`RELEASE_NOTES.md`](./RELEASE_NOTES.md).
 
 ## How It Works
 
-1. **Ask naturally** - "What is Claude doing?" / "Did Gemini finish the API?"
-2. **Agent runs chorus** - Your agent calls `chorus summary`, `chorus read`, `chorus timeline`, `chorus compare`, `chorus search`, `chorus diff`, `chorus send`, `chorus messages`, `chorus checkpoint`, etc. behind the scenes.
-3. **Evidence-backed answer** - Sources cited, divergences flagged, no hallucination.
+1. **Ask naturally** — "What is Claude doing?" / "Did Gemini finish the API?"
+2. **Your agent runs chorus** — `chorus summary`, `read`, `timeline`, `compare`, `search`, `diff`, `send`, `messages`, `checkpoint`, etc.
+3. **Evidence-backed answer** — sources cited, divergences flagged, no hallucination.
 
 **Tenets:**
-- **Local-first** - reads directly from agent session logs on your machine. No data leaves.
-- **Evidence-based** - every claim tracks to a specific source session file.
-- **Privacy-focused** - automatically redacts API keys, tokens, and passwords.
-- **Dual parity** - ships Node.js + Rust CLIs with identical output contracts.
-
-## Real-World Recipes
-
-### Quick Status Check
-
-What is Claude working on right now? Get a structured digest — files touched, tools used, duration — without reading the full session. No LLM calls.
-
-```bash
-chorus summary --agent claude --cwd . --json
-```
-
-### Cross-Agent Timeline
-
-See what every agent did across your project, in chronological order.
-
-```bash
-chorus timeline --cwd . --format markdown
-```
-
-### Tool Call Forensics
-
-See exactly which files an agent read and edited — not just what it said.
-
-```bash
-chorus read --agent codex --tool-calls --json
-```
-
-### Handoff Recovery
-
-Gemini crashed mid-task. Claude picks up where it left off, with full context.
-
-```bash
-chorus read --agent gemini --cwd . --include-user --json
-```
-
-### Cross-Agent Verification
-
-Codex says it fixed the payment bug. Verify against Claude's analysis before deploying.
-
-```bash
-chorus compare --source codex --source claude --cwd . --json
-```
-
-### Security Audit
-
-Check what secrets appeared in agent sessions and were redacted.
-
-```bash
-chorus read --agent claude --audit-redactions --json
-```
-
-### Agent Coordination
-
-Tell Codex the auth module is ready — without switching tabs.
-
-```bash
-chorus send --from claude --to codex --message "auth module ready for review" --cwd .
-chorus messages --agent codex --cwd . --json
-```
-
-### Session Handoff
-
-Broadcast where you left off to every other agent before ending a
-session. Auto-composes branch, uncommitted-file count, and last commit;
-override with `--message` when you want custom text.
-
-```bash
-chorus checkpoint --from claude --cwd .
-chorus checkpoint --from codex --message "auth refactor half-done; types still broken" --cwd .
-```
-
-Pair with `chorus messages --agent <self> --clear` at standup to read
-and drain the inbox other agents left you. Full protocol:
-[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md).
-
-## Supported Agents
-
-Full multi-agent coverage. No other tool matches this breadth across 4 agents and 12 capabilities.
-
-| Feature               | Codex | Gemini | Claude | Cursor |
-| :-------------------- | :---: | :----: | :----: | :----: |
-| **Read Content**      |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Session Summary***  |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Timeline***         |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Auto-Discovery**    |  Yes  |  Yes   |  Yes   |  Yes   |
-| **CWD Scoping**       |  Yes  |   No   |  Yes   |   No   |
-| **List Sessions**     |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Search**            |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Comparisons**       |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Session Diff**      |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Redaction Audit**   |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Messaging**         |  Yes  |  Yes   |  Yes   |  Yes   |
-| **Session Handoff**   |  Yes  |  Yes   |  Yes   |  Yes   |
-
-*\*Added in v0.11.0. As of v0.13.0, all four features have Rust parity and are conformance-tested against shared golden fixtures. `--tool-calls` on Gemini and Cursor is a no-op in both runtimes — those adapters don't yet parse a tool-call schema.*
-
-Both Node.js and Rust implementations pass identical conformance tests against shared fixtures for every command listed above.
+- **Local-first** — reads agent session logs directly on your machine. No data leaves.
+- **Evidence-based** — every claim tracks to a specific source session file.
+- **Privacy-focused** — auto-redacts API keys, tokens, and passwords.
+- **Dual parity** — Node.js + Rust CLIs ship identical output contracts, conformance-tested against shared fixtures.
 
 ## Key Capabilities
 
-### Session Summary
-
-Structured session digest — files touched, tools used, duration — without reading the full content. No LLM calls required.
+A taste — see [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md) for the full surface.
 
 ```bash
+# Structured digest — files, tools, duration. No LLM calls.
 chorus summary --agent claude --cwd . --json
-```
 
-### Cross-Agent Timeline
+# Chronological view across every agent on the project
+chorus timeline --cwd . --format markdown
 
-Chronological view interleaving sessions from multiple agents. See what happened across your entire project.
-
-```bash
-chorus timeline --cwd . --agent claude --agent codex --limit 5 --json
-```
-
-### Tool Call Visibility
-
-Surface every `Read`, `Edit`, `Bash`, and `Write` call an agent made — not just the text it produced.
-
-```bash
+# What an agent actually touched (Read/Edit/Bash/Write)
 chorus read --agent codex --tool-calls --json
-```
 
-### Markdown Output
+# Verify one agent's claim against another
+chorus compare --source codex --source claude --cwd . --json
 
-Render any read, summary, or timeline as formatted markdown instead of JSON. Useful for demos, docs, and human review.
-
-```bash
-chorus summary --agent claude --format markdown
-```
-
-### Session Diff
-
-Compare two sessions from the same agent with line-level precision.
-
-```bash
-chorus diff --agent codex --from session-abc --to session-def --cwd . --json
-```
-
-### Redaction Audit Trail
-
-See exactly what was redacted and why in any session read.
-
-```bash
+# Audit what got redacted, and why
 chorus read --agent claude --audit-redactions --json
-```
 
-### Agent-to-Agent Messaging
+# Coordinate without switching tabs
+chorus send --from claude --to codex --message "auth module ready" --cwd .
+chorus messages --agent codex --cwd . --json
 
-Agents leave messages for each other through a local JSONL queue.
-
-```bash
-chorus send --from claude --to codex --message "auth module ready for review" --cwd .
-```
-
-### Session Handoff Protocol
-
-Standup + conclude rituals so cross-agent messaging actually gets used.
-At standup, drain the inbox. At conclude, either `chorus send` a
-targeted note or `chorus checkpoint` a state broadcast to every other
-agent.
-
-```bash
-# At standup — read and drain
-chorus messages --agent claude --clear --cwd .
-
-# At conclude — broadcast state
+# Broadcast where you left off before ending a session
 chorus checkpoint --from claude --cwd .
 ```
 
-`chorus checkpoint` is idempotent and no-ops silently when
-`.agent-chorus/` is absent. For Claude Code, wire
-`scripts/hooks/chorus-session-end.sh` into `~/.claude/settings.json` so
-an abrupt session end still leaves a checkpoint. Gemini sessions stored
-as protobuf (`.pb`) fall back via `--chats-dir` — see
-[`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md) for
-the full recipe.
-
-### Relevance Introspection
-
-Inspect and test the agent-context filtering patterns that decide which files matter.
-
-```bash
-chorus relevance --list --cwd .              # Show current include/exclude patterns
-chorus relevance --test src/main.rs --cwd .  # Test if a file matches
-```
-
-Full flag reference and JSON output schemas: [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md)
-
-## How It Compares
-
-| | agent-chorus | CrewAI / AutoGen | ccswarm / claude-squad |
-| :--- | :---: | :---: | :---: |
-| **Approach** | Read-only evidence layer | Full orchestration framework | Parallel agent spawning |
-| **Install** | `npm i -g agent-chorus` or `cargo install` | pip + ecosystem | git clone |
-| **Agents** | Codex, Claude, Gemini, Cursor | Provider-specific | Usually Claude-only |
-| **Dependencies** | Zero npm prod deps | Heavy Python/TS stack | Moderate |
-| **Privacy** | Local-first, auto-redaction | Cloud-optional | Varies |
-| **Session summaries** | Built-in (no LLM) | None | None |
-| **Cross-agent timeline** | Built-in | None | None |
-| **Markdown output** | Built-in | N/A | None |
-| **Cold-start solution** | Context Pack (5-doc briefing) | None | None |
-| **Language** | Node.js + Rust (conformance-tested) | Python or TypeScript | Single language |
-| **Agent messaging** | Built-in JSONL queue | Framework-specific | None |
-| **Session handoff protocol** | Built-in checkpoint + hook | None | None |
-| **Philosophy** | Visibility first, orchestration optional | Orchestration first | Task spawning |
-
-## Architecture
-
-Chorus sits between your agent and other agents' session logs. The workflow is evidence-first: one agent reads another agent's session evidence and continues with a local decision, without a central control plane.
-
-![Claude to Codex handoff via read-only evidence](docs/orchestrator-handoff-flow.svg)
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Agent as Your Agent (Codex, Claude, etc.)
-    participant Chorus as chorus CLI
-    participant Sessions as Other Agent Sessions
-
-    User->>Agent: "What is Claude doing?"
-    Agent->>Chorus: chorus read --agent claude --include-user --json
-    Chorus->>Sessions: Scan ~/.claude/projects/*.jsonl
-    Sessions-->>Chorus: Raw session data
-    Chorus->>Chorus: Redact secrets, format
-    Chorus-->>Agent: Structured JSON
-    Agent-->>User: Evidence-backed natural language answer
-```
-
-<details><summary>Diagram not rendering? View as image</summary>
-
-![Architecture sequence diagram](docs/architecture.svg)
-
-</details>
-
-### Current Boundaries
-
-- No orchestration control plane: no task router, scheduler, or work queues.
-- No autonomous agent chaining by default; handoffs are human-directed.
-- No live synchronization stream; reads are snapshot-based from local session logs.
+Supported agents: **Codex, Claude, Gemini, Cursor CLI, Cursor IDE.** Full capability matrix in [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md).
 
 ## Context Pack
 
-A context pack is an agent-first, token-efficient repo briefing for end-to-end understanding tasks.
-Instead of re-reading the full repository on every request, agents start from `.agent-context/current/` and open project files only when needed.
-This works the same for private repositories: the pack is local-first and does not require making your code public.
-
-- `5` ordered docs + `manifest.json` (compact index, not a repo rewrite).
-- Deterministic read order: `00` -> `10` -> `20` -> `30` -> `40`.
-- Agent-maintained in the intended workflow; verify with `chorus agent-context verify`.
-- CI gate available: `chorus agent-context verify --ci` for PR freshness checks.
-- Local recovery snapshots with rollback support.
+A context pack is an agent-first, token-efficient repo briefing for end-to-end understanding tasks. Instead of re-reading the full repository on every request, agents start from `.agent-context/current/` and open project files only when needed. Local-first, no need to make your repo public.
 
 ```bash
-# Recommended workflow:
-chorus agent-context init    # Creates .agent-context/current/ with templates
-# ...agent fills in <!-- AGENT: ... --> sections...
-chorus agent-context seal    # Validates content and locks the pack
-
-# Manual rebuild (backward-compatible wrapper)
-chorus agent-context build
-
-# Install pre-push hook (advisory-only check on main push)
-chorus agent-context install-hooks
+chorus agent-context init    # creates .agent-context/current/ with templates
+# ...agent fills in the <!-- AGENT: ... --> sections...
+chorus agent-context seal    # validates and locks the pack
 ```
 
-Ask your agent explicitly:
-
-> "Understand this repo end-to-end using the context pack first, then deep dive only where needed."
+Ask your agent: *"Understand this repo end-to-end using the context pack first, then deep dive only where needed."*
 
 ![Context Pack Read-Order](docs/cold-start-agent-context-hero.webp)
 
-![Context Pack Demo](docs/demo-agent-context.webp)
+CI gate: `chorus agent-context verify --ci` exits non-zero if the pack is stale or corrupt. Internals, sync policy, enforcement: [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md).
 
-CI gate available: `chorus agent-context verify --ci` exits non-zero if the pack is stale or corrupt — wire it into your PR checks.
+## Architecture, in one diagram
 
-Full agent-context internals, sync policy, layered model, and enforcement details: [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md)
+Chorus sits between your agent and other agents' session logs. Read-only, evidence-first, no central control plane.
+
+![Claude to Codex handoff via read-only evidence](docs/orchestrator-handoff-flow.svg)
+
+Boundaries: no task router, no scheduler, no autonomous chaining, no live sync stream. Snapshot-based reads from local logs, by design.
 
 ## Easter Egg
 
@@ -441,21 +163,16 @@ Full agent-context internals, sync policy, layered model, and enforcement detail
 
 ![Trash Talk Demo](docs/demo-trash-talk.webp)
 
-## Roadmap
-
-- **Context Pack customization** - user-defined doc structure, custom sections, team templates.
-- **Windows installation** - native Windows support (currently macOS/Linux).
-- **Cross-agent context sharing** - agents share context snippets (still read-only, still local).
-
 ## Go Deeper
 
 | If you need... | Go here |
 | :--- | :--- |
 | Full command syntax and JSON outputs | [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md) |
-| Agent-context internals and policy details | [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md) |
-| Protocol and schema contract details | [`PROTOCOL.md`](./PROTOCOL.md) |
-| Contributing or extending the codebase | [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) / [`CONTRIBUTING.md`](./CONTRIBUTING.md) |
+| Adapter formats, schema contracts, redaction rules | [`PROTOCOL.md`](./PROTOCOL.md) |
+| Session handoff protocol, hooks, Gemini `.pb` fallback | [`docs/session-handoff-guide.md`](./docs/session-handoff-guide.md) |
+| Agent-context internals and policy | [`AGENT_CONTEXT.md`](./AGENT_CONTEXT.md) |
 | Release-level changes and upgrade notes | [`RELEASE_NOTES.md`](./RELEASE_NOTES.md) |
+| Contributing or extending the codebase | [`docs/DEVELOPMENT.md`](./docs/DEVELOPMENT.md) / [`CONTRIBUTING.md`](./CONTRIBUTING.md) |
 
 ---
 

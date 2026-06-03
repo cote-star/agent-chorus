@@ -1,5 +1,91 @@
 # Release Notes
 
+## v0.16.0 — 2026-06-03
+
+**UAT-driven hardening release. Cursor IDE (SQLite) is now a first-class adapter alongside the v0.15.0 cursor-agent CLI surface, the read/search/doctor contracts are tightened so silent wrong-answer modes are eliminated, and the on-demand history contract is made explicit so consumer agents stop paying a 2.5× token tax for eager prior-session reads.**
+
+The release closes every PRIO 1 item from the v0.15.0 UAT (`research/uat-cli-features-2026-06-03.md`) plus the Tier-1/2/3 follow-ups surfaced by the independent UAT replay (`research/uat-replay-followups-2026-06-03.md`) and one further round (R2) of fresh-context review defects. Two breaking changes (a doctor JSON id split, a behavior tightening on the Rust cwd matcher) and one new warning on previously-silent paths; everything else is additive. Conformance covers all five adapter surfaces (claude, codex, gemini, cursor CLI, cursor IDE app, hermes) at Node↔Rust byte parity.
+
+### Highlights
+
+- **Cursor IDE (app) is a real adapter.** `chorus list/read/search/timeline --agent cursor` now merges the SQLite store (`~/.cursor/chats/<hash>/<uuid>/store.db`) with the v0.15.0 cursor-agent CLI JSONL surface into one unified cursor view. Workspace path recovered from the first user-role message header. Tool-call rendering, redaction, and Node/Rust parity all on day one.
+- **`--tool-calls` is uniform across every adapter.** Cursor IDE renders `[TOOL: ...]` blocks like claude/codex/cursor-cli. Gemini and hermes — whose on-disk format does not carry tool calls — now emit an explicit `NOT_AVAILABLE` warning instead of a silent no-op. `included_tool_calls: true` still gets set, but consumers can no longer misread the silence as "this session had no tools".
+- **`chorus read` defaults to `--history=on-demand`.** The flag is new; the behavior is contracted. Chorus does not eagerly pull prior sessions for the cwd — the field study (`context-pack-field-findings-2026-03-20.md` Finding 3) measured a 2.5× token inflation when agents looped over history at session start. `--history=eager` is reserved (currently behaves like on-demand and warns); `--history=none` is metadata-only.
+- **Codex search returns results again.** The codex search extractor walked a schema no real codex session has ever used (`{role:"assistant", content:"..."}` instead of the actual nested `response_item`/`event_msg` envelopes), so every `chorus search --agent codex <query>` returned `[]`. Both runtimes now share the `parse_codex_jsonl` shape, and a new conformance invariant — `read(text) ⊆ search(text-tokens)` — enforces the contract for claude, codex, gemini, cursor CLI, and cursor IDE app.
+- **Doctor stops contradicting itself and stops lying about the local install.** `info` severity replaces `warn` for optional/absent features, the hooks-path and pre-push checks share one truth source, both are git-aware (a non-git cwd no longer reports a pre-push hook as installed), and a new `env_override_dangling` warning fires when a `CHORUS_*_DIR` / `BRIDGE_*_DIR` env var points at a path that does not exist.
+
+### What's new
+
+#### Adapter coverage
+
+- **N1 — Cursor IDE (app) SQLite adapter.** New `cli/src/cursor_app.rs` (Rust) and `scripts/adapters/cursor_app.cjs` (Node) read SHA-256 content-addressed message blobs from `store.db` and merge into the existing cursor `list/read/search/timeline` paths. Workspace path is recovered from a `Workspace Path:` header in the first user-role message (mirroring cursor-cli's `.workspace-trusted` recovery). Doctor splits the previous `sessions_cursor` check into `sessions_cursor_cli` and `sessions_cursor_app` so the two surfaces are diagnosed independently; warning is raised only when both are empty. Node uses the built-in `node:sqlite` (Node ≥ 22.5) with a graceful fallback that leaves the surface invisible on older runtimes — the CLI/JSONL surface stays accessible regardless.
+- **N6 — `--tool-calls` parity.** Cursor IDE renders `[TOOL: <name>]` blocks via the shared claude content extractor. Gemini and hermes (whose transcripts have no tool-call concept) now emit a uniform `"--tool-calls has no effect for <agent> sessions: this agent's transcript format does not carry tool calls."` warning. Both runtimes share an `AGENTS_WITHOUT_TOOL_CALLS` / `agent_has_no_tool_calls()` set so the policy is centrally enforced.
+- **N2 — Codex search extractor parity with read.** Search now handles both real codex envelopes (`response_item` with nested `payload.content[]` and `event_msg` with `payload.message`) via the same `parse_codex_jsonl` shape used by `read`. Closes the silent-empty `chorus search --agent codex` regression that has been latent since the original codex adapter shipped.
+
+#### Read contract
+
+- **N7 — `--history=on-demand|none|eager`** on `chorus read`. `on-demand` (default) returns only the latest session for the cwd, no auto-recall. `none` is metadata-only (alias for `--metadata-only`). `eager` is reserved for a future multi-session merge and currently behaves identically to on-demand with an explicit warning so consumers cannot silently depend on a behavior chorus does not yet implement. Mirrored across Rust + Node; invalid values fail closed.
+- **F1 — `cwd_mismatch` structured field.** When `--cwd` is passed but no session matches, every adapter that falls back to the latest session (codex, claude, cursor CLI, cursor IDE app, hermes) now emits `cwd_mismatch: true` on the read output and echoes a `chorus: ...` warning to stderr. JSON-only consumers can detect the fallback without parsing warning strings; humans piping stdout still see the warning. Gemini does not scope by absolute cwd so the field is never set for it. Schema added as optional boolean in `schemas/read-output.schema.json`; existing goldens unaffected.
+- **F4 — `read(text) ⊆ search(text-tokens)` invariant.** The conformance harness now asserts the parity for claude, codex, gemini, cursor CLI, and cursor IDE app. Each fixture carries a distinctive assistant string the test searches for; deliberately breaking any extractor flips the corresponding case red. Codex was the only adapter failing pre-fix; the invariant guards every adapter going forward.
+
+#### Doctor honesty
+
+- **N3 — `info` severity + hooks-path reconciliation.** `info` is a real fourth severity now (alongside `pass`/`warn`/`fail`). `integration_*`, `snippet_*`, and `setup_intents` emit `info` when the repo intentionally has not run `chorus setup` (detected via `INTENTS.md` or `providers/` presence — the bare `.agent-chorus/messages/` directory created on first `send` does not count). `context_pack_hooks_path` is now informational and reports the effective hooks path; `context_pack_pre_push` is the single authority on whether the hook is installed.
+- **F2 — `env_override_dangling`.** A new warn-severity check enumerates `CHORUS_*_DIR` and `BRIDGE_*_DIR` env vars and flags any that point at non-existent directories. Surfaces the silent-partial-coverage failure mode where, for example, `CHORUS_CURSOR_DATA_DIR` left over from the v0.14.x bridge era would hide the CLI surface while the app surface appears healthy.
+- **F3 — git-aware hooks checks.** `context_pack_hooks_path` and `context_pack_pre_push` now guard on `git rev-parse --git-dir` succeeding in the target cwd. On a non-git cwd they report `info: cwd is not a git repository` instead of inheriting the user's global `core.hooksPath` and claiming a hook is installed in a directory that has no `.git/`.
+- **F12 — optional-adapter absence is `info`.** `sessions_cursor_cli`, `sessions_cursor_app`, and `sessions_hermes` report `info` when the data directory is absent (adapter not installed) and reserve `warn` for "directory exists but no sessions" (installed but quiet). Same pattern N3 used for integration/snippet/intents.
+- **R2 — stale-snippet detection.** Users who ran `chorus setup` before v0.16.0 will not have the on-demand history contract in their provider snippets or managed blocks, and `chorus setup` without `--force` silently leaves them outdated. New `snippet_<agent>_stale` and `integration_<agent>_stale` checks probe for the load-bearing "History contract" phrase and emit `warn` with an explicit `Run \`chorus setup --force\` to refresh.` remediation when absent.
+
+#### Help & docs
+
+- **N4 — per-subcommand `--help` leads with that subcommand.** `chorus <sub> --help` now emits the subcommand's usage, options, and examples first; the global blob is reserved for top-level `chorus --help` / `chorus help`. `chorus report --help` carries the full handoff JSON schema with field annotations plus a copy-pasteable minimal example that loads without `INVALID_HANDOFF`. `chorus messages --help` documents `--clear` above the fold. `chorus doctor --help` documents the four severity levels and the overall-elevation rule from N3.
+- **F5 — provider snippets carry the on-demand history contract.** The managed-block template (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`) and the provider snippet template (`.agent-chorus/providers/<agent>.md`) now spell out the `--history=on-demand` default, the 2.5× inflation finding, and the reserved-status of `--history=eager`. The managed block also gained the missing support-command list (`diff`, `audit-redactions`, `relevance`, `send`, `messages`) so a regenerated block does not lose richer hand-authored content.
+- **F9 — Rust `--help` parity.** Rust's `report --help` and `doctor --help` now carry the same handoff schema and severity block Node does. Clap was previously collapsing the multiline doc comments; both subcommands now use `long_about` with explicit formatting.
+
+#### Hygiene
+
+- **F10 — `node:sqlite` experimental warning suppressed.** Every chorus invocation that loaded the cursor adapter previously emitted `(node:NNNNN) ExperimentalWarning: SQLite is an experimental feature ...` to stderr, corrupting naive stderr-capture tooling. A scoped warning listener at module load drops only the SQLite Experimental category and forwards everything else.
+- **F11 — Node CLI rejects unknown flags.** A typo like `chorus list --Json` or `chorus read --limt 3` previously fell through silently and produced default-behavior output; Rust (clap) already failed closed. Node now drives a `validateFlags()` pass against an `ALLOWED_FLAGS` map per subcommand and errors with `Unknown flag for '<cmd>': --<name>. Run \`chorus <cmd> --help\` to see allowed flags.` (R2 extended the allow-list to cover `trash-talk` and `agent-context`.)
+- **F13 — `cli/src/cursor_app.rs` dead-code warnings cleared.** `CursorAppSession::{name, mode, created_at_ms}` and `find_session_db` are reserved for a future verbose-listing surface; tagged `#[allow(dead_code)]` with comments explaining the intent.
+- **R2 — Rust `cwd_matches_project` matcher fix.** The hierarchical matcher used `Path::starts_with`, which is component-aware and treats root `/` as a prefix of every absolute path. A session whose recorded cwd was `/` would silently match every `--cwd <X>` and short-circuit the cwd_mismatch fallback in Rust+codex specifically. Aligned with Node's algorithm: string-based with an explicit trailing `/` separator. Any-path sessions no longer act as wildcards.
+- **R2 — Rust setup `relative_path` symlink fix.** `chorus setup --cwd /tmp/...` on macOS wrote `Provider snippet: ../../../tmp/.../providers/<agent>.md` instead of the expected `.agent-chorus/providers/<agent>.md`. Root cause: `canonicalize()` resolved `/tmp` → `/private/tmp` for `base` but left `target` literal because the snippet file did not exist yet. New `canonicalize_via_parent()` walks up to the nearest existing ancestor and re-appends the missing tail so both paths share a canonical prefix.
+
+### Breaking changes
+
+- **`sessions_cursor` doctor check split.** Replaced by `sessions_cursor_cli` (cursor-agent CLI / JSONL surface) and `sessions_cursor_app` (Cursor IDE / SQLite surface). Consumers parsing `chorus doctor --json` by `id` need to update to read both. The combined "cursor adapter healthy" signal is now `sessions_cursor_cli.status == "pass" OR sessions_cursor_app.status == "pass"`.
+- **`--tool-calls` on gemini/hermes emits a warning.** Previously silent no-op; now emits a uniform `NOT_AVAILABLE`-style warning in `warnings[]`. Consumers strictly comparing the warnings array to a baseline will see new entries on these adapters.
+- **Rust `cwd_matches_project` no longer treats `cwd: "/"` as a wildcard.** A session whose recorded cwd was root would previously match every `--cwd` filter in the Rust runtime. Real bug fix — sessions recorded at the filesystem root are extraordinarily rare and almost certainly indicate a malformed record — but a consumer relying on the broken-matcher behavior will see different list/read results. Node was always correct here.
+- **New `cwd_mismatch: true` field on `read` output.** Optional, only present on fallback. Consumers using strict-schema validators may need to allow the additional field; `schemas/read-output.schema.json` is updated.
+- **History-contract preamble at top of managed block.** `chorus setup` (and `--force` refresh) now writes the History contract section above the routing bullets in `CLAUDE.md` / `AGENTS.md` / `GEMINI.md`. Consumer agents reading the file encounter the on-demand rule before the command examples — placement reflects that violation is the most expensive failure mode in the field study.
+
+### Upgrade notes
+
+- Run `chorus setup --force` to refresh the provider snippets and managed blocks with the new on-demand history contract. Until you do, `chorus doctor` will surface `snippet_<agent>_stale` / `integration_<agent>_stale` warnings against the older content.
+- Node 22.5+ recommended for full Cursor IDE app support (the adapter uses built-in `node:sqlite`). Older Node still works — the CLI/JSONL cursor surface remains fully accessible; only the SQLite surface is hidden, and doctor reports it as `info` (not `warn`) on older runtimes.
+- If you have stale `BRIDGE_*` or `CHORUS_*_DIR` env vars left over from the v0.14.x bridge era pointing at directories that no longer exist, `chorus doctor` will now flag them via `env_override_dangling`. Clean them up — they have been silently hiding sessions until now.
+- Consumers parsing `chorus doctor --json` by check `id`: replace `sessions_cursor` with the pair `sessions_cursor_cli` + `sessions_cursor_app`.
+
+### Acceptance
+
+- `cargo test --manifest-path cli/Cargo.toml` → **164 tests** pass.
+- `scripts/conformance.sh` → all parity rows green, including the new cursor-app surface, the `read-cursor-app-redaction` SQLite-redaction case, the hermes `--tool-calls` no-op warning case, the gemini `--tool-calls` no-op warning case, and the `read ⊆ search` invariant for claude, codex, gemini, cursor CLI, and cursor IDE app.
+- Live `chorus doctor` on this repo correctly fires `integration_claude_stale` against the hand-authored `CLAUDE.md` whose managed block predates v0.16.0 — verification that the stale-snippet detection works end-to-end on a real install.
+- F1 cwd_mismatch fallback regression-tested across every adapter that has the fallback path.
+
+### Known limitations
+
+- **`--history=eager` is reserved.** Currently behaves identically to `on-demand` and emits a warning. The future multi-session merge surface lands later; do not depend on `eager` behavior in scripts.
+- **Hermes fixture is synthetic.** The adapter still has no production transcripts in the wild; the new fixture (`fixtures/session-store/hermes/sessions/session-hermes-fixture.jsonl`) exercises the no-tool-calls warning path end-to-end but the format is still assumed (matches the v0.15.0 provisional state).
+- **Gemini `cwd_mismatch` field never fires.** Gemini scopes by named project under `~/.gemini/tmp/`, not by absolute filesystem path, so the abspath-mismatch detection doesn't apply. UAT lesson carried forward into the future agy adapter, not retrofitted into legacy gemini.
+
+### Credits
+
+Driven by three local research documents (gitignored, see `docs/DEVELOPMENT.md` for the local-only policy):
+
+- `research/uat-cli-features-2026-06-03.md` — original UAT against the installed v0.15.0 binary; identified P1–P4 findings that became N1–N7.
+- `research/next-scopes-post-v0.15.0-2026-06-03.md` — scoping that selected PRIO 1 (UAT gap close) as the headline lane for v0.16.0 and deferred the agent-context split (S-lane) to a later release.
+- `research/uat-replay-followups-2026-06-03.md` — independent fresh-context UAT replay against the in-flight branch; surfaced the Tier-1/2/3 follow-ups (F1–F13) plus the R2-round defects.
+
 ## v0.15.0 — 2026-06-03
 
 **Native Cursor adapter (Rust + Node) — Cursor is now a first-class agent — plus a provisional Hermes adapter and agent-context hardening.**
