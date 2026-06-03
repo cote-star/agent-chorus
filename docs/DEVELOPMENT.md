@@ -23,6 +23,10 @@ chorus agent-context install-hooks
 
 The active pack (`.agent-context/current/`) is tracked in git. Recovery snapshots (`.agent-context/snapshots/`) and build history are git-ignored and stay local.
 
+### Local-only working artifacts
+
+`research/`, `notes/`, and `drafts/` are **git-ignored by design** (see `.gitignore`) — they hold working notes, plans, design exploration, and progress logs that stay local to each contributor. Do not commit process/planning docs under those paths; if a document has durable, shareable value, promote it into `docs/` (tracked) instead. Likewise `*.log`, `.feature-test-report*.md`, and `.bugfix-plan/` are local-only.
+
 ## Project Structure
 
 ```text
