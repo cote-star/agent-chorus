@@ -395,6 +395,16 @@ run_search_read_parity() {
 
 run_search_read_parity codex codex-fixture "Codex fixture assistant output"
 
+# F4: extend the invariant to every adapter, not just codex. Each agent's
+# search extractor must surface the assistant text that read returns.
+# Pre-fix only codex was covered; the same class of bug could silently
+# regress claude, gemini, cursor (CLI or app) without notice. See
+# research/uat-replay-followups-2026-06-03.md F4.
+run_search_read_parity claude claude-fixture "Claude fixture assistant output"
+run_search_read_parity gemini gemini-fixture "Gemini fixture assistant output"
+run_search_read_parity cursor session-cursor-fixture-0001 "Cursor fixture assistant output"
+run_search_read_parity cursor cursor-app-fixture-uuid "Second answer"
+
 # --- Gemini list parity: proves .jsonl files are indexed and cwd is not null ---
 #
 # The Gemini list path had two pre-existing bugs fixed in v0.14.0:
