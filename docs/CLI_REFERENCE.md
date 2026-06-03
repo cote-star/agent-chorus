@@ -5,7 +5,7 @@ Use this page for full command syntax, examples, output contracts, and operation
 ## Command Contract
 
 ```bash
-chorus read --agent <codex|gemini|claude|cursor|hermes> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--include-user] [--tool-calls] [--format=<json|markdown>] [--json] [--metadata-only] [--audit-redactions]
+chorus read --agent <codex|gemini|claude|cursor|hermes> [--id=<substring>] [--cwd=<path>] [--chats-dir=<path>] [--last=<N>] [--include-user] [--tool-calls] [--history=<on-demand|none|eager>] [--format=<json|markdown>] [--json] [--metadata-only] [--audit-redactions]
 chorus summary --agent <codex|gemini|claude|cursor|hermes> [--cwd=<path>] [--format=<json|markdown>] [--json]
 chorus timeline [--agent <agent>]... [--cwd=<path>] [--limit=<N>] [--format=<json|markdown>] [--json]
 chorus compare --source <agent[:session-substring]>... [--cwd=<path>] [--last=<N>] [--json]
@@ -83,7 +83,30 @@ chorus read --agent claude --tool-calls --include-user --json
 
 The JSON response includes `"included_tool_calls": true` in metadata when active. Without the flag, behavior is unchanged.
 
-**Behaviour note — Gemini and Cursor:** `--tool-calls` runs without error on these agents but currently surfaces no `[TOOL: ...]` blocks. The Gemini JSONL and Cursor state stores do not carry a tool-call schema that the adapters parse yet. Applies to both Node and Rust.
+**Behaviour note — Gemini and Hermes (uniform NOT_AVAILABLE warning, v0.16.0):**
+The Gemini JSONL transcript format and the (provisional) Hermes session
+format do not carry tool-call structure that the adapters can surface.
+When `--tool-calls` is passed for these agents, the command runs without
+error, `included_tool_calls: true` is still emitted (the flag was
+honored), and a uniform warning is pushed into `result.warnings`:
+
+```
+--tool-calls has no effect for <agent> sessions: this agent's transcript format does not carry tool calls.
+```
+
+The exact phrasing is byte-identical between Node and Rust dispatch, so
+consumers can match on it deterministically. This warning is what
+distinguishes "agent format genuinely has no tool calls" from the prior
+silent no-op (which looked indistinguishable from "the session had no
+tool calls"). Mirrors `AGENTS_WITHOUT_TOOL_CALLS` in
+`scripts/read_session.cjs` and `agent_has_no_tool_calls` in
+`cli/src/main.rs`.
+
+Cursor (both CLI JSONL and IDE `store.db` surfaces) runs `--tool-calls`
+without error but does not currently emit `[TOOL: ...]` blocks; this
+behavior is tracked for a follow-up rather than escalated to the uniform
+warning because the cursor surfaces *do* carry tool-call data — the
+adapters just don't surface it yet.
 
 ### Read Flag Reference
 
@@ -96,12 +119,79 @@ The JSON response includes `"included_tool_calls": true` in metadata when active
 | `--last` | Number of trailing assistant messages to include | 1 |
 | `--include-user` | Include the paired user prompt(s) with each assistant message | off |
 | `--tool-calls` | Surface `[TOOL: <name>]...[/TOOL]` blocks in `content` | off |
+| `--history` | History scope: `on-demand` (default, latest session only), `none` (metadata only), `eager` (reserved — emits warning) | `on-demand` |
 | `--format` | Output format (`json`, `md` / `markdown`) | text unless `--json` |
 | `--json` | Machine-readable JSON output | off |
 | `--metadata-only` | Return metadata without `content` | off |
 | `--audit-redactions` | Include a `redactions` summary in output | off |
 
 **`--format` vs `--json`:** Rust treats `--format json` as an alias for `--json`. **Node has a bug here** — `--format json` falls through to plain-text output instead of JSON (see `scripts/read_session.cjs:1759`). The bug is documented and left in place because fixing it is a user-visible output-contract change; use `--json` for JSON output on both runtimes.
+
+### History Contract (`--history`, v0.16.0)
+
+`chorus read` is single-session by design. The `--history` flag makes that
+contract explicit; the default (`on-demand`) is what consumers should
+nearly always use.
+
+| Value | Semantics |
+|---|---|
+| `on-demand` (default) | Return ONLY the latest session for the cwd. Chorus does NOT auto-pull prior sessions into the returned content. When historical context is needed, the consumer calls `chorus list`, `chorus timeline`, or `chorus search` EXPLICITLY. This is the "on-demand recall" pattern — field measurements found a 2.5x token inflation when agents eagerly read multiple prior sessions, so the default is deliberately narrow. |
+| `none` | Equivalent to `--metadata-only`. The JSON `content` field is `null`; text output omits the content block. Useful for cheap session-existence probes and routing decisions. |
+| `eager` | RESERVED for a future multi-session merge. Today it behaves identically to `on-demand` AND pushes a warning into `result.warnings` so consumers cannot silently come to depend on it: `--history=eager is reserved for a future multi-session merge and currently behaves identically to --history=on-demand. Use \`chorus list / timeline / search\` to pull additional sessions explicitly.` |
+
+Invalid values are rejected at parse time on both runtimes (e.g. `--history=full` exits non-zero with `Invalid --history value: full. Allowed: on-demand | none | eager.`).
+
+```bash
+# Default — single latest session for the cwd
+chorus read --agent claude --cwd . --json
+
+# Metadata-only probe ("does claude have any session for this cwd?")
+chorus read --agent claude --cwd . --history none --json
+
+# Reserved value — works, but pushes a warning into the JSON
+chorus read --agent claude --cwd . --history eager --json
+```
+
+The history contract is also written into provider snippets and the
+`CLAUDE.md` / `AGENTS.md` / `GEMINI.md` managed blocks by `chorus setup`
+(v0.16.0+), so consuming agents are reminded of the on-demand rule
+inside their own instruction files. See "Setup" below and the
+stale-snippet checks under "Doctor".
+
+### `cwd_mismatch` (v0.16.0)
+
+When `--cwd <PATH>` is passed but no session matches and the adapter
+falls back to the latest session anyway (the long-standing Codex /
+Claude / Cursor behavior — see Rule 4 in `PROTOCOL.md`), the JSON output
+now carries an explicit boolean:
+
+```json
+{
+  "agent": "codex",
+  "cwd": "/workspace/missing-project",
+  "warnings": [
+    "Warning: no Codex session matched cwd /workspace/missing-project; falling back to latest session."
+  ],
+  "cwd_mismatch": true
+}
+```
+
+The field is **only emitted when the fallback fires**. When `--cwd`
+resolves cleanly, `cwd_mismatch` is absent from the output (it is NOT
+emitted as `false`). This keeps JSON consumers honest: any code that
+checks `result.cwd_mismatch === true` will detect the silent-fallback
+case without scanning the warnings array.
+
+In addition, the same warning string is mirrored to **stderr** prefixed
+with `chorus:`:
+
+```
+chorus: Warning: no Codex session matched cwd /workspace/missing-project; falling back to latest session.
+```
+
+Stderr-watching humans see it immediately even when stdout is
+JSON-piped. Schema: see `cwd_mismatch` in
+[`schemas/read-output.schema.json`](../schemas/read-output.schema.json).
 
 ## Session Summary
 
@@ -277,6 +367,44 @@ chorus list --agent codex --cwd /path/to/project --json
 ]
 ```
 
+### Cursor-only `source` field (v0.16.0)
+
+`chorus list --agent cursor` and `chorus search --agent cursor` entries
+carry an extra string field — `"source": "cli" | "app"` — distinguishing
+the two on-disk Cursor surfaces:
+
+| Value | Surface | Backing store |
+|---|---|---|
+| `"cli"` | cursor-agent CLI transcripts | `~/.cursor/projects/<project>/agent-transcripts/<session>/*.jsonl` |
+| `"app"` | Cursor IDE workspace chats | `~/.cursor/chats/<hash>/<uuid>/store.db` (SQLite) |
+
+Example:
+
+```json
+[
+  {
+    "session_id": "store",
+    "agent": "cursor",
+    "source": "app",
+    "cwd": "/Users/me/code/app",
+    "modified_at": "2026-05-22T18:11:00Z",
+    "file_path": "/Users/me/.cursor/chats/abc.../uuid.../store.db"
+  },
+  {
+    "session_id": "abcd1234-...",
+    "agent": "cursor",
+    "source": "cli",
+    "cwd": "/Users/me/code/app",
+    "modified_at": "2026-05-22T17:42:00Z",
+    "file_path": "/Users/me/.cursor/projects/-Users-me-code-app/agent-transcripts/abcd.../abcd....jsonl"
+  }
+]
+```
+
+The `source` field is **cursor-only** — it is not emitted for codex,
+claude, gemini, or hermes. List/search results from those agents
+retain the existing schema unchanged.
+
 ## Searching Sessions
 
 ```bash
@@ -306,8 +434,64 @@ The `--last N` flag controls how many recent assistant messages to read from eac
 
 ## Reporting
 
+Build a structured cross-agent report from a handoff packet (a JSON file
+that names the task, success criteria, and source sessions to compare).
+
 ```bash
 chorus report --handoff ./handoff_packet.json --json
+```
+
+### Handoff Schema (v0.16.0 — surfaced in `--help`)
+
+The full schema is now embedded in `chorus report --help` (Rust CLI) so
+operators don't need to leave the terminal to see it. Reproduced here
+for searchability; the canonical source is
+[`schemas/handoff.schema.json`](../schemas/handoff.schema.json).
+
+```json
+{
+  "mode": "analyze",
+  "task": "<short description>",
+  "success_criteria": ["<criterion>", ...],
+  "sources": [
+    {
+      "agent": "claude",
+      "session_id": "<id>",
+      "current_session": true,
+      "cwd": "<path>",
+      "last_n": 10
+    }
+  ],
+  "constraints": ["<constraint>", ...]
+}
+```
+
+**Required fields:** `mode`, `task`, `success_criteria` (non-empty),
+`sources` (each entry requires `agent`, plus either `session_id` OR
+`current_session: true`).
+
+**Optional fields:** `cwd` and `last_n` per-source, top-level
+`constraints`.
+
+**Strictness:** unknown fields produce `INVALID_HANDOFF`. `mode` must be
+one of the canonical modes (`verify`, `steer`, `analyze`, `feedback`).
+
+Minimal copy-pasteable example (write to `handoff.json`):
+
+```json
+{
+  "mode": "analyze",
+  "task": "Compare claude and codex outputs",
+  "success_criteria": ["Identify agreements and contradictions"],
+  "sources": [
+    {"agent": "claude", "current_session": true},
+    {"agent": "codex",  "current_session": true}
+  ]
+}
+```
+
+```bash
+chorus report --handoff handoff.json --json
 ```
 
 ## Context Pack
@@ -820,10 +1004,17 @@ Setup performs these operations:
 | Operation | File / Target | Notes |
 |---|---|---|
 | `file` | `.agent-chorus/INTENTS.md` | Intent contract (skipped if exists unless --force) |
-| `file` | `.agent-chorus/providers/{claude,codex,gemini}.md` | Per-agent trigger snippets |
-| `integration` | `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` | Managed blocks injected or created |
+| `file` | `.agent-chorus/providers/{claude,codex,gemini}.md` | Per-agent trigger snippets. v0.16.0+ snippets carry a top-of-block "History contract" section that documents the on-demand history rule. |
+| `integration` | `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` | Managed blocks injected or created. v0.16.0+ blocks open with **History contract (READ FIRST — violating this costs 2.5x tokens)** and list `chorus list / timeline / search` as the on-demand recall path. The block's support-commands list also enumerates `diff`, `audit-redactions`, `relevance`, `send`, and `messages`. |
 | `gitignore` | `.gitignore` | `.agent-chorus/` appended if not already present |
 | `plugin` | `claude plugin` | Auto-installs Claude Code skill plugin if `claude` CLI is available |
+
+**Stale-snippet detection (v0.16.0):** `chorus doctor` emits
+`snippet_<agent>_stale: warn` and `integration_<agent>_stale: warn`
+when these files exist but were generated before the v0.16.0 history
+contract was added. The remediation is `chorus setup --force`, which
+refreshes the snippet and managed block in place. See "Doctor — Check
+Catalogue" above.
 
 **JSON output:**
 
@@ -886,7 +1077,7 @@ Doctor reports on: version, session directory availability, setup completeness (
 
 ```
 Agent Chorus doctor: PASS (/path/to/project)
-- PASS version: agent-chorus v0.7.0
+- PASS version: agent-chorus v0.16.0
 - PASS codex_sessions_dir: Found: ~/.codex/sessions
 - PASS claude_projects_dir: Found: ~/.claude/projects
 - PASS gemini_tmp_dir: Found: ~/.gemini/tmp
@@ -894,19 +1085,82 @@ Agent Chorus doctor: PASS (/path/to/project)
 - PASS snippet_claude: Found: .agent-chorus/providers/claude.md
 - PASS integration_claude: Managed block present in CLAUDE.md
 - PASS sessions_claude: At least one claude session discovered
+- PASS sessions_cursor_cli: At least one cursor-agent CLI transcript discovered
+- INFO sessions_cursor_app: Cursor IDE not configured (data directory absent: ~/.cursor/chats)
+- INFO sessions_hermes: Hermes not configured (data directory absent: ~/.hermes/sessions)
 - PASS context_pack_state: State: SEALED_VALID
-- PASS update_status: Up to date (0.7.0)
+- INFO context_pack_hooks_path: Effective git hooks path: .git/hooks (default)
+- PASS context_pack_pre_push: Found: .git/hooks/pre-push
+- PASS update_status: Up to date (0.16.0)
 - PASS claude_plugin: agent-chorus Claude Code plugin installed
 ```
 
-**JSON output (`--json`):** array of `{ id, status, detail }` check objects, where `status` is `"pass"`, `"warn"`, or `"fail"`.
+**JSON output (`--json`):** object `{ cwd, overall, checks: [...] }`
+where each check is `{ id, status, detail }`. `status` is one of
+`"pass"`, `"info"`, `"warn"`, or `"fail"`. The top-level `overall`
+collapses the checks (see severity model below).
+
+### Doctor — Severity Model (v0.16.0)
+
+Doctor returns four severity levels per check:
+
+| Severity | Meaning | Elevates `overall`? |
+|---|---|---|
+| `pass` | Check passed. | no |
+| `info` | Informational state — typically "this feature is intentionally not configured" (e.g. Hermes not installed, cwd not a git repo). Distinguishable from `pass` for tooling that wants to surface configuration absence, but is NOT a problem. | **no** |
+| `warn` | Soft failure — something is misconfigured but the install still works. Includes stale snippets, dangling env overrides, missing managed blocks on an initialized install. | yes (sets `overall: warn`) |
+| `fail` | Hard failure — the install is broken or an adapter errored. | yes (sets `overall: fail`) |
+
+`overall` is computed as:
+1. `fail` if any check is `fail`.
+2. else `warn` if any check is `warn`.
+3. else `pass`. (`info` never elevates `overall`.)
+
+This matters for CI: `chorus doctor --json | jq -e '.overall == "pass"'`
+will succeed on an install that has `info`-tagged checks (e.g. "Hermes
+not installed") and fail on `warn` or `fail`.
+
+### Doctor — Check Catalogue (v0.16.0)
+
+The set of check IDs and their possible severities. New or changed
+entries in v0.16.0 are marked `[v0.16.0]`.
+
+| Check ID | Possible severities | What it reports |
+|---|---|---|
+| `version` | `pass` | The running `chorus` version. |
+| `codex_sessions_dir` / `claude_projects_dir` / `gemini_tmp_dir` | `pass` / `warn` | Whether the agent's base directory exists. |
+| `setup_intents` | `pass` / `warn` / `info` | Whether `.agent-chorus/INTENTS.md` exists. `info` when the repo is uninitialized; `warn` when the repo has been initialized but the intents file is missing. |
+| `snippet_<agent>` | `pass` / `warn` / `info` | Whether the per-agent provider snippet (`.agent-chorus/providers/<agent>.md`) exists. Severity follows the same `info`-vs-`warn` rule as `setup_intents`. |
+| `integration_<agent>` | `pass` / `warn` / `info` | Whether the managed block is injected in `AGENTS.md` / `CLAUDE.md` / `GEMINI.md`. |
+| `sessions_codex` / `sessions_claude` / `sessions_gemini` | `pass` / `warn` / `fail` | Whether at least one session for the cwd was discovered. `fail` if the adapter errored. |
+| `sessions_cursor_cli` `[v0.16.0]` | `pass` / `info` / `warn` | Cursor CLI (cursor-agent) transcript surface. `info` when the data directory is absent (tool not installed — intentional). `warn` when the directory exists but has zero sessions. Replaces the previous single `sessions_cursor` check. |
+| `sessions_cursor_app` `[v0.16.0]` | `pass` / `info` / `warn` | Cursor IDE (desktop app) `store.db` surface. Same `info`-vs-`warn` rule. Replaces the previous single `sessions_cursor` check. |
+| `sessions_hermes` `[v0.16.0]` | `pass` / `info` / `warn` | Hermes (provisional) sessions. Now downgrades to `info` when the data directory is absent (was `warn` in v0.15.0 — a noisy false positive for anyone who doesn't run Hermes). |
+| `env_override_dangling` `[v0.16.0]` | `warn` | Emitted (potentially multiple times) for each `CHORUS_*` / `BRIDGE_*` env var that points at a non-existent directory. Sessions from that adapter would be invisible until the var is cleared or the directory exists; doctor surfaces it instead of silently hiding adapter output. |
+| `snippet_<agent>_stale` `[v0.16.0]` | `warn` | Emitted when `.agent-chorus/providers/<agent>.md` exists but lacks the load-bearing "History contract" section introduced in v0.16.0. Remediation: `chorus setup --force`. |
+| `integration_<agent>_stale` `[v0.16.0]` | `warn` | Emitted when the managed block inside `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` exists but predates the v0.16.0 history contract. Remediation: `chorus setup --force`. |
+| `context_pack_state` | `pass` / `warn` | `SEALED_VALID` / `TEMPLATE` / `UNINITIALIZED`. |
+| `context_pack_guidance` | `warn` | Present only when the pack state is `UNINITIALIZED` or `TEMPLATE`. |
+| `context_pack_hooks_path` `[v0.16.0]` | `info` | Reports the effective git hooks path (`configured` via `git config core.hooksPath`, else `default` = `.git/hooks`). When the cwd is **not a git repo**, this check reports `info` ("cwd is not a git repository; git hooks checks skipped") rather than falsely reporting a global hooks path as if it applied to this cwd. |
+| `context_pack_pre_push` `[v0.16.0]` | `pass` / `warn` / `info` | Whether a pre-push hook exists at the effective hooks path. `info` when the cwd is not a git repo. |
+| `update_status` | `pass` / `warn` | Update check result. `warn` if the update check itself errored. |
+| `claude_plugin` | `pass` / `warn` | Claude Code plugin install state. `warn` if the `claude` CLI is missing or the plugin isn't installed. |
+
+**Why the `info` tier exists:** before v0.16.0, "Hermes not installed"
+and "cwd is not a git repo" both rendered as `warn`, which polluted
+`overall: warn` for installs that were fully healthy for their actual
+use case. The `info` tier separates *intentional absence* from
+*misconfiguration*. Tooling that only cares about real problems should
+check `overall != "pass"`; tooling that wants to render full
+configuration state should iterate the `checks` array and surface
+`info` rows distinctly.
 
 **Exit codes**
 
 | Code | Condition |
 |---|---|
-| `0` | All checks passed or warned (non-fatal) |
-| non-zero | At least one check returned `fail`, or the doctor run itself errored before reporting |
+| `0` | `overall` is `pass` or `warn` (and the doctor run completed). `info`-only installs exit `0` with `overall: pass`. |
+| non-zero | At least one check returned `fail`, or the doctor run itself errored before reporting. |
 
 ## Teardown
 
@@ -981,8 +1235,15 @@ Override default paths using environment variables.
 | `CHORUS_CODEX_SESSIONS_DIR`  | Path to Codex sessions    | `~/.codex/sessions`                    |
 | `CHORUS_GEMINI_TMP_DIR`      | Path to Gemini temp chats | `~/.gemini/tmp`                        |
 | `CHORUS_CLAUDE_PROJECTS_DIR` | Path to Claude projects   | `~/.claude/projects`                   |
-| `CHORUS_CURSOR_DATA_DIR`     | cursor-agent projects root | `~/.cursor/projects`                   |
+| `CHORUS_CURSOR_DATA_DIR`     | cursor-agent projects root (CLI surface) | `~/.cursor/projects`                   |
+| `CHORUS_CURSOR_APP_DATA_DIR` | Cursor IDE chat store root (app surface, v0.16.0) | `~/.cursor/chats`                      |
 | `CHORUS_HERMES_DATA_DIR`     | Hermes sessions (provisional) | `~/.hermes/sessions`                |
+
+Every `CHORUS_*` variable has a backward-compatible `BRIDGE_*` alias
+(e.g. `BRIDGE_CURSOR_APP_DATA_DIR`). When both are set, `CHORUS_*` wins.
+`chorus doctor` emits `env_override_dangling: warn` when any of these
+points at a non-existent directory (see "Doctor — Severity Model"
+below).
 
 ## Agent-Specific Notes
 
@@ -1009,36 +1270,43 @@ For the full workaround including a JSONL-stub recipe, see
 [`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
 4 — Gemini protobuf fallback".
 
-### Cursor: native cursor-agent transcripts
+### Cursor: two on-disk surfaces (CLI transcripts + IDE app store, v0.16.0)
 
-Chorus reads Cursor sessions from the cursor-agent CLI transcript tree:
+As of v0.16.0, Chorus reads Cursor sessions from **both** the cursor-agent CLI
+transcript tree and the Cursor IDE (desktop app) chat store. The two surfaces
+are independent; either can be empty without breaking the other.
 
-`~/.cursor/projects/<project>/agent-transcripts/<session>/<session>.jsonl`
+| Surface | Path | Format | Override env |
+|---|---|---|---|
+| `cli` | `~/.cursor/projects/<project>/agent-transcripts/<session>/<session>.jsonl` | JSONL (one event per line) | `CHORUS_CURSOR_DATA_DIR` (legacy: `BRIDGE_CURSOR_DATA_DIR`) |
+| `app` | `~/.cursor/chats/<hash>/<uuid>/store.db` | SQLite | `CHORUS_CURSOR_APP_DATA_DIR` (legacy: `BRIDGE_CURSOR_APP_DATA_DIR`) |
 
-Per-session `--cwd` scoping is derived from `<project>/.workspace-trusted`
-(`workspacePath`, when present) or from a filesystem-validated demangle of the
-project directory name. `--include-user` and `--tool-calls` are supported.
+Both surfaces appear in the same `chorus list --agent cursor` /
+`chorus search --agent cursor` results, distinguished by the cursor-only
+`source: "cli" | "app"` field (documented under "Listing Sessions"
+above). `chorus read --agent cursor` selects between them via `--id`
+substring match like every other adapter.
 
-Override the projects root with `CHORUS_CURSOR_DATA_DIR` (or legacy
-`BRIDGE_CURSOR_DATA_DIR`). See `docs/adapters/CURSOR_HERMES_NATIVE_ADAPTER.md`.
+Per-session `--cwd` scoping for the CLI surface is derived from
+`<project>/.workspace-trusted` (`workspacePath`, when present) or from a
+filesystem-validated demangle of the project directory name. The IDE
+app surface scopes via the workspace path persisted in `store.db`.
+`--include-user` is supported on both surfaces; `--tool-calls` runs
+without error but does not currently surface `[TOOL: ...]` blocks (see
+the tool-calls behaviour note in the read section).
 
-### Cursor: SQLite (`state.vscdb`) fallback
+**Node runtime requirement (app surface only):** the IDE app surface
+requires **Node >= 22.5** for the built-in `node:sqlite` module.
+On older Node versions the Rust CLI still exposes the IDE app surface
+(it links `rusqlite`), but the Node CLI gracefully falls back to
+showing only the CLI/JSONL surface — `chorus list --agent cursor`
+will simply omit `source: "app"` rows, and `chorus doctor` reports
+"Cursor IDE SQLite reader unavailable (requires Node >= 22.5 with
+node:sqlite)" rather than failing. This is intentional: degraded
+visibility, not a hard error.
 
-When no cursor-agent transcripts are found but SQLite chat data exists under
-`~/Library/Application Support/Cursor/User/workspaceStorage/<id>/state.vscdb`
-(macOS; Linux/Windows use the equivalent application-support paths), `NOT_FOUND`
-errors may mention "SQLite state.vscdb". Chorus does not parse that store yet.
-
-For inspection / debugging, you can dump the relevant rows manually:
-
-```bash
-DB=~/Library/Application\ Support/Cursor/User/workspaceStorage/<id>/state.vscdb
-sqlite3 "$DB" "SELECT key, length(value) FROM ItemTable WHERE key LIKE '%composer%';"
-```
-
-Full `rusqlite`-backed reading is tracked as a follow-up. See
-[`docs/session-handoff-guide.md`](./session-handoff-guide.md) "Scenario
-5 — Cursor SQLite fallback" for the full context.
+See `docs/adapters/CURSOR_HERMES_NATIVE_ADAPTER.md` for the full adapter
+architecture.
 
 ### Hermes (provisional scaffold)
 
@@ -1091,9 +1359,55 @@ Chorus checks for updates once per version.
 - **Fail-silent**: If the check fails, it says nothing.
 - **Opt-out**: Set `CHORUS_SKIP_UPDATE_CHECK=1`.
 
+## Unknown Flag Handling (F11, v0.16.0)
+
+Both runtimes now **fail closed on unknown flags**. The Rust CLI inherits
+this behavior from clap. The Node CLI previously had a hand-rolled
+parser that silently ignored unknown flags — typos like `--Json` (wrong
+case) or `--limt` (transposed letters) used to fall through to default
+behavior, producing surprising output. As of v0.16.0 the Node CLI
+mirrors clap and rejects unknown flags by name:
+
+```
+$ chorus list --agent codex --limt 3
+Unknown flag for 'list': --limt. Run `chorus list --help` to see allowed flags.
+```
+
+The validator runs at dispatch time, before the command's own parser, so
+the error names the offending flag and the subcommand explicitly.
+`agent-context` and `trash-talk` have their own nested parsers; the
+top-level validator passes through to them.
+
+The full per-command allowlist lives in
+`scripts/read_session.cjs:ALLOWED_FLAGS`. A flag not in the allowlist is
+rejected even if the underlying handler would have accepted it — the
+allowlist is the contract.
+
 ## Parity Notes
 
-As of v0.13.0, Node and Rust have full parity across every supported subcommand: `read` (including `--include-user`, `--tool-calls`, and `--format {json|md|markdown}`), `list`, `search`, `compare`, `diff`, `summary`, `timeline`, `send`, `messages`, `checkpoint`, `setup`, `doctor`, `teardown`, `agent-context`, and `relevance`. All shared outputs are conformance-tested via `scripts/conformance.sh` against golden fixtures in `fixtures/golden/`.
+As of v0.16.0, Node and Rust have full parity across every supported subcommand: `read` (including `--include-user`, `--tool-calls`, `--history`, and `--format {json|md|markdown}`), `list`, `search`, `compare`, `diff`, `summary`, `timeline`, `send`, `messages`, `checkpoint`, `setup`, `doctor`, `teardown`, `agent-context`, and `relevance`. All shared outputs are conformance-tested via `scripts/conformance.sh` against golden fixtures in `fixtures/golden/`.
+
+### Search Invariant (`read(text) ⊆ search(text-tokens)`, CI-enforced in v0.16.0)
+
+Every adapter must satisfy this invariant: if `chorus read --agent <X>` returns
+content for a session, then `chorus search --agent <X> <tokens-from-that-content>`
+must return that session in its results. Conformance now enforces this for
+every supported adapter — claude, codex, gemini, cursor (both CLI and IDE
+app surfaces), and hermes — in `scripts/conformance.sh` (see the
+`search-read-parity` block).
+
+The codex extractor was the original motivating bug: prior to v0.16.0 it
+walked a top-level `role`/`content` schema that never existed in real
+codex sessions, so the read path returned content from one envelope and
+the search path indexed nothing — silently returning empty results. The
+fix walks the real `response_item.payload.message` and
+`event_msg.payload.message` envelopes that codex actually emits, so
+read and search now operate on the same content.
+
+This invariant is what makes "evidence-based" claims auditable: a
+consumer that quotes content from `chorus read` can verify the source
+session is discoverable via `chorus search` without trusting the read
+adapter blindly.
 
 Two documented wrinkles:
 

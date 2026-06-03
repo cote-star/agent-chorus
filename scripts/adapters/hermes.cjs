@@ -143,6 +143,10 @@ function read(filePath, lastN, opts = {}) {
     message_count: messageCount,
     messages_returned: messagesReturned,
     included_roles: rolesIncluded,
+    // N6: provisional hermes adapter; format not yet confirmed to carry
+    // tool calls. Ack the flag for uniform output; dispatcher emits the
+    // "not available" warning.
+    ...(opts.includeToolCalls ? { included_tool_calls: true } : {}),
   };
 }
 

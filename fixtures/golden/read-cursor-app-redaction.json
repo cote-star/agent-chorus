@@ -1,0 +1,15 @@
+{
+  "agent": "cursor",
+  "chorus_output_version": 1,
+  "content": "Found token=[REDACTED] Also Bearer [REDACTED]",
+  "cwd": "/workspace/demo",
+  "included_roles": [
+    "assistant"
+  ],
+  "message_count": 1,
+  "messages_returned": 1,
+  "session_id": "cursor-app-redaction-uuid",
+  "source": "store.db",
+  "timestamp": "__TS__",
+  "warnings": []
+}

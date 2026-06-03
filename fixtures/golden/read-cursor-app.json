@@ -1,0 +1,15 @@
+{
+  "agent": "cursor",
+  "chorus_output_version": 1,
+  "content": "Second answer, with a [TOOL:Read] mark.",
+  "cwd": "/workspace/demo",
+  "included_roles": [
+    "assistant"
+  ],
+  "message_count": 2,
+  "messages_returned": 1,
+  "session_id": "cursor-app-fixture-uuid",
+  "source": "store.db",
+  "timestamp": "__TS__",
+  "warnings": []
+}

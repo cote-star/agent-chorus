@@ -1,30 +1,37 @@
 [
   {
+    "session_id": "session-codex-fixture-0001",
+    "agent": "codex",
+    "cwd": "/workspace/demo",
+    "modified_at": null,
+    "file_path": "session-codex-fixture-0001.jsonl"
+  },
+  {
     "session_id": "session-codex-malformed",
     "agent": "codex",
     "cwd": "/workspace/demo",
-    "modified_at": "2026-02-08T11:52:16.062Z",
-    "file_path": "/tmp/session-codex-malformed.jsonl"
-  },
-  {
-    "session_id": "session-codex-multi",
-    "agent": "codex",
-    "cwd": "/workspace/demo",
-    "modified_at": "2026-02-08T11:29:55.014Z",
-    "file_path": "/tmp/session-codex-multi.jsonl"
+    "modified_at": null,
+    "file_path": "session-codex-malformed.jsonl"
   },
   {
     "session_id": "session-codex-mixed-schema",
     "agent": "codex",
     "cwd": "/workspace/demo",
-    "modified_at": "2026-02-08T11:29:29.124Z",
-    "file_path": "/tmp/session-codex-mixed-schema.jsonl"
+    "modified_at": null,
+    "file_path": "session-codex-mixed-schema.jsonl"
   },
   {
-    "session_id": "session-codex-fixture-0001",
+    "session_id": "session-codex-multi",
     "agent": "codex",
     "cwd": "/workspace/demo",
-    "modified_at": "2026-02-08T08:34:50.021Z",
-    "file_path": "/tmp/session-codex-fixture-0001.jsonl"
+    "modified_at": null,
+    "file_path": "session-codex-multi.jsonl"
+  },
+  {
+    "session_id": "session-codex-tool-fixture",
+    "agent": "codex",
+    "cwd": "/workspace/demo",
+    "modified_at": null,
+    "file_path": "session-codex-tool-fixture.jsonl"
   }
 ]

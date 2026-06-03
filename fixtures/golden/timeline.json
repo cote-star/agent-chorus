@@ -3,7 +3,8 @@
     "claude",
     "codex",
     "gemini",
-    "cursor"
+    "cursor",
+    "hermes"
   ],
   "chorus_output_version": 1,
   "cwd": "/workspace/demo",
@@ -27,6 +28,13 @@
       "cwd": "/workspace/demo",
       "session_id": "session-claude-redaction-stress",
       "snippet": "Here are some secrets: sk-[REDACTED] and AKIA[REDACTED] and Bearer [REDACTED] and api_key=[REDACTED] and token=[REDACTED] and password=[REDACTED] and apikey=[REDACTED] and secret=[REDACTED]",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "claude",
+      "cwd": "/workspace/demo",
+      "session_id": "session-claude-tool-fixture",
+      "snippet": "Checking the file.Done reading.",
       "timestamp": "__TS__"
     },
     {
@@ -55,6 +63,27 @@
       "cwd": "/workspace/demo",
       "session_id": "session-codex-multi",
       "snippet": "Third assistant response.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "codex",
+      "cwd": "/workspace/demo",
+      "session_id": "session-codex-tool-fixture",
+      "snippet": "Running a shell command.Listed the directory.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "cursor",
+      "cwd": "/workspace/demo",
+      "session_id": "cursor-app-fixture-uuid",
+      "snippet": "Second answer, with a [TOOL:Read] mark.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "cursor",
+      "cwd": "/workspace/demo",
+      "session_id": "cursor-app-redaction-uuid",
+      "snippet": "Found token=[REDACTED] Also Bearer [REDACTED]",
       "timestamp": "__TS__"
     },
     {
@@ -97,6 +126,13 @@
       "cwd": "demo",
       "session_id": "session-gemini-jsonl-fixture",
       "snippet": "Second jsonl assistant answer.",
+      "timestamp": "__TS__"
+    },
+    {
+      "agent": "hermes",
+      "cwd": "/workspace/demo",
+      "session_id": "session-hermes-fixture",
+      "snippet": "Hermes fixture assistant output.",
       "timestamp": "__TS__"
     }
   ],

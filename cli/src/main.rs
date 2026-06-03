@@ -2,6 +2,7 @@ mod adapters;
 mod agents;
 mod agent_context;
 mod checkpoint;
+mod cursor_app;
 mod cursor_cwd;
 mod cursor_parse;
 pub mod diff;
@@ -73,6 +74,16 @@ enum Commands {
         #[arg(long = "tool-calls")]
         tool_calls: bool,
 
+        /// History scope. Default `on-demand` returns only the latest session
+        /// for the cwd — chorus does NOT auto-pull prior sessions into the
+        /// returned content; consumers should call `chorus list / timeline /
+        /// search` explicitly when they need historical context. `none` is
+        /// equivalent to `--metadata-only`. `eager` is reserved for a future
+        /// multi-session merge and behaves identically to `on-demand` today
+        /// (rejected with a warning so consumers don't silently rely on it).
+        #[arg(long, default_value = "on-demand")]
+        history: String,
+
         /// Output format: json | md | markdown (default: text)
         #[arg(long)]
         format: Option<String>,
@@ -98,6 +109,38 @@ enum Commands {
     },
 
     /// Build a report from a handoff packet JSON file
+    #[command(long_about = "Build a report from a handoff packet JSON file.
+
+The handoff JSON must conform to this exact shape (unknown fields produce INVALID_HANDOFF):
+
+  {
+    \"mode\": \"analyze\",                         // required
+    \"task\": \"<short description>\",             // required
+    \"success_criteria\": [\"<criterion>\", ...],  // required, non-empty
+    \"sources\": [
+      {
+        \"agent\": \"claude\",                     //   required
+        \"session_id\": \"<id>\",                  //   OR set current_session:true
+        \"current_session\": true,               //   use latest for cwd
+        \"cwd\": \"<path>\",                       //   optional override
+        \"last_n\": 10                           //   optional N msgs/source
+      }
+    ],
+    \"constraints\": [\"<constraint>\", ...]       // optional
+  }
+
+Minimal copy-pasteable example (write to handoff.json):
+
+  {
+    \"mode\": \"analyze\",
+    \"task\": \"Compare claude and codex outputs\",
+    \"success_criteria\": [\"Identify agreements and contradictions\"],
+    \"sources\": [
+      {\"agent\": \"claude\", \"current_session\": true},
+      {\"agent\": \"codex\",  \"current_session\": true}
+    ]
+  }
+")]
     Report {
         /// Path to handoff JSON file
         #[arg(long)]
@@ -163,6 +206,18 @@ enum Commands {
     },
 
     /// Initialize agent-chorus in the current directory (provider blocks, scaffolding, optional context-pack)
+    #[command(long_about = "Initialize agent-chorus in the current directory.
+
+setup creates or updates:
+  CLAUDE.md / AGENTS.md / GEMINI.md  chorus managed blocks for agent wiring
+  .agent-chorus/                      provider snippets and intent contract
+  .gitignore                          adds .agent-chorus/ to prevent tracking
+  claude plugin                       auto-installs Claude Code plugin if claude CLI is present
+
+Run teardown to reverse all per-project operations.
+
+The Claude Code plugin is global — uninstall separately if desired:
+  claude plugin uninstall agent-chorus")]
     Setup {
         /// Working directory (default: current directory)
         #[arg(long)]
@@ -357,6 +412,17 @@ enum Commands {
     },
 
     /// Diagnostic checks across the agent-chorus install
+    #[command(long_about = "Diagnostic checks across the agent-chorus install.
+
+Severity levels:
+  pass  Check succeeded.
+  info  Informational; not a problem (e.g. optional feature not configured).
+  warn  Actionable; the install can run but something should be fixed.
+  fail  Broken/unrecoverable.
+
+Overall is elevated only by warn or fail; info does not elevate it.
+
+Checks: version, session directories, setup completeness, provider instruction wiring, session availability, context pack state, Claude Code plugin installation, update status, hooks path + pre-push.")]
     Doctor {
         /// Working directory to scope checks
         #[arg(long)]
@@ -769,8 +835,26 @@ fn run(cli: Cli) -> Result<()> {
             audit_redactions,
             include_user,
             tool_calls,
+            history,
             format,
         } => {
+            // N7: validate --history early. The flag is forward-compat
+            // scaffolding for an eventual multi-session merge; today the
+            // chorus default is `on-demand` (latest session for cwd, no
+            // auto-recall of older sessions). `none` is an alias for
+            // --metadata-only; `eager` is reserved and behaves identically
+            // to `on-demand` with a warning so consumers don't silently
+            // rely on a behavior chorus doesn't yet implement.
+            let history_mode = match history.as_str() {
+                "on-demand" | "none" | "eager" => history.clone(),
+                other => {
+                    return Err(anyhow::anyhow!(
+                        "Invalid --history value: {}. Allowed: on-demand | none | eager.",
+                        other
+                    ));
+                }
+            };
+            let history_metadata_only = history_mode == "none" || metadata_only;
             let effective_cwd = effective_cwd(cwd);
             let last_n = last.max(1);
             let adapter = adapters::get_adapter(agent.as_str())
@@ -779,13 +863,35 @@ fn run(cli: Cli) -> Result<()> {
                 include_user,
                 include_tool_calls: tool_calls,
             };
-            let session = adapter.read_session_with_options(
+            let mut session = adapter.read_session_with_options(
                 id.as_deref(),
                 &effective_cwd,
                 chats_dir.as_deref(),
                 last_n,
                 opts,
             )?;
+
+            // N6: agents whose on-disk format does not carry tool calls emit
+            // a uniform warning when --tool-calls is requested, so a silent
+            // no-op never looks like "this agent had no tool calls". The
+            // `included_tool_calls: true` field is still set in the output
+            // since the flag was honored; the warning surfaces that the data
+            // is structurally unavailable.
+            if tool_calls && agent_has_no_tool_calls(agent.as_str()) {
+                session.warnings.push(format!(
+                    "--tool-calls has no effect for {} sessions: this agent's transcript format does not carry tool calls.",
+                    agent.as_str()
+                ));
+            }
+
+            // N7: --history=eager is reserved for a future multi-session
+            // merge. Today chorus does not implement it; emit a warning so
+            // consumers don't silently rely on the option being honored.
+            if history_mode == "eager" {
+                session.warnings.push(
+                    "--history=eager is reserved for a future multi-session merge and currently behaves identically to --history=on-demand. Use `chorus list / timeline / search` to pull additional sessions explicitly.".to_string()
+                );
+            }
 
             // If audit mode requested, re-run redaction with audit on the raw content
             let redaction_audit = if audit_redactions {
@@ -810,7 +916,7 @@ fn run(cli: Cli) -> Result<()> {
             let want_markdown = !want_json && is_markdown_format(format_str);
 
             if want_json {
-                let content_value = if metadata_only {
+                let content_value = if history_metadata_only {
                     serde_json::Value::Null
                 } else {
                     serde_json::Value::String(session.content.clone())
@@ -833,6 +939,23 @@ fn run(cli: Cli) -> Result<()> {
                         "included_tool_calls".to_string(),
                         serde_json::Value::Bool(true),
                     );
+                }
+                // F1: surface fallback as a structured boolean in addition
+                // to the existing `warnings[]` push. JSON-only consumers
+                // can rely on this without scanning warning strings.
+                // Also echo the cwd_mismatch warning to stderr so humans
+                // watching the terminal see the fallback even when stdout
+                // is being piped into another tool.
+                if session.cwd_mismatch {
+                    report.as_object_mut().unwrap().insert(
+                        "cwd_mismatch".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                    for w in &session.warnings {
+                        if w.contains("falling back to latest session") {
+                            eprintln!("chorus: {}", w);
+                        }
+                    }
                 }
                 if let Some(ref audit) = redaction_audit {
                     report.as_object_mut().unwrap().insert(
@@ -1403,6 +1526,15 @@ fn emit_report_output(report_value: &serde_json::Value, json_output: bool) -> Re
         println!("{}", utils::sanitize_for_terminal(&report::report_to_markdown(report_value)));
     }
     Ok(())
+}
+
+/// Agents whose on-disk transcript format has no tool-call concept.
+/// `--tool-calls` is honored (the flag is acknowledged in
+/// `included_tool_calls`) but a uniform warning surfaces that the data
+/// is structurally unavailable. Mirrors the Node check in
+/// `scripts/read_session.cjs`.
+fn agent_has_no_tool_calls(agent: &str) -> bool {
+    matches!(agent, "gemini" | "hermes")
 }
 
 fn effective_cwd(cwd: Option<String>) -> String {

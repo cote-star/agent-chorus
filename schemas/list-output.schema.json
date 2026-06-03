@@ -30,6 +30,11 @@
       "scope_hash": {
         "type": "string",
         "description": "For Gemini sessions only: the hex-hash scope directory (SHA-256 of an absolute cwd) when the scope segment is not a human-named directory. Present only when cwd inference fell back to a hex scope; absent otherwise."
+      },
+      "source": {
+        "type": "string",
+        "enum": ["cli", "app"],
+        "description": "For Cursor sessions only: which on-disk surface the session was discovered from. 'cli' = cursor-agent transcripts under ~/.cursor/projects; 'app' = Cursor IDE store.db under ~/.cursor/chats. Absent for agents with a single surface."
       }
     }
   }

@@ -27,12 +27,16 @@ run_read_case() {
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   "${node_cmd[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   "${rust_cmd[@]}" > "$rust_out"
 
   node "$ROOT/scripts/compare_read_output.cjs" "$node_out" "$rust_out" "read-${label}"
@@ -202,12 +206,16 @@ run_parity_case() {
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   node "$ROOT/scripts/read_session.cjs" "${node_args[@]}" > "$node_out"
 
   CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
   CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
   CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
   CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
   cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- "${rust_args[@]}" > "$rust_out"
 
   node "$SCRUB" "$node_out" "$node_scrubbed" "$kind"
@@ -308,6 +316,77 @@ run_parity_case read read-cursor-tool-calls read-cursor-tool-calls.json \
   read --agent=cursor --id=session-cursor-tool-calls --tool-calls --json :: \
   read --agent cursor --id session-cursor-tool-calls --tool-calls --json
 
+# --- read --agent cursor against the IDE SQLite fixture (N1) ---
+# Exercises ~/.cursor/chats/<dir-hash>/<session-uuid>/store.db reading and
+# the Workspace Path cwd-recovery path. Both surfaces (CLI JSONL + IDE
+# SQLite) are wired into the cursor adapter; this case proves the SQLite
+# leg works at parity. Requires Node >= 22.5 (built-in node:sqlite).
+run_parity_case read read-cursor-app read-cursor-app.json \
+  read --agent=cursor --id=cursor-app-fixture-uuid --json :: \
+  read --agent cursor --id cursor-app-fixture-uuid --json
+
+# F8: redaction must apply to SQLite-sourced content the same way it
+# applies to JSONL content. This fixture embeds an API-token-shaped
+# string and a Bearer-token-shaped string inside cursor IDE blobs;
+# both runtimes' redaction pipeline must replace them with [REDACTED].
+# See research/uat-replay-followups-2026-06-03.md F8.
+run_parity_case read read-cursor-app-redaction read-cursor-app-redaction.json \
+  read --agent=cursor --id=cursor-app-redaction-uuid --json :: \
+  read --agent cursor --id cursor-app-redaction-uuid --json
+
+# F6: dedicated tool-call fixtures for claude and codex. The existing
+# `claude-fixture` / `codex-fixture` underlying sessions contain no
+# `tool_use` / `function_call` entries, so `read-{claude,codex}-tool-calls`
+# only proves the flag is honored — not that the renderer emits
+# `[TOOL: <name>]` blocks. These cases exercise the renderer for real.
+# See research/uat-replay-followups-2026-06-03.md F6.
+run_parity_case read read-claude-tool-fixture read-claude-tool-fixture.json \
+  read --agent=claude --id=claude-tool-fixture --tool-calls --json :: \
+  read --agent claude --id claude-tool-fixture --tool-calls --json
+
+run_parity_case read read-codex-tool-fixture read-codex-tool-fixture.json \
+  read --agent=codex --id=codex-tool-fixture --tool-calls --json :: \
+  read --agent codex --id codex-tool-fixture --tool-calls --json
+
+# N6: --tool-calls parity for cursor IDE (app) sessions. Cursor's content
+# array uses the same {type:"text"} / {type:"tool_use"} / {type:"tool_result"}
+# shape as Claude, so the existing extractor renders them at parity.
+run_parity_case read read-cursor-app-tool-calls read-cursor-app-tool-calls.json \
+  read --agent=cursor --id=cursor-app-fixture-uuid --tool-calls --json :: \
+  read --agent cursor --id cursor-app-fixture-uuid --tool-calls --json
+
+# N6: agents whose transcript format has no tool-call concept (gemini,
+# hermes) MUST emit a uniform warning when --tool-calls is requested
+# rather than silently returning content unchanged. Mirrors
+# `agent_has_no_tool_calls` in Rust and AGENTS_WITHOUT_TOOL_CALLS in Node.
+run_parity_case read read-gemini-tool-calls "" \
+  read --agent=gemini --id=gemini-fixture --tool-calls --json :: \
+  read --agent gemini --id gemini-fixture --tool-calls --json
+
+# F7: hermes is the second adapter in the AGENTS_WITHOUT_TOOL_CALLS set
+# (alongside gemini). Pre-fix there was no live hermes fixture so the
+# uniform no-tool-calls warning path was logically asserted only via
+# code review. The synthetic fixture under
+# fixtures/session-store/hermes/sessions/ exercises it end-to-end.
+run_parity_case read read-hermes "" \
+  read --agent=hermes --id=hermes-fixture --json :: \
+  read --agent hermes --id hermes-fixture --json
+
+run_parity_case read read-hermes-tool-calls "" \
+  read --agent=hermes --id=hermes-fixture --tool-calls --json :: \
+  read --agent hermes --id hermes-fixture --tool-calls --json
+
+# N7: --history flag scaffolds the on-demand default contract. `eager`
+# emits a uniform warning; `none` zeros content (alias for
+# --metadata-only). Both must be byte-identical across runtimes.
+run_parity_case read read-codex-history-eager "" \
+  read --agent=codex --id=codex-fixture --history=eager --json :: \
+  read --agent codex --id codex-fixture --history eager --json
+
+run_parity_case read read-codex-history-none "" \
+  read --agent=codex --id=codex-fixture --history=none --json :: \
+  read --agent codex --id codex-fixture --history none --json
+
 run_read_case codex codex-fixture Codex
 run_read_case gemini gemini-fixture Gemini
 run_read_case claude claude-fixture Claude
@@ -316,6 +395,57 @@ run_compare_case
 run_report_case
 run_list_case codex Codex /workspace/demo
 run_search_case codex Codex "Codex fixture assistant output." /workspace/demo
+
+# N2 regression: search extractor must see the same assistant text that
+# read sees. Pre-fix, codex search returned empty because it walked a
+# top-level role/content schema that codex sessions don't use (the real
+# format is response_item.payload.message). Asserts the invariant
+# read(text) ⊆ search(text-tokens) for both runtimes.
+run_search_read_parity() {
+  local agent="$1"
+  local id="$2"
+  local query="$3"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
+  node "$ROOT/scripts/read_session.cjs" search "$query" --agent="$agent" --json > "$TMP_DIR/srp-${agent}-node.json"
+
+  CHORUS_CODEX_SESSIONS_DIR="$STORE/codex/sessions" \
+  CHORUS_GEMINI_TMP_DIR="$STORE/gemini/tmp" \
+  CHORUS_CLAUDE_PROJECTS_DIR="$STORE/claude/projects" \
+  CHORUS_CURSOR_DATA_DIR="$STORE/cursor/projects" \
+  CHORUS_CURSOR_APP_DATA_DIR="$STORE/cursor/chats" \
+  CHORUS_HERMES_DATA_DIR="$STORE/hermes/sessions" \
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- search "$query" --agent "$agent" --json > "$TMP_DIR/srp-${agent}-rust.json"
+
+  for runtime in node rust; do
+    local out="$TMP_DIR/srp-${agent}-${runtime}.json"
+    if ! node -e "
+      const rows = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+      const hit = rows.find(r => r.session_id && r.session_id.includes(process.argv[2]));
+      if (!hit) { console.error('FAIL search-read-parity ${agent} ${runtime}: search did not surface ${id} for query ${query}'); process.exit(1); }
+    " "$out" "$id"; then
+      exit 1
+    fi
+  done
+  echo "PASS search-read-parity ${agent} (read(text) ⊆ search(text-tokens))"
+}
+
+run_search_read_parity codex codex-fixture "Codex fixture assistant output"
+
+# F4: extend the invariant to every adapter, not just codex. Each agent's
+# search extractor must surface the assistant text that read returns.
+# Pre-fix only codex was covered; the same class of bug could silently
+# regress claude, gemini, cursor (CLI or app) without notice. See
+# research/uat-replay-followups-2026-06-03.md F4.
+run_search_read_parity claude claude-fixture "Claude fixture assistant output"
+run_search_read_parity gemini gemini-fixture "Gemini fixture assistant output"
+run_search_read_parity cursor session-cursor-fixture-0001 "Cursor fixture assistant output"
+run_search_read_parity cursor cursor-app-fixture-uuid "Second answer"
 
 # --- Gemini list parity: proves .jsonl files are indexed and cwd is not null ---
 #

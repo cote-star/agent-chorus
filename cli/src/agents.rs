@@ -65,6 +65,12 @@ pub struct Session {
     pub timestamp: Option<String>,
     pub message_count: usize,
     pub messages_returned: usize,
+    /// F1: true when the caller passed `--cwd <X>` but no session matched
+    /// that cwd, and the adapter fell back to the latest session. The
+    /// fallback is intentional (a warning is also pushed to `warnings`)
+    /// but consumers that parse the JSON without scanning the warnings
+    /// array can use this boolean to detect the silent-fallback case.
+    pub cwd_mismatch: bool,
 }
 
 #[derive(Clone)]
@@ -97,6 +103,7 @@ pub fn read_codex_session_with_options(
     }
 
     let mut warnings = Vec::new();
+    let mut cwd_mismatch = false;
     let target_file = if let Some(id_value) = id {
         let files = collect_matching_files(&base_dir, true, &|file_path| {
             has_extension(file_path, "jsonl") && path_contains(file_path, id_value)
@@ -119,6 +126,7 @@ pub fn read_codex_session_with_options(
                 "Warning: no Codex session matched cwd {}; falling back to latest session.",
                 expected_cwd.display()
             ));
+            cwd_mismatch = true;
             files[0].path.clone()
         }
     };
@@ -136,6 +144,7 @@ pub fn read_codex_session_with_options(
         timestamp: parsed.timestamp,
         message_count: parsed.message_count,
         messages_returned: parsed.messages_returned,
+        cwd_mismatch,
     })
 }
 
@@ -163,6 +172,7 @@ pub fn read_claude_session_with_options(
     }
 
     let mut warnings = Vec::new();
+    let mut cwd_mismatch = false;
     let target_file = if let Some(id_value) = id {
         let files = collect_matching_files(&base_dir, true, &|file_path| {
             has_extension(file_path, "jsonl") && path_contains(file_path, id_value)
@@ -185,6 +195,7 @@ pub fn read_claude_session_with_options(
                 "Warning: no Claude session matched cwd {}; falling back to latest session.",
                 expected_cwd.display()
             ));
+            cwd_mismatch = true;
             files[0].path.clone()
         }
     };
@@ -202,6 +213,7 @@ pub fn read_claude_session_with_options(
         timestamp: parsed.timestamp,
         message_count: parsed.message_count,
         messages_returned: parsed.messages_returned,
+        cwd_mismatch,
     })
 }
 
@@ -291,6 +303,10 @@ pub fn read_gemini_session_with_options(
         timestamp: parsed.timestamp,
         message_count: parsed.message_count,
         messages_returned: parsed.messages_returned,
+        // gemini scopes by project nickname rather than absolute cwd; the
+        // cwd_mismatch concept (cwd given but no session matched) does
+        // not apply here.
+        cwd_mismatch: false,
     })
 }
 
@@ -1085,7 +1101,7 @@ pub(crate) fn extract_text_with_tool_calls(value: &Value) -> String {
 /// A single turn in a reconstructed conversation, used by `--include-user`
 /// interleaving.  Role is always "user" or "assistant".
 #[derive(Debug, Clone)]
-pub(crate) struct ConversationTurn {
+pub struct ConversationTurn {
     pub role: String,
     pub text: String,
 }
@@ -1136,7 +1152,7 @@ pub(crate) fn select_conversation_turns(
     selected
 }
 
-fn file_modified_iso(path: &Path) -> Option<String> {
+pub fn file_modified_iso(path: &Path) -> Option<String> {
     fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok())
@@ -1207,10 +1223,40 @@ fn extract_assistant_text_jsonl(path: &Path, agent: &str) -> String {
         };
         match agent {
             "codex" => {
-                if json.get("role").and_then(|v| v.as_str()) == Some("assistant") {
-                    if let Some(content) = json.get("content").and_then(|v| v.as_str()) {
-                        text.push_str(content);
-                        text.push('\n');
+                // Codex stores messages in two nested envelopes:
+                //   - {type:"response_item", payload:{type:"message", role:"assistant",
+                //     content:[{text:"..."}, ...]}}
+                //   - {type:"event_msg", payload:{type:"agent_message", message:"..."}}
+                // The previous shape (role/content at top level) never existed in any
+                // real codex session and produced an unconditionally empty result
+                // for search — that was UAT P3.
+                let envelope_type = json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let payload = json.get("payload");
+                if envelope_type == "response_item" {
+                    if let Some(p) = payload {
+                        if p.get("type").and_then(|v| v.as_str()) == Some("message")
+                            && p.get("role").and_then(|v| v.as_str()) == Some("assistant")
+                        {
+                            let t = extract_text(&p["content"]);
+                            if !t.is_empty() {
+                                text.push_str(&t);
+                                text.push('\n');
+                            }
+                        }
+                    }
+                } else if envelope_type == "event_msg" {
+                    if let Some(p) = payload {
+                        if p.get("type").and_then(|v| v.as_str()) == Some("agent_message") {
+                            let t = if let Some(s) = p.get("message").and_then(|v| v.as_str()) {
+                                s.to_string()
+                            } else {
+                                extract_text(&p["message"])
+                            };
+                            if !t.is_empty() {
+                                text.push_str(&t);
+                                text.push('\n');
+                            }
+                        }
                     }
                 }
             }
@@ -1320,10 +1366,24 @@ fn compute_match_snippet(text: &str, query: &str) -> Option<String> {
 }
 
 /// Hierarchical CWD matching: exact match, ancestor, or descendant.
+///
+/// Uses string-based prefix with an explicit trailing separator to match
+/// Node's `cwdMatchesProject` (scripts/adapters/utils.cjs). The earlier
+/// version used `Path::starts_with`, which is component-wise and treats
+/// root `/` as a prefix of every absolute path — meaning a session whose
+/// recorded cwd was just `/` would silently match every `--cwd <X>`
+/// request and short-circuit the cwd-mismatch fallback. The trailing-`/`
+/// rule rejects that case cleanly while still permitting genuine
+/// ancestor/descendant relationships in a project tree.
 fn cwd_matches_project(session_cwd: &Path, expected_cwd: &Path) -> bool {
-    session_cwd == expected_cwd
-        || expected_cwd.starts_with(session_cwd)
-        || session_cwd.starts_with(expected_cwd)
+    let a = session_cwd.to_string_lossy();
+    let b = expected_cwd.to_string_lossy();
+    if a == b {
+        return true;
+    }
+    let a_pref = format!("{}/", a);
+    let b_pref = format!("{}/", b);
+    b.starts_with(&a_pref) || a.starts_with(&b_pref)
 }
 
 fn find_latest_by_cwd(
@@ -2324,55 +2384,128 @@ pub fn search_gemini_sessions(query: &str, cwd: Option<&str>, limit: usize) -> R
 }
 
 pub fn search_cursor_sessions(query: &str, cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
-    let base_dir = cursor_base_dir();
-    if !base_dir.exists() { return Ok(Vec::new()); }
-
-    let files = collect_cursor_transcripts(&base_dir, None)?;
-
     let query_lower = query.to_ascii_lowercase();
     let expected_cwd = cwd.map(normalize_path).transpose()?;
-    let mut entries = Vec::new();
+    let mut entries: Vec<serde_json::Value> = Vec::new();
 
-    for file in files {
-        if entries.len() >= limit { break; }
-
-        if fs::metadata(&file.path).map(|m| m.len() > MAX_FILE_SIZE).unwrap_or(false) {
-            continue;
-        }
-
-        // Project-scope by the session's real cwd (derived from .workspace-trusted
-        // or filesystem-validated demangling), matching codex/claude semantics.
-        let session_cwd = get_cursor_session_cwd(&file.path);
-        if let Some(expected) = expected_cwd.as_ref() {
-            match session_cwd.as_ref() {
-                Some(sc) if cwd_matches_project(sc, expected) => {}
-                _ => continue,
+    // Surface 1: cursor-agent CLI JSONL transcripts.
+    let base_dir = cursor_base_dir();
+    if base_dir.exists() {
+        let files = collect_cursor_transcripts(&base_dir, None)?;
+        for file in files {
+            if fs::metadata(&file.path).map(|m| m.len() > MAX_FILE_SIZE).unwrap_or(false) {
+                continue;
+            }
+            let session_cwd = get_cursor_session_cwd(&file.path);
+            if let Some(expected) = expected_cwd.as_ref() {
+                match session_cwd.as_ref() {
+                    Some(sc) if cwd_matches_project(sc, expected) => {}
+                    _ => continue,
+                }
+            }
+            let assistant_text = crate::cursor_parse::read_cursor_turns(&file.path)
+                .into_iter()
+                .filter(|t| t.role == "assistant")
+                .map(|t| t.text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+                let snippet = compute_match_snippet(&assistant_text, query);
+                let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+                entries.push(serde_json::json!({
+                    "session_id": session_id,
+                    "agent": "cursor",
+                    "source": "cli",
+                    "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+                    "modified_at": file_modified_iso(&file.path),
+                    "file_path": file.path.to_string_lossy().to_string(),
+                    "match_snippet": snippet,
+                }));
             }
         }
+    }
 
-        let assistant_text = crate::cursor_parse::read_cursor_turns(&file.path)
-            .into_iter()
-            .filter(|t| t.role == "assistant")
-            .map(|t| t.text)
-            .collect::<Vec<_>>()
-            .join("\n");
-        if assistant_text.to_ascii_lowercase().contains(&query_lower) {
-            let snippet = compute_match_snippet(&assistant_text, query);
-            let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
-            entries.push(serde_json::json!({
-                "session_id": session_id,
-                "agent": "cursor",
-                "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
-                "modified_at": file_modified_iso(&file.path),
-                "file_path": file.path.to_string_lossy().to_string(),
-                "match_snippet": snippet,
-            }));
+    // Surface 2: Cursor IDE store.db sessions.
+    let app_base = crate::cursor_app::cursor_app_base_dir();
+    if app_base.exists() {
+        let sessions = crate::cursor_app::collect_cursor_app_sessions(&app_base);
+        for s in sessions {
+            let session_cwd = crate::cursor_app::cursor_app_session_workspace(&s.db_path);
+            if let Some(expected) = expected_cwd.as_ref() {
+                match session_cwd.as_ref() {
+                    Some(sc) if cwd_matches_project(sc, expected) => {}
+                    _ => continue,
+                }
+            }
+            let assistant_text = crate::cursor_app::read_cursor_app_turns(&s.db_path, false)
+                .into_iter()
+                .filter(|t| t.role == "assistant")
+                .map(|t| t.text)
+                .collect::<Vec<_>>()
+                .join("\n");
+            if assistant_text.to_ascii_lowercase().contains(&query_lower) {
+                let snippet = compute_match_snippet(&assistant_text, query);
+                entries.push(serde_json::json!({
+                    "session_id": s.agent_id.clone(),
+                    "agent": "cursor",
+                    "source": "app",
+                    "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+                    "modified_at": crate::cursor_app::cursor_app_modified_iso(&s.db_path),
+                    "file_path": s.db_path.to_string_lossy().to_string(),
+                    "match_snippet": snippet,
+                }));
+            }
         }
     }
+
+    // Newest-first across both surfaces, then truncate to limit.
+    entries.sort_by(|a, b| {
+        let am = a.get("modified_at").and_then(|v| v.as_str()).unwrap_or("");
+        let bm = b.get("modified_at").and_then(|v| v.as_str()).unwrap_or("");
+        bm.cmp(am)
+    });
+    entries.truncate(limit);
     Ok(entries)
 }
 
 // --- Cursor support ---
+
+pub fn cursor_base_dir_public() -> PathBuf {
+    cursor_base_dir()
+}
+
+/// Count cursor-agent CLI transcripts matching `cwd` (capped to keep
+/// doctor cheap). Used by the per-surface doctor split.
+pub fn hermes_base_dir_public() -> PathBuf {
+    hermes_base_dir()
+}
+
+pub fn list_cursor_cli_sessions_count(cwd: Option<&str>, limit: usize) -> usize {
+    let base_dir = cursor_base_dir();
+    if !base_dir.exists() {
+        return 0;
+    }
+    let files = match collect_cursor_transcripts(&base_dir, None) {
+        Ok(f) => f,
+        Err(_) => return 0,
+    };
+    let expected = cwd.and_then(|c| normalize_path(c).ok());
+    let mut n = 0usize;
+    for file in files {
+        let session_cwd = get_cursor_session_cwd(&file.path);
+        if let Some(exp) = expected.as_ref() {
+            match session_cwd.as_ref() {
+                Some(sc) if cwd_matches_project(sc, exp) => {}
+                _ => continue,
+            }
+        }
+        n += 1;
+        if n >= limit {
+            break;
+        }
+    }
+    n
+}
 
 fn cursor_base_dir() -> PathBuf {
     std::env::var("CHORUS_CURSOR_DATA_DIR")
@@ -2402,43 +2535,109 @@ pub fn read_cursor_session_with_options(
     opts: ReadOptions,
 ) -> Result<Session> {
     let base_dir = cursor_base_dir();
+    let app_base = crate::cursor_app::cursor_app_base_dir();
+
     if is_system_directory(&base_dir) {
         return Err(anyhow!("Refusing to scan system directory: {}", base_dir.display()));
     }
-    if !base_dir.exists() {
-        return Err(anyhow!(cursor_not_found_message(&format!("No Cursor session found. Data directory not found: {}", base_dir.display()))));
+
+    // Read sees both surfaces (cursor-agent CLI JSONL + Cursor IDE store.db).
+    // We assemble a unified candidate list, then choose the target by id
+    // (if given) or by latest-mtime-matching-cwd (mirroring codex/claude).
+    enum Candidate {
+        Cli(FileEntry),
+        App(crate::cursor_app::CursorAppSession),
     }
 
-    let files = collect_cursor_transcripts(&base_dir, id)?;
-    if files.is_empty() {
+    let mut candidates: Vec<Candidate> = Vec::new();
+    if base_dir.exists() {
+        let files = collect_cursor_transcripts(&base_dir, id)?;
+        for f in files {
+            candidates.push(Candidate::Cli(f));
+        }
+    }
+    if app_base.exists() {
+        let sessions = crate::cursor_app::collect_cursor_app_sessions(&app_base);
+        for s in sessions {
+            if let Some(needle) = id {
+                if !s.agent_id.contains(needle)
+                    && !s.db_path.to_string_lossy().contains(needle)
+                {
+                    continue;
+                }
+            }
+            candidates.push(Candidate::App(s));
+        }
+    }
+    if candidates.is_empty() {
         return Err(anyhow!(cursor_not_found_message("No Cursor session found.")));
     }
 
-    // Scope to --cwd when no explicit id was given (mirror codex/claude). The
-    // session's real cwd comes from .workspace-trusted or a filesystem-validated
-    // demangle of the project dir name (see crate::cursor_cwd).
-    let mut warnings: Vec<String> = Vec::new();
-    let target_file = if id.is_some() {
-        files[0].path.clone()
-    } else {
-        match normalize_path(cwd) {
-            Ok(expected) => match find_latest_by_cwd(&files, &expected, get_cursor_session_cwd) {
-                Some(p) => p,
-                None => {
-                    warnings.push(format!(
-                        "No Cursor session matched cwd {}; falling back to latest session.",
-                        expected.display()
-                    ));
-                    files[0].path.clone()
-                }
-            },
-            Err(_) => files[0].path.clone(),
+    // Newest-first by mtime across both surfaces.
+    candidates.sort_by(|a, b| {
+        let am = match a {
+            Candidate::Cli(f) => file_modified_iso(&f.path),
+            Candidate::App(s) => file_modified_iso(&s.db_path),
+        };
+        let bm = match b {
+            Candidate::Cli(f) => file_modified_iso(&f.path),
+            Candidate::App(s) => file_modified_iso(&s.db_path),
+        };
+        bm.unwrap_or_default().cmp(&am.unwrap_or_default())
+    });
+
+    let resolve_cwd = |c: &Candidate| -> Option<PathBuf> {
+        match c {
+            Candidate::Cli(f) => get_cursor_session_cwd(&f.path),
+            Candidate::App(s) => crate::cursor_app::cursor_app_session_workspace(&s.db_path),
         }
     };
 
-    // Parse the cursor-agent transcript into ordered turns. Text-only by default;
-    // with --tool-calls, tool_use/tool_result segments are rendered too.
-    let turns: Vec<ConversationTurn> = cursor_turns_for_read(&target_file, opts.include_tool_calls);
+    let mut warnings: Vec<String> = Vec::new();
+    let mut cwd_mismatch = false;
+    let target: &Candidate = if id.is_some() {
+        &candidates[0]
+    } else {
+        match normalize_path(cwd) {
+            Ok(expected) => {
+                let matched = candidates.iter().find(|c| {
+                    resolve_cwd(c)
+                        .map(|sc| cwd_matches_project(&sc, &expected))
+                        .unwrap_or(false)
+                });
+                match matched {
+                    Some(t) => t,
+                    None => {
+                        warnings.push(format!(
+                            "No Cursor session matched cwd {}; falling back to latest session.",
+                            expected.display()
+                        ));
+                        cwd_mismatch = true;
+                        &candidates[0]
+                    }
+                }
+            }
+            Err(_) => &candidates[0],
+        }
+    };
+
+    let (turns, source_path, session_id, timestamp, cwd_out) = match target {
+        Candidate::Cli(f) => {
+            let t = cursor_turns_for_read(&f.path, opts.include_tool_calls);
+            let sid = f.path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+            let ts = file_modified_iso(&f.path);
+            let cwd_o = get_cursor_session_cwd(&f.path).map(|p| p.to_string_lossy().to_string());
+            (t, f.path.to_string_lossy().to_string(), sid, ts, cwd_o)
+        }
+        Candidate::App(s) => {
+            let t = crate::cursor_app::read_cursor_app_turns(&s.db_path, opts.include_tool_calls);
+            let sid = Some(s.agent_id.clone());
+            let ts = crate::cursor_app::cursor_app_modified_iso(&s.db_path);
+            let cwd_o = crate::cursor_app::cursor_app_session_workspace(&s.db_path)
+                .map(|p| p.to_string_lossy().to_string());
+            (t, s.db_path.to_string_lossy().to_string(), sid, ts, cwd_o)
+        }
+    };
 
     let assistant_msgs: Vec<String> = turns
         .iter()
@@ -2467,20 +2666,17 @@ pub fn read_cursor_session_with_options(
         ("[No assistant messages found]".to_string(), 0)
     };
 
-    let session_id = target_file.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
-    let timestamp = file_modified_iso(&target_file);
-    let cwd_out = get_cursor_session_cwd(&target_file).map(|p| p.to_string_lossy().to_string());
-
     Ok(Session {
         agent: "cursor",
         content: redact_sensitive_text(&content),
-        source: target_file.to_string_lossy().to_string(),
+        source: source_path,
         warnings,
         session_id,
         cwd: cwd_out,
         timestamp,
         message_count,
         messages_returned,
+        cwd_mismatch,
     })
 }
 
@@ -2541,35 +2737,63 @@ fn cursor_turns_for_read(path: &Path, include_tool_calls: bool) -> Vec<Conversat
 }
 
 pub fn list_cursor_sessions(cwd: Option<&str>, limit: usize) -> Result<Vec<serde_json::Value>> {
-    let base_dir = cursor_base_dir();
-    if !base_dir.exists() { return Ok(Vec::new()); }
-
-    let files = collect_cursor_transcripts(&base_dir, None)?;
     let expected_cwd = cwd.map(normalize_path).transpose()?;
+    let mut entries: Vec<serde_json::Value> = Vec::new();
 
-    let mut entries = Vec::new();
-    for file in files {
-        // Derive the session's real cwd and project-scope on it (codex/claude parity).
-        let session_cwd = get_cursor_session_cwd(&file.path);
-        if let Some(expected) = expected_cwd.as_ref() {
-            match session_cwd.as_ref() {
-                Some(sc) if cwd_matches_project(sc, expected) => {}
-                _ => continue,
+    // Surface 1: cursor-agent CLI JSONL transcripts under ~/.cursor/projects.
+    let base_dir = cursor_base_dir();
+    if base_dir.exists() {
+        let files = collect_cursor_transcripts(&base_dir, None)?;
+        for file in files {
+            let session_cwd = get_cursor_session_cwd(&file.path);
+            if let Some(expected) = expected_cwd.as_ref() {
+                match session_cwd.as_ref() {
+                    Some(sc) if cwd_matches_project(sc, expected) => {}
+                    _ => continue,
+                }
             }
-        }
-
-        let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
-        entries.push(serde_json::json!({
-            "session_id": session_id,
-            "agent": "cursor",
-            "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
-            "modified_at": file_modified_iso(&file.path),
-            "file_path": file.path.to_string_lossy().to_string(),
-        }));
-        if entries.len() >= limit {
-            break;
+            let session_id = file.path.file_stem().and_then(|s| s.to_str()).unwrap_or("unknown").to_string();
+            entries.push(serde_json::json!({
+                "session_id": session_id,
+                "agent": "cursor",
+                "source": "cli",
+                "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+                "modified_at": file_modified_iso(&file.path),
+                "file_path": file.path.to_string_lossy().to_string(),
+            }));
         }
     }
+
+    // Surface 2: Cursor IDE store.db sessions under ~/.cursor/chats.
+    let app_base = crate::cursor_app::cursor_app_base_dir();
+    if app_base.exists() {
+        let app_sessions = crate::cursor_app::collect_cursor_app_sessions(&app_base);
+        for session in app_sessions {
+            let session_cwd = crate::cursor_app::cursor_app_session_workspace(&session.db_path);
+            if let Some(expected) = expected_cwd.as_ref() {
+                match session_cwd.as_ref() {
+                    Some(sc) if cwd_matches_project(sc, expected) => {}
+                    _ => continue,
+                }
+            }
+            entries.push(serde_json::json!({
+                "session_id": session.agent_id.clone(),
+                "agent": "cursor",
+                "source": "app",
+                "cwd": session_cwd.map(|p| p.to_string_lossy().to_string()),
+                "modified_at": crate::cursor_app::cursor_app_modified_iso(&session.db_path),
+                "file_path": session.db_path.to_string_lossy().to_string(),
+            }));
+        }
+    }
+
+    // Newest-first across both surfaces, then truncate.
+    entries.sort_by(|a, b| {
+        let am = a.get("modified_at").and_then(|v| v.as_str()).unwrap_or("");
+        let bm = b.get("modified_at").and_then(|v| v.as_str()).unwrap_or("");
+        bm.cmp(am)
+    });
+    entries.truncate(limit);
     Ok(entries)
 }
 
@@ -2647,6 +2871,7 @@ pub fn read_hermes_session_with_options(
     }
 
     let mut warnings: Vec<String> = Vec::new();
+    let mut cwd_mismatch = false;
     let target_file = if id.is_some() {
         files[0].path.clone()
     } else {
@@ -2658,6 +2883,7 @@ pub fn read_hermes_session_with_options(
                         "No Hermes session matched cwd {}; falling back to latest session.",
                         expected.display()
                     ));
+                    cwd_mismatch = true;
                     files[0].path.clone()
                 }
             },
@@ -2724,6 +2950,7 @@ pub fn read_hermes_session_with_options(
         timestamp: file_modified_iso(&target_file),
         message_count,
         messages_returned,
+        cwd_mismatch,
     })
 }
 

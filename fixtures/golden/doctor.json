@@ -28,17 +28,17 @@
     {
       "detail": "Missing provider instruction file: __PATH__",
       "id": "integration_claude",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing provider instruction file: __PATH__",
       "id": "integration_codex",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing provider instruction file: __PATH__",
       "id": "integration_gemini",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "No claude sessions discovered",
@@ -51,9 +51,14 @@
       "status": "warn"
     },
     {
-      "detail": "No cursor sessions discovered",
-      "id": "sessions_cursor",
-      "status": "warn"
+      "detail": "At least one Cursor IDE store.db discovered",
+      "id": "sessions_cursor_app",
+      "status": "pass"
+    },
+    {
+      "detail": "At least one cursor-agent CLI transcript discovered",
+      "id": "sessions_cursor_cli",
+      "status": "pass"
     },
     {
       "detail": "No gemini sessions discovered",
@@ -61,29 +66,29 @@
       "status": "warn"
     },
     {
-      "detail": "No hermes sessions discovered",
+      "detail": "At least one hermes session discovered",
       "id": "sessions_hermes",
-      "status": "warn"
+      "status": "pass"
     },
     {
       "detail": "Missing: __PATH__",
       "id": "setup_intents",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing: __PATH__",
       "id": "snippet_claude",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing: __PATH__",
       "id": "snippet_codex",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "Missing: __PATH__",
       "id": "snippet_gemini",
-      "status": "warn"
+      "status": "info"
     },
     {
       "detail": "__VERSION__",

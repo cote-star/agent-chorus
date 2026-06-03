@@ -211,6 +211,11 @@ function readJsonl(filePath, lastN, opts = {}) {
     message_count: messageCount,
     messages_returned: messagesReturned,
     included_roles: rolesIncluded,
+    // N6: gemini sessions carry no tool calls, but when --tool-calls is
+    // passed we still ack the flag so the field is uniformly present
+    // across agents. The "no tool calls available" warning is emitted by
+    // the dispatcher in scripts/read_session.cjs.
+    ...(opts.includeToolCalls ? { included_tool_calls: true } : {}),
   };
 }
 
@@ -304,6 +309,7 @@ function read(filePath, lastN, opts = {}) {
     message_count: messageCount,
     messages_returned: messagesReturned,
     included_roles: rolesIncluded,
+    ...(opts.includeToolCalls ? { included_tool_calls: true } : {}),
   };
 }
 
