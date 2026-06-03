@@ -1,30 +1,40 @@
 /**
- * Cursor agent adapter.
+ * Cursor agent adapter (native).
+ *
+ * Reads cursor-agent CLI transcripts directly from the projects tree:
+ *   <base>/<project>/agent-transcripts/<session>/<session>.jsonl
+ * where <base> defaults to ~/.cursor/projects (override via CHORUS_CURSOR_DATA_DIR
+ * / BRIDGE_CURSOR_DATA_DIR). Per-session cwd is recovered (cursor_cwd.cjs) so
+ * --cwd scoping works the same as codex/claude — no external bridge required.
  */
 
 const fs = require('fs');
 const path = require('path');
 const {
-  normalizePath, collectMatchingFiles, getFileTimestamp, redactSensitiveText, isSystemDirectory,
+  normalizePath, collectMatchingFiles, getFileTimestamp, redactSensitiveText,
+  isSystemDirectory, cwdMatchesProject, findLatestByCwd,
 } = require('./utils.cjs');
+const { resolveCursorCwd } = require('./cursor_cwd.cjs');
+const { readCursorTurns } = require('./cursor_parse.cjs');
 
-const cursorDataBase = normalizePath(process.env.CHORUS_CURSOR_DATA_DIR || process.env.BRIDGE_CURSOR_DATA_DIR || (
-  process.platform === 'darwin'
-    ? '~/Library/Application Support/Cursor'
-    : '~/.cursor'
-));
+const cursorDataBase = normalizePath(
+  process.env.CHORUS_CURSOR_DATA_DIR
+  || process.env.BRIDGE_CURSOR_DATA_DIR
+  || '~/.cursor/projects',
+);
 
 if (isSystemDirectory(cursorDataBase)) {
   throw new Error(`Refusing to scan system directory: ${cursorDataBase}`);
 }
 
-function getWorkspacesDir() {
-  return path.join(cursorDataBase, 'User', 'workspaceStorage');
-}
-
-function isCursorFile(name) {
-  return (name.endsWith('.json') || name.endsWith('.jsonl'))
-    && (name.includes('chat') || name.includes('composer') || name.includes('conversation'));
+// Enumerate cursor-agent transcript files (newest first). When `id` is given,
+// only paths containing it are returned.
+function collectCursorTranscripts(id) {
+  return collectMatchingFiles(cursorDataBase, (fullPath, name) => (
+    name.endsWith('.jsonl')
+    && fullPath.includes('agent-transcripts')
+    && (id ? fullPath.includes(id) : true)
+  ), true);
 }
 
 function selectConversationTurns(turns, lastN) {
@@ -53,91 +63,54 @@ function selectConversationTurns(turns, lastN) {
 
 function resolve(id, cwd, opts) {
   if (!fs.existsSync(cursorDataBase)) return null;
-  const workspacesDir = getWorkspacesDir();
-  if (!fs.existsSync(workspacesDir)) return null;
+  const files = collectCursorTranscripts(id);
+  if (files.length === 0) return null;
 
-  const files = collectMatchingFiles(workspacesDir, (fullPath, name) => {
-    if (!isCursorFile(name)) return false;
-    if (id) return fullPath.includes(id);
-    return true;
-  }, true);
-
-  const warnings = ['Warning: Cursor sessions have no project scoping. Results may include sessions from unrelated projects.'];
-  return files.length > 0 ? { path: files[0].path, warnings } : null;
+  const warnings = [];
+  let targetPath;
+  if (id) {
+    targetPath = files[0].path;
+  } else if (cwd) {
+    targetPath = findLatestByCwd(files, resolveCursorCwd, cwd);
+    if (!targetPath) {
+      warnings.push(`No Cursor session matched cwd ${normalizePath(cwd)}; falling back to latest session.`);
+      targetPath = files[0].path;
+    }
+  } else {
+    targetPath = files[0].path;
+  }
+  return { path: targetPath, warnings };
 }
 
 function read(filePath, lastN, opts = {}) {
   lastN = lastN || 1;
-  const raw = fs.readFileSync(filePath, 'utf-8');
+
+  const turns = readCursorTurns(filePath);
+  const assistantMsgs = turns.filter(t => t.role === 'assistant').map(t => t.text);
+  const messageCount = assistantMsgs.length;
+
   let content = '';
-  let messageCount = 0;
   let messagesReturned = 1;
   let rolesIncluded = ['assistant'];
 
-  try {
-    const json = JSON.parse(raw);
-    if (Array.isArray(json.messages)) {
-      const turns = json.messages
-        .filter(m => m.role === 'assistant' || m.role === 'user')
-        .map(m => ({
-          role: m.role,
-          text: typeof m.content === 'string' ? m.content : JSON.stringify(m.content || ''),
-        }));
-      const assistantMsgs = turns.filter(m => m.role === 'assistant').map(m => m.text);
-      messageCount = assistantMsgs.length;
-      if (opts.includeUser && assistantMsgs.length > 0) {
-        const selected = selectConversationTurns(turns, lastN);
-        messagesReturned = selected.length;
-        rolesIncluded = ['user', 'assistant'];
-        content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
-      } else if (lastN > 1 && assistantMsgs.length > 0) {
-        const selected = assistantMsgs.slice(-lastN);
-        messagesReturned = selected.length;
-        content = selected.join('\n---\n');
-      } else {
-        content = assistantMsgs.length > 0
-          ? assistantMsgs[assistantMsgs.length - 1]
-          : '[No assistant messages found]';
-      }
-    } else if (typeof json.content === 'string') {
-      content = json.content;
-      messageCount = 1;
-    } else {
-      content = JSON.stringify(json, null, 2);
-    }
-  } catch (error) {
-    const lines = raw.split('\n').filter(Boolean);
-    const turns = [];
-    for (const line of lines) {
-      try {
-        const json = JSON.parse(line);
-        if ((json.role === 'assistant' || json.role === 'user') && typeof json.content === 'string') {
-          turns.push({ role: json.role, text: json.content });
-        }
-      } catch (e) { /* skip */ }
-    }
-    const assistantMsgs = turns.filter(m => m.role === 'assistant').map(m => m.text);
-    messageCount = assistantMsgs.length;
-    if (opts.includeUser && assistantMsgs.length > 0) {
-      const selected = selectConversationTurns(turns, lastN);
-      messagesReturned = selected.length;
-      rolesIncluded = ['user', 'assistant'];
-      content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
-    } else if (assistantMsgs.length > 0) {
-      if (lastN > 1) {
-        const selected = assistantMsgs.slice(-lastN);
-        messagesReturned = selected.length;
-        content = selected.join('\n---\n');
-      } else {
-        content = assistantMsgs[assistantMsgs.length - 1];
-      }
-    } else {
-      content = lines.slice(-20).join('\n');
-      messagesReturned = 0;
-    }
+  if (opts.includeUser && assistantMsgs.length > 0) {
+    const selected = selectConversationTurns(turns, lastN);
+    messagesReturned = selected.length;
+    rolesIncluded = ['user', 'assistant'];
+    content = selected.map(m => `${m.role.toUpperCase()}:\n${m.text}`).join('\n---\n');
+  } else if (lastN > 1 && assistantMsgs.length > 0) {
+    const selected = assistantMsgs.slice(-lastN);
+    messagesReturned = selected.length;
+    content = selected.join('\n---\n');
+  } else if (assistantMsgs.length > 0) {
+    content = assistantMsgs[assistantMsgs.length - 1];
+  } else {
+    content = '[No assistant messages found]';
+    messagesReturned = 0;
   }
 
   const sessionId = path.basename(filePath, path.extname(filePath));
+  const sessionCwd = resolveCursorCwd(filePath);
 
   return {
     agent: 'cursor',
@@ -145,7 +118,7 @@ function read(filePath, lastN, opts = {}) {
     content: redactSensitiveText(content),
     warnings: [],
     session_id: sessionId,
-    cwd: null,
+    cwd: sessionCwd || null,
     timestamp: getFileTimestamp(filePath),
     message_count: messageCount,
     messages_returned: messagesReturned,
@@ -156,93 +129,51 @@ function read(filePath, lastN, opts = {}) {
 function list(cwd, limit) {
   limit = limit || 10;
   if (!fs.existsSync(cursorDataBase)) return [];
-  const workspacesDir = getWorkspacesDir();
-  if (!fs.existsSync(workspacesDir)) return [];
 
-  const files = collectMatchingFiles(workspacesDir, (_fp, name) => isCursorFile(name), true);
-  const expectedCwd = cwd ? normalizePath(cwd).toLowerCase() : null;
+  const files = collectCursorTranscripts(null);
   const entries = [];
   for (const f of files) {
     if (entries.length >= limit) break;
 
-    if (expectedCwd) {
-      let raw;
-      try {
-        raw = fs.readFileSync(f.path, 'utf-8');
-      } catch (error) {
-        continue;
-      }
-      if (!raw.toLowerCase().includes(expectedCwd)) {
-        continue;
-      }
+    const sessionCwd = resolveCursorCwd(f.path);
+    if (cwd && !(sessionCwd && cwdMatchesProject(sessionCwd, cwd))) {
+      continue;
     }
 
     entries.push({
       session_id: path.basename(f.path, path.extname(f.path)),
       agent: 'cursor',
-      cwd: null,
+      cwd: sessionCwd || null,
       modified_at: getFileTimestamp(f.path),
       file_path: f.path,
     });
   }
-
   return entries;
 }
 
 function search(query, cwd, limit) {
   limit = limit || 10;
   const queryLower = String(query || '').toLowerCase();
-  const expectedCwd = cwd ? normalizePath(cwd).toLowerCase() : null;
   if (!fs.existsSync(cursorDataBase)) return [];
-  const workspacesDir = getWorkspacesDir();
-  if (!fs.existsSync(workspacesDir)) return [];
 
-  const files = collectMatchingFiles(workspacesDir, (_fp, name) => isCursorFile(name), true);
+  const files = collectCursorTranscripts(null);
   const entries = [];
 
   for (const f of files) {
     if (entries.length >= limit) break;
 
-    let raw;
-    try {
-      raw = fs.readFileSync(f.path, 'utf-8');
-    } catch (error) {
+    const sessionCwd = resolveCursorCwd(f.path);
+    if (cwd && !(sessionCwd && cwdMatchesProject(sessionCwd, cwd))) {
       continue;
     }
 
-    let assistantText = '';
-    try {
-      // Try parsing as JSON to extract assistant content
-      const parsed = JSON.parse(raw);
-      // Handle { messages: [...] } wrapper (like read() expects)
-      const msgs = Array.isArray(parsed) ? parsed
-        : (Array.isArray(parsed.messages) ? parsed.messages : []);
-      for (const msg of msgs) {
-        if (msg.role === 'assistant' && msg.content) {
-          assistantText += (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)) + '\n';
-        }
-      }
-    } catch (_e) {
-      // Fallback: try JSONL line-by-line, then raw content
-      const lines = raw.split('\n').filter(Boolean);
-      for (const line of lines) {
-        try {
-          const obj = JSON.parse(line);
-          if (obj.role === 'assistant' && typeof obj.content === 'string') {
-            assistantText += obj.content + '\n';
-          }
-        } catch (_) { /* skip */ }
-      }
-      if (!assistantText) assistantText = raw;
-    }
+    const assistantText = readCursorTurns(f.path)
+      .filter(t => t.role === 'assistant')
+      .map(t => t.text)
+      .join('\n');
 
     const lower = assistantText.toLowerCase();
-    if (expectedCwd && !lower.includes(expectedCwd)) {
-      continue;
-    }
-    if (!lower.includes(queryLower)) {
-      continue;
-    }
+    if (!lower.includes(queryLower)) continue;
 
     const idx = lower.indexOf(queryLower);
     const snippetStart = Math.max(0, idx - 60);
@@ -252,7 +183,7 @@ function search(query, cwd, limit) {
     entries.push({
       session_id: path.basename(f.path, path.extname(f.path)),
       agent: 'cursor',
-      cwd: null,
+      cwd: sessionCwd || null,
       modified_at: getFileTimestamp(f.path),
       file_path: f.path,
       match_snippet,
