@@ -26,8 +26,312 @@ function getPackageVersion() {
   }
 }
 
+// Per-subcommand help blocks. Each function returns the lines that lead
+// the help output when its topic is queried via `chorus <sub> --help`.
+// Leading with subcommand-specific usage (not the global blob) makes every
+// flag actually discoverable — see N4 acceptance criteria in
+// research/next-scopes-post-v0.15.0-2026-06-03.md.
+const SUBCOMMAND_HELP = {
+  read: (bin) => [
+    `Usage: ${bin} read [options]`,
+    '',
+    'Read assistant messages from a session (the default command).',
+    '',
+    'Options:',
+    '  --agent <codex|gemini|claude|cursor|hermes>  Agent to read (default: codex)',
+    '  --id <session-substring>                     Session match (omit for latest in scope)',
+    '  --cwd <path>                                 Restrict to sessions for this cwd',
+    '  --chats-dir <path>                           (gemini only) explicit chats dir',
+    '  --last <N>                                   Last N assistant messages',
+    '  --include-user                               Include user prompts that anchor responses',
+    '  --tool-calls                                 Include tool call content (Read, Edit, Bash, ...)',
+    '  --format <fmt>                               Output format: json (default with --json) | markdown',
+    '  --metadata-only                              Return session metadata without content',
+    '  --audit-redactions                           Include redaction audit trail',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Examples:',
+    `  ${bin} read --agent codex --json`,
+    `  ${bin} read --agent claude --id <substring> --include-user`,
+  ],
+  list: (bin) => [
+    `Usage: ${bin} list [options]`,
+    '',
+    'List recent sessions for an agent.',
+    '',
+    'Options:',
+    '  --agent <codex|gemini|claude|cursor|hermes>  Agent to list',
+    '  --cwd <path>                                 Restrict to sessions for this cwd',
+    '  --limit <N>                                  Max entries (default: 10)',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Examples:',
+    `  ${bin} list --agent claude --limit 5 --json`,
+  ],
+  search: (bin) => [
+    `Usage: ${bin} search <query> [options]`,
+    '',
+    'Search session content by query text.',
+    '',
+    'Arguments:',
+    '  <query>                                      Query string (positional, required)',
+    '',
+    'Options:',
+    '  --agent <codex|gemini|claude|cursor|hermes>  Agent to search (required)',
+    '  --cwd <path>                                 Restrict to sessions for this cwd',
+    '  --limit <N>                                  Max matches (default: 10)',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Examples:',
+    `  ${bin} search "authentication" --agent gemini --json`,
+  ],
+  summary: (bin) => [
+    `Usage: ${bin} summary [options]`,
+    '',
+    'Structured session digest: message count, duration estimate, user',
+    'requests, tool call counts, files referenced, last response snippet.',
+    'No LLM calls — all extraction is local.',
+    '',
+    'Options:',
+    '  --agent <codex|gemini|claude|cursor|hermes>  Agent (required)',
+    '  --id <session-substring>                     Session match (omit for latest in scope)',
+    '  --cwd <path>                                 Restrict to sessions for this cwd',
+    '  --chats-dir <path>                           (gemini only) explicit chats dir',
+    '  --format <fmt>                               Output format: markdown/md',
+    '  --json                                       Emit structured JSON',
+  ],
+  timeline: (bin) => [
+    `Usage: ${bin} timeline [options]`,
+    '',
+    'Cross-agent chronological view, interleaving sessions by timestamp.',
+    '',
+    'Options:',
+    '  --agent <agent>                              Agent filter (repeatable; default: all)',
+    '  --cwd <path>                                 Working directory (default: current)',
+    '  --limit <N>                                  Sessions per agent (default: 5)',
+    '  --format <fmt>                               Output format: markdown/md',
+    '  --json                                       Emit structured JSON',
+  ],
+  compare: (bin) => [
+    `Usage: ${bin} compare --source <agent[:id]> [--source ...] [options]`,
+    '',
+    'Compare outputs across agents and emit an analysis report.',
+    '',
+    'Options:',
+    '  --source <agent[:session-substring]>         Source spec (repeatable, required)',
+    '  --cwd <path>                                 Working directory',
+    '  --normalize                                  Normalize content before comparison',
+    '  --last <n>                                   Messages per source (default: 10)',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Examples:',
+    `  ${bin} compare --source codex --source claude --json`,
+  ],
+  report: (bin) => [
+    `Usage: ${bin} report --handoff <path> [options]`,
+    '',
+    'Generate a coordinator report from a handoff JSON file. The file must',
+    'conform to the schema below — unknown fields are rejected.',
+    '',
+    'Options:',
+    '  --handoff <path-to-handoff.json>             Path to handoff JSON (required)',
+    '  --cwd <path>                                 Working directory fallback',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Handoff JSON schema:',
+    '  {',
+    '    "mode": "analyze",                         // required',
+    '    "task": "<short description>",             // required',
+    '    "success_criteria": ["<criterion>", ...],  // required, non-empty',
+    '    "sources": [                               // required, non-empty',
+    '      {                                        // each source:',
+    '        "agent": "claude",                     //   required',
+    '        "session_id": "<id>",                  //   OR set current_session:true',
+    '        "current_session": true,               //   use latest for cwd',
+    '        "cwd": "<path>",                       //   optional override',
+    '        "last_n": 10                           //   optional N msgs/source',
+    '      }',
+    '    ],',
+    '    "constraints": ["<constraint>", ...]       // optional',
+    '  }',
+    '',
+    'Allowed top-level fields are exactly: mode, task, success_criteria,',
+    'sources, constraints. Any other field causes INVALID_HANDOFF.',
+    '',
+    'Minimal copy-pasteable example (write to handoff.json):',
+    '  {',
+    '    "mode": "analyze",',
+    '    "task": "Compare claude and codex outputs",',
+    '    "success_criteria": ["Identify agreements and contradictions"],',
+    '    "sources": [',
+    '      {"agent": "claude", "current_session": true},',
+    '      {"agent": "codex", "current_session": true}',
+    '    ]',
+    '  }',
+    '',
+    'Examples:',
+    `  ${bin} report --handoff ./handoff.json --json`,
+  ],
+  setup: (bin) => [
+    `Usage: ${bin} setup [options]`,
+    '',
+    'Install cross-provider instruction scaffolding in this project.',
+    '',
+    'Options:',
+    '  --cwd <path>                                 Target directory (default: current)',
+    '  --dry-run                                    Print planned changes, no writes',
+    '  --force                                      Replace existing managed blocks',
+    '  --context-pack                               Also build agent-context + install hooks',
+    '  --json                                       Emit structured JSON',
+    '',
+    'setup creates or updates:',
+    '  CLAUDE.md / AGENTS.md / GEMINI.md  chorus managed blocks for agent wiring',
+    '  .agent-chorus/                      provider snippets and intent contract',
+    '  .gitignore                          adds .agent-chorus/ to prevent tracking',
+    '  claude plugin                       auto-installs Claude Code plugin if claude CLI is present',
+    '',
+    'Run teardown to reverse all per-project operations.',
+    'The Claude Code plugin is global — uninstall separately if desired:',
+    '  claude plugin uninstall agent-chorus',
+  ],
+  teardown: (bin) => [
+    `Usage: ${bin} teardown [options]`,
+    '',
+    'Reverse setup: remove managed blocks, scaffolding, and hooks.',
+    '',
+    'Options:',
+    '  --cwd <path>                                 Target directory (default: current)',
+    '  --dry-run                                    Print planned changes, no writes',
+    '  --global                                     Also remove ~/.cache/agent-chorus/',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Removes managed blocks from CLAUDE.md/AGENTS.md/GEMINI.md,',
+    'deletes .agent-chorus/ scaffolding, removes pre-push hook sentinel,',
+    'and removes .agent-chorus/ from .gitignore.',
+    'Context pack (.agent-context/) is preserved — remove manually if desired.',
+    '',
+    'Note: the Claude Code plugin is NOT removed by teardown (it is global).',
+    'To uninstall the plugin: claude plugin uninstall agent-chorus',
+  ],
+  doctor: (bin) => [
+    `Usage: ${bin} doctor [options]`,
+    '',
+    'Diagnostic checks across the agent-chorus install.',
+    '',
+    'Options:',
+    '  --cwd <path>                                 Working directory (default: current)',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Severity levels:',
+    '  pass    Check succeeded.',
+    '  info    Informational; not a problem (e.g. optional feature not configured).',
+    '  warn    Actionable; the install can run but something should be fixed.',
+    '  fail    Broken/unrecoverable.',
+    '',
+    'Overall is elevated only by warn or fail; info does not elevate it.',
+    '',
+    'Checks: version, session directories, setup completeness, provider',
+    'instruction wiring, session availability, context pack state,',
+    'Claude Code plugin installation, update status, hooks path + pre-push.',
+  ],
+  'agent-context': (bin) => [
+    `Usage: ${bin} agent-context <subcommand> [options]`,
+    '',
+    'Build, sync, and install agent-context automation.',
+    '',
+    'Subcommands:',
+    '  build [--reason <text>] [--base <sha>] [--head <sha>] [--force-snapshot]',
+    '  init [--pack-dir <path>] [--cwd <path>] [--force]',
+    '  seal [--reason <text>] [--base <sha>] [--head <sha>] [--pack-dir <path>] [--cwd <path>] [--force] [--force-snapshot]',
+    '  sync-main --local-ref <ref> --local-sha <sha> --remote-ref <ref> --remote-sha <sha>',
+    '  install-hooks',
+    '  rollback [--snapshot <id>]',
+    '  check-freshness [--base <git-ref>]',
+  ],
+  send: (bin) => [
+    `Usage: ${bin} send --from <agent> --to <agent> --message <text> [options]`,
+    '',
+    'Send a message from one agent to another. The message lands in the',
+    'recipient agent\'s inbox under .agent-chorus/messages/.',
+    '',
+    'Options:',
+    '  --from <agent>                               Sending agent (required)',
+    '  --to <agent>                                 Target agent (required)',
+    '  --message <text>                             Message content (required)',
+    '  --cwd <path>                                 Working directory',
+    '  --json                                       Emit structured JSON',
+  ],
+  messages: (bin) => [
+    `Usage: ${bin} messages --agent <name> [options]`,
+    '',
+    'Read messages from an agent\'s inbox.',
+    '',
+    'Options:',
+    '  --agent <name>                               Agent whose messages to read',
+    '  --clear                                      Drain inbox after reading',
+    '                                               (use at session standup)',
+    '  --cwd <path>                                 Working directory',
+    '  --json                                       Emit structured JSON',
+    '',
+    'Examples:',
+    `  ${bin} messages --agent claude --json`,
+    `  ${bin} messages --agent claude --clear     # drain inbox after read`,
+  ],
+  checkpoint: (bin) => [
+    `Usage: ${bin} checkpoint --from <agent> [options]`,
+    '',
+    'Broadcast git state to every other agent\'s inbox. No-ops silently',
+    'when .agent-chorus/ does not exist (safe to install globally).',
+    '',
+    'Options:',
+    '  --from <agent>                               Sending agent (claude|codex|gemini|cursor)',
+    '  --message <text>                             Override auto-composed message',
+    '  --cwd <path>                                 Working directory',
+    '  --json                                       Emit structured JSON',
+  ],
+  diff: (bin) => [
+    `Usage: ${bin} diff --agent <name> --from <id> --to <id> [options]`,
+    '',
+    'Compare two sessions from the same agent.',
+    '',
+    'Options:',
+    '  --agent <codex|gemini|claude|cursor|hermes>  Agent (required)',
+    '  --from <session-id>                          First session (substring match)',
+    '  --to <session-id>                            Second session (substring match)',
+    '  --last <n>                                   Messages per session (default: 1)',
+    '  --cwd <path>                                 Working directory',
+    '  --json                                       Emit structured JSON',
+  ],
+  relevance: (bin) => [
+    `Usage: ${bin} relevance [--list | --test <path> | --suggest] [options]`,
+    '',
+    'Inspect relevance patterns for agent-context filtering.',
+    '',
+    'Options:',
+    '  --list                                       List current include/exclude patterns',
+    '  --test <path>                                Test whether a file path is relevant',
+    '  --suggest                                    Suggest patterns from project conventions',
+    '  --cwd <path>                                 Working directory (default: current)',
+    '  --json                                       Emit structured JSON',
+  ],
+};
+
 function printHelp(topic = null) {
   const binName = path.basename(process.argv[1] || 'chorus');
+
+  // Per-subcommand help: lead with that subcommand's usage. The global
+  // command list is deliberately omitted to keep relevant flags above
+  // the fold — N4 acceptance.
+  if (topic && (SUBCOMMAND_HELP[topic] || topic === 'context-pack')) {
+    const builder = SUBCOMMAND_HELP[topic] || SUBCOMMAND_HELP['agent-context'];
+    const lines = builder(binName);
+    lines.push('');
+    lines.push(`Run \`${binName} --help\` for the full command list.`);
+    console.log(lines.join('\n'));
+    return;
+  }
+
+  // Top-level help: full command listing.
   const lines = [
     `Agent Chorus CLI v${getPackageVersion()}`,
     '',
@@ -53,7 +357,7 @@ function printHelp(topic = null) {
     '  relevance      Inspect relevance patterns for agent-context filtering',
     '',
     'Global Flags:',
-    '  -h, --help       Show help',
+    '  -h, --help       Show help (use `<command> --help` for per-command details)',
     '  -v, --version    Show version',
     '',
     'Examples:',
@@ -67,165 +371,6 @@ function printHelp(topic = null) {
     `  ${binName} doctor --json`,
     `  ${binName} agent-context build`,
   ];
-
-  if (topic === 'read') {
-    lines.push('');
-    lines.push('read options:');
-    lines.push('  --agent <codex|gemini|claude|cursor|hermes> (default: codex)');
-    lines.push('  --id <session-substring> (optional; omitted = latest session in scope)');
-    lines.push('  --cwd <path>');
-    lines.push('  --chats-dir <path> (gemini)');
-    lines.push('  --last <N>');
-    lines.push('  --include-user       Include the latest user prompt(s) that anchor returned assistant messages');
-    lines.push('  --tool-calls         Include tool call content (Read, Edit, Bash, etc.) in output');
-    lines.push('  --format <fmt>       Output format: json (default with --json), markdown/md');
-    lines.push('  --metadata-only      Return session metadata without content');
-    lines.push('  --audit-redactions   Include redaction audit trail in output');
-    lines.push('  --json');
-  } else if (topic === 'list') {
-    lines.push('');
-    lines.push('list options:');
-    lines.push('  --agent <codex|gemini|claude|cursor|hermes>');
-    lines.push('  --cwd <path>');
-    lines.push('  --limit <N> (default: 10)');
-    lines.push('  --json');
-  } else if (topic === 'search') {
-    lines.push('');
-    lines.push('search options:');
-    lines.push('  <query> (positional, required)');
-    lines.push('  --agent <codex|gemini|claude|cursor|hermes> (required)');
-    lines.push('  --cwd <path>');
-    lines.push('  --limit <N> (default: 10)');
-    lines.push('  --json');
-  } else if (topic === 'summary') {
-    lines.push('');
-    lines.push('summary options:');
-    lines.push('  --agent <codex|gemini|claude|cursor|hermes> (required)');
-    lines.push('  --id <session-substring> (optional; omitted = latest session in scope)');
-    lines.push('  --cwd <path>');
-    lines.push('  --chats-dir <path> (gemini)');
-    lines.push('  --format <fmt>       Output format: markdown/md');
-    lines.push('  --json');
-    lines.push('');
-    lines.push('  Produces a structured digest: message count, duration estimate,');
-    lines.push('  user requests, tool call counts, files referenced, last response snippet.');
-    lines.push('  No LLM calls — all extraction is local.');
-  } else if (topic === 'timeline') {
-    lines.push('');
-    lines.push('timeline options:');
-    lines.push('  --agent <agent> (repeatable; default: all four agents)');
-    lines.push('  --cwd <path> (default: current directory)');
-    lines.push('  --limit <N>          Sessions per agent (default: 5)');
-    lines.push('  --format <fmt>       Output format: markdown/md');
-    lines.push('  --json');
-    lines.push('');
-    lines.push('  Cross-agent chronological view interleaving sessions by timestamp.');
-  } else if (topic === 'compare') {
-    lines.push('');
-    lines.push('compare options:');
-    lines.push('  --source <agent[:session-substring]> (repeatable, required)');
-    lines.push('  --cwd <path>');
-    lines.push('  --normalize');
-    lines.push('  --last <n>            Messages per source (default: 10)');
-    lines.push('  --json');
-  } else if (topic === 'report') {
-    lines.push('');
-    lines.push('report options:');
-    lines.push('  --handoff <path-to-handoff.json> (required)');
-    lines.push('  --cwd <path>');
-    lines.push('  --json');
-  } else if (topic === 'setup') {
-    lines.push('');
-    lines.push('setup options:');
-    lines.push('  --cwd <path> (default: current directory)');
-    lines.push('  --dry-run');
-    lines.push('  --force (replace existing managed blocks)');
-    lines.push('  --context-pack (also build agent-context and install hooks)');
-    lines.push('  --json');
-    lines.push('');
-    lines.push('setup creates or updates:');
-    lines.push('  CLAUDE.md / AGENTS.md / GEMINI.md  chorus managed blocks for agent wiring');
-    lines.push('  .agent-chorus/                      provider snippets and intent contract');
-    lines.push('  .gitignore                          adds .agent-chorus/ to prevent tracking');
-    lines.push('  claude plugin                       auto-installs Claude Code plugin if claude CLI is present');
-    lines.push('');
-    lines.push('Run teardown to reverse all per-project operations.');
-    lines.push('The Claude Code plugin is global — uninstall separately if desired:');
-    lines.push('  claude plugin uninstall agent-chorus');
-  } else if (topic === 'teardown') {
-    lines.push('');
-    lines.push('teardown options:');
-    lines.push('  --cwd <path> (default: current directory)');
-    lines.push('  --dry-run');
-    lines.push('  --global (also remove ~/.cache/agent-chorus/ update-check cache)');
-    lines.push('  --json');
-    lines.push('');
-    lines.push('Removes managed blocks from CLAUDE.md/AGENTS.md/GEMINI.md,');
-    lines.push('deletes .agent-chorus/ scaffolding, removes pre-push hook sentinel,');
-    lines.push('and removes .agent-chorus/ from .gitignore.');
-    lines.push('Context pack (.agent-context/) is preserved — remove manually if desired.');
-    lines.push('');
-    lines.push('Note: the Claude Code plugin is NOT removed by teardown (it is global).');
-    lines.push('To uninstall the plugin: claude plugin uninstall agent-chorus');
-  } else if (topic === 'doctor') {
-    lines.push('');
-    lines.push('doctor options:');
-    lines.push('  --cwd <path> (default: current directory)');
-    lines.push('  --json');
-    lines.push('');
-    lines.push('Checks: version, session directories, setup completeness, provider');
-    lines.push('instruction wiring, session availability, context pack state,');
-    lines.push('Claude Code plugin installation, and update status.');
-  } else if (topic === 'agent-context' || topic === 'context-pack') {
-    lines.push('');
-    lines.push('agent-context usage:');
-    lines.push('  agent-context build [--reason <text>] [--base <sha>] [--head <sha>] [--force-snapshot]');
-    lines.push('  agent-context init [--pack-dir <path>] [--cwd <path>] [--force]');
-    lines.push('  agent-context seal [--reason <text>] [--base <sha>] [--head <sha>] [--pack-dir <path>] [--cwd <path>] [--force] [--force-snapshot]');
-    lines.push('  agent-context sync-main --local-ref <ref> --local-sha <sha> --remote-ref <ref> --remote-sha <sha>');
-    lines.push('  agent-context install-hooks');
-    lines.push('  agent-context rollback [--snapshot <id>]');
-    lines.push('  agent-context check-freshness [--base <git-ref>]');
-  } else if (topic === 'send') {
-    lines.push('');
-    lines.push('send options:');
-    lines.push('  --from <agent>        Sending agent');
-    lines.push('  --to <agent>          Target agent');
-    lines.push('  --message <text>      Message content');
-    lines.push('  --cwd <path>          Working directory');
-    lines.push('  --json                Emit structured JSON');
-  } else if (topic === 'messages') {
-    lines.push('');
-    lines.push('messages options:');
-    lines.push('  --agent <name>        Agent whose messages to read');
-    lines.push('  --clear               Clear messages after reading');
-    lines.push('  --cwd <path>          Working directory');
-    lines.push('  --json                Emit structured JSON');
-  } else if (topic === 'checkpoint') {
-    lines.push('');
-    lines.push('checkpoint options:');
-    lines.push('  --from <agent>        Sending agent (claude|codex|gemini|cursor)');
-    lines.push('  --message <text>      Override the auto-composed state message');
-    lines.push('  --cwd <path>          Working directory');
-    lines.push('  --json                Emit structured JSON');
-  } else if (topic === 'diff') {
-    lines.push('');
-    lines.push('diff options:');
-    lines.push('  --agent <codex|gemini|claude|cursor|hermes>');
-    lines.push('  --from <session-id>   First session ID (substring match)');
-    lines.push('  --to <session-id>     Second session ID (substring match)');
-    lines.push('  --last <n>            Messages per session (default: 1)');
-    lines.push('  --cwd <path>          Working directory');
-    lines.push('  --json                Emit structured JSON');
-  } else if (topic === 'relevance') {
-    lines.push('');
-    lines.push('relevance options:');
-    lines.push('  --list              List current include/exclude patterns');
-    lines.push('  --test <path>       Test whether a file path is relevant');
-    lines.push('  --suggest           Suggest patterns based on project conventions');
-    lines.push('  --cwd <path>        Working directory (default: current directory)');
-    lines.push('  --json              Emit structured JSON');
-  }
 
   console.log(lines.join('\n'));
 }
