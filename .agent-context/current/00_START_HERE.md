@@ -2,8 +2,7 @@
 
 ## Snapshot
 - Repo: `agent-chorus`
-- Branch at generation: `feat/native-cursor-hermes-adapter`
-- Pack version: 0.14.1
+- Pack version: 0.16.0
 - Generated at seal time (fields populated by `chorus agent-context seal`)
 
 ## Read Order — MANDATORY before starting work
@@ -36,23 +35,36 @@ Read on demand:
 - **Core risk**: Any change to CLI output format or command flags must land in both implementations, schemas, and golden fixtures simultaneously.
 - **Session handoff**: `chorus checkpoint --from <agent>` (v0.12.0) plus `scripts/hooks/chorus-session-end.sh` broadcast state across agents on clean exit, crash, or window close — see `docs/session-handoff-guide.md`.
 - **Session-start freshness gate (v0.14.0)**: routing blocks in `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` now begin with a mandatory instruction to compare `head_sha_at_seal` against `git rev-parse HEAD` before reasoning. Agents MUST warn the user when they diverge.
-- **Version**: 0.14.1 (npm `agent-chorus` + crate `agent-chorus`).
-- **What's new in 0.14.1**: packaging-only patch — relocates `settings.agent-context.json` template into `cli/templates/` so `cargo publish` can package it (v0.14.0 silently failed crates.io publish); adds `cargo publish --dry-run` to the release verify job to prevent recurrence.
+- **Version**: 0.16.0 (npm `agent-chorus` + crate `agent-chorus`, published 2026-06-03).
+- **What's new in 0.16.0**: UAT gap close — Cursor IDE (app) SQLite adapter alongside the cursor-agent CLI JSONL surface; `--history=on-demand` contracted default with on-demand recall semantics; `cwd_mismatch` structured field on fallback; doctor honesty pass (info severity, env-override-dangling check, git-aware hooks checks, stale-snippet detection); codex search extractor fix (`read ⊆ search` invariant now CI-enforced for every adapter); per-subcommand `--help` overhaul including handoff JSON schema in `chorus report --help`; uniform `--tool-calls` NOT_AVAILABLE warning for gemini/hermes; Node parser rejects unknown flags. `RELEASE_NOTES.md` has the full v0.16.0 entry.
+- **Known issues (v0.16.1 pending)**: Codex UAT 2026-06-03 found 6 defects v0.16.0 shipped with — Gemini latest-read selection on empty-assistant sessions, `chorus checkpoint` silent-no-op invariant violation, `chorus report` missing-mode error path, cursor `timeline` missing `source` field, `read ⊆ search` invariant edge cases on Codex + Claude with adversarial queries, hermes missing from `schemas/read-output.schema.json` enum. v0.16.1 patch scope pending decision.
 
-## What's New Since Last Seal (v0.13.0 → v0.14.0)
-- **P1 — rich manifest + provenance.** Manifest carries head SHA, seal timestamp, tool versions and hashes; sealing/authoring chain is recorded so consumers can verify pack origin.
-- **P2 — structural verifier.** `verify` now validates required sections and cross-file references beyond checksum integrity.
-- **P3 — zone-aware freshness + suggest-patches.** Freshness is computed per pack zone, not globally; `check-freshness` emits targeted patch suggestions by affected section.
-- **P4 — pre-edit awareness.** Authoring flows read the pack before editing so the agent sees invariants it is about to mutate.
-- **P5 — count SSOT via handlebars.** Narrative counts expand from manifest via handlebars, eliminating prose/data drift.
-- **P6 — hook intelligence + separate-commit enforcement.** Pre-push hook detects pack-only pushes, consumes `.last_freshness.json` to mark warnings addressed, and optional `verify --ci --enforce-separate-commits` fails on mixed `.agent-context/**` + code commits.
-- **P7 — subagent reconciliation.** `diff --since-seal` lets a parent agent reconcile parallel subagent work.
-- **P8 — hostile input & platform safety (F19–F23).** Path traversal, symlink escape, oversized files, non-UTF-8 sequences, and platform name collisions are rejected.
-- **P9 — git edge cases (F24–F28).** Detached HEAD, submodules, worktrees, shallow clones, and grafted histories handled explicitly; `follow_symlinks: false` is the default seal behavior.
-- **P10 — concurrency, atomic writes & recovery (F29–F33, F55).** Seal uses staging-dir + rename commit; stale lockfiles auto-recover; concurrent verify no longer races a seal.
-- **P11 — schema version enforcement + install integrity (F34, F36, F37, F38).** Manifest pins a schema version; verify rejects unknown versions; install detects tampered / partial packs.
-- **P12 — trust boundary & pack integrity.** Pack integrity validation runs on every seal.
-- **P13 — authoring ergonomics (F46, F47, F50, F58).** Tiered adoption (`init --tier 1|2|3`), pack-file aliases, last-known-good pointer with `rollback --latest-good`, and the session-start freshness gate preamble.
+## What's New Since Last Seal (v0.14.1 → v0.16.0)
+
+**v0.15.0 (cursor native + cleanup):**
+- Native cursor-agent CLI adapter reading `~/.cursor/projects/*/agent-transcripts/*.jsonl` directly (no external bridge required). Per-session cwd recovered via `.workspace-trusted` → `workspacePath` or filesystem-validated demangle.
+- Provisional Hermes adapter scaffold (claude-like JSONL under `~/.hermes/sessions`, format unconfirmed).
+- Hardened agent-context update contract in `GUIDE.md` + seal drift-guard.
+- Bridge fully decommissioned locally; chorus is now standalone.
+
+**v0.16.0 (UAT gap close — see invariants 20-26 in 30_BEHAVIORAL_INVARIANTS.md):**
+- N1 Cursor IDE (app) SQLite adapter (`~/.cursor/chats/<hash>/<uuid>/store.db`), merged with the v0.15.0 JSONL surface into one `--agent cursor` view. Each cursor entry carries `source: "cli" | "app"`. Requires Node ≥ 22.5; graceful CLI-only fallback on older Node.
+- N2 Codex search extractor fix — codex `search` now walks the real `response_item.payload` / `event_msg.payload` envelopes that real sessions use; pre-fix it walked a top-level `{role, content}` schema that never existed in any session and returned empty for every query.
+- N3 Doctor self-consistency — `info` severity added, hooks-path vs pre-push contradiction resolved.
+- N4 Per-subcommand `--help` leads with the subcommand. `chorus report --help` includes the full handoff JSON schema with a copy-pasteable example.
+- N6 `--tool-calls` parity — claude/codex/cursor (both surfaces) render `[TOOL: <name>]` blocks; gemini/hermes emit a uniform `NOT_AVAILABLE` warning while still setting `included_tool_calls: true`.
+- N7 `--history=on-demand` contract (default) / `none` (metadata-only alias) / `eager` (reserved + warning). Closes the 2.5x token-inflation finding from the field study.
+- F1 `cwd_mismatch` structured field on read output when `--cwd` doesn't match any session. Stderr also echoes the fallback.
+- F2 `env_override_dangling` doctor check for stale `CHORUS_*_DIR` env vars pointing at non-existent directories.
+- F3 Git-aware hooks checks — doctor reports `info: cwd is not a git repository` rather than falsely claiming a global hook is installed.
+- F4 `read ⊆ search` invariant CI-enforced for every adapter.
+- F5 Provider snippets carry the History contract (top of managed block).
+- F6/F7/F8 Fixture coverage gaps closed — claude/codex tool-call fixtures with real `tool_use`/`function_call` entries, live hermes fixture, SQLite redaction fixture.
+- F9/F10/F11/F13 Hygiene — Rust `report --help` / `doctor --help` parity with Node, `node:sqlite` ExperimentalWarning suppression, Node parser rejects unknown flags, cursor_app dead-code annotations.
+- R2 defect fixes — Rust `cwd_matches_project` no longer treats `cwd: "/"` as wildcard, `relative_path` symlink fix, stale-snippet detection in doctor, History contract promoted to top of managed block.
+
+## Carry forward from v0.13.0 → v0.14.0 (still load-bearing)
+- P1-P13 hardening (manifest + provenance, structural verifier, zone-aware freshness, pre-edit awareness, count SSOT, hook intelligence, subagent reconciliation, hostile input handling, git edge cases, concurrency safety, schema-version enforcement, pack integrity, authoring ergonomics). See invariants 16-19.
 
 ## Scope Rule
 - Start with `PROTOCOL.md` for the CLI contract and trust model.
