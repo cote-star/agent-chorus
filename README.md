@@ -185,6 +185,27 @@ Chorus sits between your agent and other agents' session logs. Read-only, eviden
 
 Boundaries: no task router, no scheduler, no autonomous chaining, no live sync stream. Snapshot-based reads from local logs, by design.
 
+## Roadmap
+
+What's queued. Direction over dates; specifics confirmed in [`RELEASE_NOTES.md`](./RELEASE_NOTES.md) as each ships.
+
+**Next (v0.16.1)** — patch release covering UAT findings from the v0.16.0 review week: Gemini latest-read selection on empty-assistant sessions, `chorus checkpoint` silent-no-op invariant in non-chorus cwds, `chorus report` missing-mode error path, cursor `timeline` `source` field, and `read ⊆ search` invariant edge cases on Codex + Claude. Hermes added to the read-output schema enum.
+
+**Soon**
+- **Agent-context as a separate library** — moving pack format, templates, and verify/seal algorithm into `cote-star/agent-context` as the single source of truth; chorus consumes a versioned dependency. Closes the two-truth state that produced the schema-drift incidents in v0.14.x.
+- **Agy CLI adapter** — Google's successor to the deprecated `gemini` CLI. Same parity bar as the other adapters: list/read/search/timeline/send/messages/checkpoint/doctor/setup.
+- **Hermes promotion** — from provisional scaffold to full adapter once the OSS agent-lab integration lands.
+
+**Later**
+- **Formal checkpoint schema** — JSON Schema for `chorus checkpoint` payloads, validated in conformance.
+- **Project-local session-log mirror** — repo-local fallback session source for agents whose native storage is partial or ephemeral.
+- **Gemini legacy deprecation** — once upstream Gemini CLI is formally retired by Google.
+
+**Explicitly NOT planned**
+- Orchestration / task router / scheduler — chorus is the evidence layer underneath an orchestrator, not a replacement.
+- Cloud sync of session data — local-first is a tenet, not a default we plan to flip.
+- Live streaming of session updates — snapshot-based reads by design.
+
 ## Easter Egg
 
 `chorus trash-talk` roasts your agents based on their session content.
