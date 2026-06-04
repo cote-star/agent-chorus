@@ -103,6 +103,21 @@ Full changelog and upgrade notes: [`RELEASE_NOTES.md`](./RELEASE_NOTES.md).
 - **Privacy-focused** — auto-redacts API keys, tokens, and passwords.
 - **Dual parity** — Node.js + Rust CLIs ship identical output contracts, conformance-tested against shared fixtures.
 
+## How It Compares
+
+| | agent-chorus | CrewAI / AutoGen / LangGraph | ccswarm / claude-squad |
+| :--- | :---: | :---: | :---: |
+| **Approach** | Read-only evidence layer | Full orchestration framework | Parallel agent spawning |
+| **Install** | `npm i -g agent-chorus` or `cargo install` | pip + ecosystem | git clone |
+| **Agents covered** | Codex, Claude, Gemini, Cursor CLI + IDE | Provider-specific | Usually Claude-only |
+| **Runtime deps shipped** | Zero | Heavy Python/TS stack | Moderate |
+| **Privacy** | Local-first, auto-redaction | Cloud-optional | Varies |
+| **Built-ins unique to chorus** | session summary (no LLM), cross-agent timeline, session diff, handoff protocol, agent-to-agent messages, context pack | none | none |
+| **Implementation** | Node.js + Rust, conformance-tested | Single language | Single language |
+| **Philosophy** | Visibility first, orchestration optional | Orchestration first | Task spawning |
+
+Chorus is the evidence layer underneath whatever orchestrator you use — not a replacement. If you want a router/scheduler/work-queue, pair chorus with one of the frameworks above. If you just want agents to see each other's work, chorus alone is enough.
+
 ## Key Capabilities
 
 A taste — see [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md) for the full surface.
@@ -131,7 +146,20 @@ chorus messages --agent codex --cwd . --json
 chorus checkpoint --from claude --cwd .
 ```
 
-Supported agents: **Codex, Claude, Gemini, Cursor CLI, Cursor IDE.** Full capability matrix in [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md).
+## Supported Agents
+
+Every adapter supports `read / list / search / summary / timeline / send / messages / checkpoint`. The differences are where each agent stores sessions and which adapters render tool-call content vs. emit a uniform NOT_AVAILABLE warning.
+
+| Agent | Session source | `--tool-calls` |
+| --- | --- | --- |
+| **Codex** | `~/.codex/sessions/**/*.jsonl` | renders |
+| **Claude** | `~/.claude/projects/**/*.jsonl` | renders |
+| **Cursor CLI** | `~/.cursor/projects/*/agent-transcripts/**/*.jsonl` | renders |
+| **Cursor IDE (app)** *(new in v0.16.0)* | `~/.cursor/chats/*/*/store.db` (SQLite; requires Node ≥ 22.5 for the IDE surface) | renders |
+| **Gemini** | `~/.gemini/tmp/*/chats/*.json[l]` | uniform `NOT_AVAILABLE` warning (gemini transcripts don't carry tool calls) |
+| **Hermes** *(provisional scaffold)* | `~/.hermes/sessions/**/*.jsonl` | uniform `NOT_AVAILABLE` warning |
+
+Node and Rust runtimes ship identical output for every agent above; the `read(text) ⊆ search(text-tokens)` invariant is CI-enforced for each adapter. Full per-flag reference: [`docs/CLI_REFERENCE.md`](./docs/CLI_REFERENCE.md).
 
 ## Context Pack
 
