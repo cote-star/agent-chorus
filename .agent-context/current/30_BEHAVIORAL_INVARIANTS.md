@@ -20,6 +20,13 @@
 17. **Pack integrity check on every seal (v0.14.0)**: `seal` runs pack integrity validation (schema version, checksum recomputation, structural verify, alias-resolved file set) before committing the new snapshot. A seal that fails integrity must leave the previous snapshot untouched — P10's staging-dir + `rename` commit is what guarantees this atomicity.
 18. **`--enforce-separate-commits` is off by default (v0.14.0)**: `chorus agent-context verify --ci` does NOT reject mixed `.agent-context/**` + code commits unless `--enforce-separate-commits` is explicitly passed. Teams opt in; the default behavior remains permissive so existing PR workflows don't break on upgrade.
 19. **Seal is crash-safe (v0.14.0, P10)**: Seal writes through a staging directory and commits via `rename`. A stale lockfile from an interrupted seal MUST auto-recover on the next seal (not require manual cleanup). Concurrent `verify` runs MUST NOT race against a mid-flight seal — verify reads the committed snapshot, not the staging dir.
+20. **Cursor reads two surfaces (v0.16.0)**: `--agent cursor` reads BOTH `~/.cursor/projects/*/agent-transcripts/*.jsonl` (cursor-agent CLI, v0.15.0) AND `~/.cursor/chats/<hash>/<uuid>/store.db` (Cursor IDE app, SQLite, v0.16.0). The two surfaces are merged into one cursor adapter; `list/read/search/timeline` return entries from both. Each cursor entry carries a `source: "cli" | "app"` field; other agents do not emit `source`. Cursor IDE app reading requires Node ≥ 22.5 (built-in `node:sqlite`); older Node gracefully degrades to CLI-only with no crash. Schema for SQLite blobs: `meta.value` is hex-encoded JSON with `latestRootBlobId`; root blob is a protobuf-style stream of child SHAs; child blobs are JSON messages matching Claude's `{role, content}` shape. Workspace cwd recovered from the `Workspace Path:` header in the first user-role message.
+21. **`--history=on-demand` is the contracted default (v0.16.0)**: `chorus read --history` accepts `on-demand` (default), `none`, `eager`. `on-demand` returns only the latest session for the cwd — chorus MUST NOT auto-pull prior sessions. `none` zeros `content` (alias for `--metadata-only`). `eager` is reserved for a future multi-session merge; today it behaves identically to `on-demand` and emits a uniform warning. Invalid values MUST fail closed with `IO_ERROR` listing allowed values. The contract is propagated to consumer agents via the provider snippet's `History contract` section (top of the managed block, before routing bullets) and the `chorus setup` template. Violating this default costs 2.5x tokens per the field study; placement reflects that.
+22. **`cwd_mismatch` is a structured fallback signal (v0.16.0)**: When `--cwd <X>` is passed but no session matches, every adapter except gemini falls back to the latest session AND emits `cwd_mismatch: true` in the JSON output AND echoes the warning to stderr prefixed with `chorus:`. JSON-only consumers can detect the silent-fallback case without scanning warning strings. The field is absent (not `false`) when no fallback occurred. Schema: `schemas/read-output.schema.json` declares it as optional boolean. Gemini scopes by project nickname, not absolute cwd, so the field never fires for gemini.
+23. **Doctor severity model (v0.16.0)**: Doctor checks use four levels — `pass` / `info` / `warn` / `fail`. `info` MUST NOT elevate `overall`; only `warn` and `fail` do. `info` is reserved for "optional feature not configured" (e.g., an absent data directory for an uninstalled agent). `warn` is reserved for "directory exists but no sessions" or "managed block present but stale". `fail` is broken/unrecoverable. Specific severity rules: hooks-path / pre-push checks report `info` when cwd is not a git repository; `env_override_dangling` warns when a `CHORUS_*_DIR` or `BRIDGE_*_DIR` env var points at a non-existent directory; `snippet_<agent>_stale` / `integration_<agent>_stale` warn when provider snippets / managed blocks predate the v0.16.0 history contract.
+24. **`read(text) ⊆ search(text-tokens)` invariant (v0.16.0)**: For every supported adapter, any text returned by `chorus read --agent <a> --id <id>` MUST be discoverable via `chorus search --agent <a> "<token-from-that-text>"`. CI gates this for every adapter (claude, codex, gemini, cursor CLI, cursor IDE app) via `run_search_read_parity` in `scripts/conformance.sh`. The codex fix in v0.16.0 was the original case: the codex search extractor was walking a top-level `{role, content}` schema that never existed in real codex sessions; correct shape is `{type:"response_item", payload:{type:"message", role:"assistant", content:[...]}}` and `{type:"event_msg", payload:{type:"agent_message", message:"..."}}`. Both envelopes must be handled or search returns empty for every real session.
+25. **Help text leads with the subcommand (v0.16.0)**: For every subcommand listed by `chorus --help`, running `chorus <sub> --help` MUST first show `Usage: chorus <sub> ...` — never the global Commands list. Every flag accepted by the parser MUST appear in that subcommand's help. Unknown flags MUST fail closed with `Unknown flag for '<cmd>': <flag>. Run 'chorus <cmd> --help' to see allowed flags.` The Node parser (`scripts/read_session.cjs`) enforces this via the `ALLOWED_FLAGS` map and `validateFlags` dispatch hook; the Rust parser via clap.
+26. **`chorus checkpoint` is silent when `.agent-chorus/` is absent (v0.12.0, reaffirmed)**: This guard is what makes `scripts/hooks/chorus-session-end.sh` safe to install globally. Checkpoint MUST exit 0 with no stdout/stderr in a non-chorus cwd. (Codex UAT 2026-06-03 flagged a regression where checkpoint emits `No .agent-chorus/ directory ... checkpoint skipped.` — pending fix in v0.16.1.)
 
 ## Update Checklist Before Merging Behavior Changes
 
@@ -36,18 +43,27 @@
 | Skill definition change | `skills/agent-context/SKILL.md`. Update `wip/context-pack-skill/evolution/` log with rationale. |
 
 ## File Families
-- `scripts/adapters/*.cjs` (5 files) — one per agent. Report as family when discussing adapter-layer changes. Inspect one representative.
-- `scripts/agent_context/*.cjs` (11 files) — Node agent-context commands. Report as family. Must stay in parity with `cli/src/agent_context.rs`.
-- `fixtures/golden/*.json` (14 files) — conformance baselines. Report as family. Derived — regenerated by running conformance with `--update`.
-- `fixtures/session-store/` (multiple dirs) — test fixture data. Report as family per agent.
-- `schemas/*.json` (6 files) — output schemas. Report individually when a specific schema changes, as family when discussing "all schemas".
-- `.agent-context/current/*.json` (4 files) — structured artifacts. Report individually (routes, completeness, reporting, search_scope).
+- `scripts/adapters/*.cjs` — one per agent. Cursor has TWO files: `cursor.cjs` (CLI/JSONL surface, v0.15.0) and `cursor_app.cjs` (IDE/SQLite surface, v0.16.0). Report as family when discussing adapter-layer changes. Inspect one representative; for cursor changes, check BOTH cursor files.
+- `scripts/agent_context/*.cjs` — Node agent-context commands. Report as family. Must stay in parity with `cli/src/agent_context.rs`.
+- `fixtures/golden/*.json` — conformance baselines. Report as family. Derived — regenerated by running conformance with `--update`. v0.16.0 added `read-cursor-app*.json`, `read-{claude,codex}-tool-fixture.json`.
+- `fixtures/session-store/` — test fixture data. Report as family per agent. v0.16.0 added `cursor/chats/<hash>/<uuid>/store.db` (two SQLite fixtures: standard + redaction-stress) and `hermes/sessions/session-hermes-fixture.jsonl`.
+- `schemas/*.json` — output schemas. Report individually when a specific schema changes, as family when discussing "all schemas". v0.16.0 added optional `cwd_mismatch` (read) and optional `source` enum (list, cursor only).
+- `.agent-context/current/*.json` — structured artifacts. Report individually (routes, completeness, reporting, search_scope).
 
 ## Often Reviewed But Not Always Required
-- `README.md` — update for new features but not for internal refactors.
-- `docs/CLI_REFERENCE.md` — update for command/flag changes but not for implementation changes.
-- `PROTOCOL.md` — update only when the CLI contract changes.
-- `research/*.md` — research artifacts, not part of the product.
+- `README.md` — update for new features but not for internal refactors. Marketing landing only — see README structure rule under Negative Guidance.
+- `docs/CLI_REFERENCE.md` — update for command/flag changes but not for implementation changes. This is where flag matrices, schema details, and per-adapter behavior tables live.
+- `PROTOCOL.md` — update only when the CLI contract changes. Rules 18-26 cover v0.15.0 + v0.16.0 surfaces.
+- `RELEASE_NOTES.md` — new top entry per release; preserve all prior entries verbatim.
+- `research/*.md` — research artifacts, gitignored. Internal scoping briefs, UAT findings, learnings backlogs. Not user-facing.
+
+## README structure discipline (v0.16.0)
+README is the marketing landing, NOT a full reference. Progressive disclosure: hook → demos → quickstart → what's new → how it works → how it compares → key capabilities → supported agents → context pack → architecture → roadmap → easter egg → go deeper. Detail belongs in CLI_REFERENCE.md / PROTOCOL.md / RELEASE_NOTES.md, linked from README. Specifically:
+- README MUST stay under ~250 lines. Cuts: per-feature deep dives (Key Capabilities is a single runnable block, not H3 sections), full flag matrices, competitor feature-checklists (the "How It Compares" table is differentiation-shaped, not feature-shaped), inline Mermaid diagrams that duplicate the SVG.
+- The "Supported Agents" table shows on-disk source paths and `--tool-calls` behavior per adapter — that's all. Per-flag matrices live in CLI_REFERENCE.md.
+- The "How It Compares" table is 8 rows max. It frames chorus's position (evidence layer underneath an orchestrator) — NOT a per-feature checklist that gets stale.
+- The "Roadmap" section uses horizons (Next / Soon / Later / Explicitly NOT planned) — direction over dates. Specifics defer to RELEASE_NOTES as each ships.
+- When a new capability ships, update "What's New in v0.X.Y" inline in README AND add a row to the relevant tightening table only if it changes a column. Do not add new sections per capability.
 
 ## Negative Guidance
 - Do not enumerate `fixtures/golden/*.json` individually for impact analysis — they are derived baselines, reported as a family.
@@ -55,3 +71,5 @@
 - Do not open `fixtures/session-store/` data files to understand code — they are test inputs, not documentation.
 - Do not modify `fixtures/golden/*.json` by hand — run conformance to regenerate them.
 - Do not assume a change to `cli/src/agent_context.rs` is complete without also checking `scripts/agent_context/init.cjs` and `seal.cjs`.
+- Do not expand README into a reference doc. If a section is growing past one paragraph + one code block + one table row, the content belongs in CLI_REFERENCE.md / PROTOCOL.md instead. The v0.16.0 README rewrite cut 326 lines of accreted detail; do not re-accrete them.
+- Do not `chorus setup --force` against a repo with hand-authored managed blocks unless you intend to overwrite the managed block content. The block markers stay; surrounding hand-authored content stays; managed-block interior is replaced verbatim by the current template.

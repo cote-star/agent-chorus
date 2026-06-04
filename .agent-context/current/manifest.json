@@ -1,33 +1,33 @@
 {
   "schema_version": 1,
-  "chorus_version": "0.14.1",
+  "chorus_version": "0.16.0",
   "skill_version": null,
-  "verifier_sha256": "f4f8b18c003da3428f9279e5af1c8ece2572b1a691423129fc5ff05fe6e7a103",
-  "generated_at": "2026-06-03T12:51:41.163Z",
+  "verifier_sha256": "7f9f70493e84021556f8bd89b85d52a5c8668b9137846e275b751d52266fd48e",
+  "generated_at": "2026-06-04T11:58:01.953Z",
   "repo_name": "agent-chorus",
   "repo_root": ".",
-  "branch": "feat/native-cursor-hermes-adapter",
+  "branch": "main",
   "detached": false,
-  "head_sha": "5b01aac2e2683e2114afa243567be3c7227ca21b",
-  "head_sha_at_seal": "5b01aac2e2683e2114afa243567be3c7227ca21b",
+  "head_sha": "be761a504b0667201a87c81738e0debb79d774b0",
+  "head_sha_at_seal": "be761a504b0667201a87c81738e0debb79d774b0",
   "post_commit_sha": null,
   "last_known_good_sha": null,
   "aliases": {},
-  "build_reason": "manual-seal",
+  "build_reason": "v0.16.0 refresh + README discipline note: bumps version to 0.16.0, captures invariants 20-26 (cursor IDE, --history, cwd_mismatch, doctor severity, read⊆search, --help, checkpoint silence), adds README structure rules under Negative Guidance, documents v0.16.1 pending defects, updates file families for cursor's two surfaces + new fixtures.",
   "base_sha": null,
   "changed_files": [],
   "files_count": 8,
-  "words_total": 5982,
-  "bytes_total": 49678,
-  "pack_checksum": "1d1a7ce24b546da3563146cc43724a963a052130f3b108e0e7c0700672add4b0",
-  "stable_checksum": "494fd635cd209076f90cc5961d261b2c9461b74df34b97b1c41d09b8952836fc",
+  "words_total": 7458,
+  "bytes_total": 61075,
+  "pack_checksum": "bfe533c3d131d3170ab367b23e50b557652a7cd490b0b97e7093c6adcef25f5e",
+  "stable_checksum": "1c76104983c8cca6d4d4b158b229f57c45ad6b347cf234e09a508034d017ca86",
   "files": [
     {
       "path": "00_START_HERE.md",
       "path_lower": "00_start_here.md",
-      "sha256": "1b0025d4ed4c5af75e561632c9cfc17ee5c06f685ceeced6eed01d1e97820862",
-      "bytes": 6293,
-      "words": 857
+      "sha256": "705fbb7cf81b1923ed4fbfcee6ce5d011dee68119ebb25bb7a1bdb2efecc6472",
+      "bytes": 8212,
+      "words": 1088
     },
     {
       "path": "10_SYSTEM_OVERVIEW.md",
@@ -39,16 +39,16 @@
     {
       "path": "20_CODE_MAP.md",
       "path_lower": "20_code_map.md",
-      "sha256": "e120cfaab7a1fc5a376de9013c8b98dffc1aaef1ecc948eb6e5e49dac2fed8a7",
-      "bytes": 10037,
-      "words": 1261
+      "sha256": "5c95e5a36fb755a35366760ec7cc84aefc48d389a187a9ac173c470ea66db786",
+      "bytes": 12049,
+      "words": 1476
     },
     {
       "path": "30_BEHAVIORAL_INVARIANTS.md",
       "path_lower": "30_behavioral_invariants.md",
-      "sha256": "b67507ff45e2685f91c75b0139cdd46722676154b23989d0e591ca85ceb424b4",
-      "bytes": 9475,
-      "words": 1185
+      "sha256": "3587da4d813ba072274ee6296a68a1607a4937c162e19bb96a9d7b333cb39fd2",
+      "bytes": 16941,
+      "words": 2215
     },
     {
       "path": "40_OPERATIONS_AND_RELEASE.md",
@@ -80,9 +80,9 @@
     }
   ],
   "family_counts": {
-    "fixtures/golden/*.json": 22,
+    "fixtures/golden/*.json": 27,
     "schemas/*.json": 8,
-    "scripts/adapters/*.cjs": 9,
+    "scripts/adapters/*.cjs": 10,
     "scripts/agent_context/*.cjs": 10
   },
   "declared_counts": [
@@ -91,36 +91,6 @@
       "count": 139,
       "file": "10_SYSTEM_OVERVIEW.md",
       "line": 59
-    },
-    {
-      "noun": "files",
-      "count": 5,
-      "file": "30_BEHAVIORAL_INVARIANTS.md",
-      "line": 39
-    },
-    {
-      "noun": "files",
-      "count": 11,
-      "file": "30_BEHAVIORAL_INVARIANTS.md",
-      "line": 40
-    },
-    {
-      "noun": "files",
-      "count": 14,
-      "file": "30_BEHAVIORAL_INVARIANTS.md",
-      "line": 41
-    },
-    {
-      "noun": "files",
-      "count": 6,
-      "file": "30_BEHAVIORAL_INVARIANTS.md",
-      "line": 43
-    },
-    {
-      "noun": "files",
-      "count": 4,
-      "file": "30_BEHAVIORAL_INVARIANTS.md",
-      "line": 44
     },
     {
       "noun": "tests",
@@ -137,7 +107,7 @@
   ],
   "shortcut_signatures": {},
   "dependencies_snapshot": {
-    "npm": "218506f08a5738c0bf850448ee5d7f01b50468bc3fee8e12a2e3d0739db180be"
+    "npm": "c97e0a01beacc0a59f868501d6cf2946eca94245892003bbbe15986ee62b27b9"
   },
   "tool_hashes": {}
 }
