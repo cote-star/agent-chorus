@@ -1,7 +1,7 @@
 {
   "chorus_output_version": 1,
   "agent": "codex",
-  "source": "/Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/codex/sessions/2026/01/01/session-codex-fixture-0001.jsonl",
+  "source": "/home/user/agent-chorus/fixtures/session-store/codex/sessions/2026/01/01/session-codex-fixture-0001.jsonl",
   "content": "Codex fixture assistant output.",
   "warnings": [],
   "session_id": "session-codex-fixture-0001",

@@ -35,7 +35,7 @@ pub(crate) fn walk_existing(base: &Path, tokens: &[&str]) -> Option<PathBuf> {
 }
 
 /// Demangle a Cursor project dir name (e.g.
-/// "Users-e059303-sandbox-work-trust-stream-trust-stream-backend") into the real
+/// "Users-alice-projects-acme-api-acme-api-backend") into the real
 /// absolute path it maps to, by fs-walking from "/". None if no existing path matches.
 pub(crate) fn demangle_project_dir(project_name: &str) -> Option<PathBuf> {
     let tokens: Vec<&str> = project_name.split('-').collect();
@@ -84,9 +84,9 @@ mod tests {
     #[test]
     fn walk_existing_dashed_chain() {
         let base = fixture("dashed_chain");
-        let target = base.join("trust-stream/trust-stream-backend");
+        let target = base.join("acme-api/acme-api-backend");
         std::fs::create_dir_all(&target).unwrap();
-        let tokens = &["trust", "stream", "trust", "stream", "backend"];
+        let tokens = &["acme", "api", "acme", "api", "backend"];
         assert_eq!(walk_existing(&base, tokens), Some(target));
     }
 

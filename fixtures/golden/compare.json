@@ -6,9 +6,9 @@
     "Highlight unavailable sources"
   ],
   "sources_used": [
-    "[codex:codex-fi] /Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/codex/sessions/2026/01/01/session-codex-fixture-0001.jsonl",
-    "[gemini:gemini-f] /Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/gemini/tmp/demo/chats/session-gemini-fixture-0001.json",
-    "[claude:claude-f] /Users/e059303/sandbox/play/agent-chorus/fixtures/session-store/claude/projects/sample/session-claude-fixture-0001.jsonl"
+    "[codex:codex-fi] /home/user/agent-chorus/fixtures/session-store/codex/sessions/2026/01/01/session-codex-fixture-0001.jsonl",
+    "[gemini:gemini-f] /home/user/agent-chorus/fixtures/session-store/gemini/tmp/demo/chats/session-gemini-fixture-0001.json",
+    "[claude:claude-f] /home/user/agent-chorus/fixtures/session-store/claude/projects/sample/session-claude-fixture-0001.jsonl"
   ],
   "verdict": "ANALYSIS_COMPLETE",
   "findings": [
