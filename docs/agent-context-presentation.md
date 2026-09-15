@@ -46,13 +46,13 @@ Plus 2-3 imperative sentences in `CLAUDE.md` / `AGENTS.md` / `GEMINI.md` pointin
 **Correct answers: bare vs structured**
 
 ```
-stream-models (ML pipeline, 501 files)
+atlas-models (ML pipeline, 501 files)
   Claude:  50% → 83%    Codex:  50% → 83%
 
 agent-chorus (CLI/library, 155 files)
   Claude:  83% → 83%    Codex:   — → 100%
 
-trust-stream-frontend (React/TS, 1,982 files)
+beacon-web (React/TS, 1,982 files)
   Claude:  50% → 100%   Codex:  50% → 75%
 ```
 
@@ -149,7 +149,7 @@ Both are required for reliable brownfield engineering.
 
 ## Slide 8: The Headline Story (1 min)
 
-**trust-stream-frontend, M1 task: "Add a new Zustand store"**
+**beacon-web, M1 task: "Add a new Zustand store"**
 
 Both Claude and Codex in **bare** mode missed `src/__tests__/setup.tsx` — the store reset that prevents flaky tests. No error tells you it's missing. Tests pass individually, fail in suite.
 
@@ -165,10 +165,10 @@ Both agents in **structured** mode found it — because the behavioral invariant
 
 **Self-contained — no external CLI needed.**
 
-Install the `agent-context` skill from team_skills:
+Install the `agent-context` skill from team-skills:
 
 ```bash
-npx skills add Edelman-DxI/team_skills --skill agent-context --agent cursor claude-code codex
+npx skills add <your-org>/team-skills --skill agent-context --agent cursor claude-code codex
 ```
 
 Then open a session in your repo and say:
@@ -184,16 +184,16 @@ The agent reads the repo, fills all 9 files, validates, self-tests, and commits.
 - Pre-push hook warns about staleness (advisory, never blocks)
 - After human-only work: "update the context pack" — agent diffs and proposes per-section patches
 
-Full guide: `team_skills/skills/agent-context/references/getting-started.md`
+Full guide: `team-skills/skills/agent-context/references/getting-started.md`
 
 ---
 
 ## Slide 10: What's Next (1 min)
 
 **Already done:**
-- [x] `agent-context` skill in team_skills (PR #10 merged)
-- [x] `.agent-context` created for stream-models (PR #392)
-- [x] `.agent-context` created for trust-stream-frontend
+- [x] `agent-context` skill in team-skills (PR #10 merged)
+- [x] `.agent-context` created for atlas-models (PR #392)
+- [x] `.agent-context` created for beacon-web
 - [x] 16 design principles (P1–P16) validated across 3 repo types
 - [x] Getting started guide for teammates
 - [x] Standardized naming: `.agent-context` everywhere (CLI, skill, directory)
@@ -203,7 +203,7 @@ Full guide: `team_skills/skills/agent-context/references/getting-started.md`
 **Coming next:**
 - [ ] **Agent Context Map** — cross-repo routing layer (~500 tokens tells the agent which repos matter, how they connect, what cascades across repo boundaries)
 - [ ] **Adopt on 2-3 more team repos** (start with the ones agents use most)
-- [ ] **Cross-repo invariants** — "change X in stream-models → must update Y in trust-stream-frontend"
+- [ ] **Cross-repo invariants** — "change X in atlas-models → must update Y in beacon-web"
 - [ ] **Live demo** — end-to-end prompt registration on Databricks dev workspace
 
 **Agent context is infrastructure for AI-assisted development.
@@ -220,8 +220,8 @@ The more repos have it, the better every agent works.**
 - **1 template** — works for ML pipelines, CLI tools, React frontends with zero modifications
 - **Naming convention:** `.agent-context/` is the standard directory name across all repos
 
-**Note:** The `agent-context` skill in team_skills is the canonical team interface. It is self-contained — no external CLI needed. The agent-chorus CLI (`chorus agent-context`) is the upstream R&D prototype where improvements are tested before graduating into the skill.
+**Note:** The `agent-context` skill in team-skills is the canonical team interface. It is self-contained — no external CLI needed. The agent-chorus CLI (`chorus agent-context`) is the upstream R&D prototype where improvements are tested before graduating into the skill.
 
 Full research: `agent-chorus/research/`
-Skill: `team_skills/skills/agent-context/`
-Getting started: `team_skills/skills/agent-context/references/getting-started.md`
+Skill: `team-skills/skills/agent-context/`
+Getting started: `team-skills/skills/agent-context/references/getting-started.md`

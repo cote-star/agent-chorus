@@ -1,5 +1,12 @@
 # Release Notes
 
+## v0.16.1 — 2026-09-15
+
+**Hygiene patch. No behaviour change.**
+
+- Replaced workstation-specific and employer-specific identifiers that had leaked into published source comments, documentation and release notes with neutral aliases: the Cursor cwd demangling example and its unit-test fixture now use a generic `acme-api` path; the agent-context field-results docs and the presentation guide refer to the case-study repos as `atlas-models`, `beacon-web` and `beacon-api`; references to the upstream skill repo are generic. Conformance goldens are unchanged (the parity scrubber already normalises absolute paths).
+- Version bump only otherwise; Node and Rust remain at byte parity. The six UAT defects logged after v0.16.0 are not in this release and ship separately.
+
 ## v0.16.0 — 2026-06-03
 
 **UAT-driven hardening release. Cursor IDE (SQLite) is now a first-class adapter alongside the v0.15.0 cursor-agent CLI surface, the read/search/doctor contracts are tightened so silent wrong-answer modes are eliminated, and the on-demand history contract is made explicit so consumer agents stop paying a 2.5× token tax for eager prior-session reads.**
@@ -212,7 +219,7 @@ These items from the P13 plan are **intentionally deferred** and carry a `TODO(P
 
 - **F48** — `explain-diff` subcommand (new command surface).
 - **F49** — Monorepo multi-team mode (structural change).
-- **F51** — Canonical routing template (better coordinated via the `team_skills` track).
+- **F51** — Canonical routing template (better coordinated via the the team skills repo track).
 - **F52** — Scheduled job to re-run acceptance tests.
 - **F53** — Cross-file integrity check.
 - **F54** — Difficulty floor for acceptance tests.
@@ -558,7 +565,7 @@ Seal now emits advisory warnings (never blocks) for:
 
 ### Why
 
-Run 2 of the stream-models context pack experiment identified these as the highest-leverage template interventions. The BEHAVIORAL_INVARIANTS blast-radius requirement was the single change that prevented a systematic file exclusion error across all agents and conditions.
+Run 2 of the atlas-models context pack experiment identified these as the highest-leverage template interventions. The BEHAVIORAL_INVARIANTS blast-radius requirement was the single change that prevented a systematic file exclusion error across all agents and conditions.
 
 ---
 

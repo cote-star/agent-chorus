@@ -1205,7 +1205,7 @@ pub fn rollback(snapshot: Option<&str>, pack_dir: Option<&str>) -> Result<()> {
 /// they live in the plan under P13 but are scoped for a follow-up PR.
 ///   - F48 — `explain-diff` subcommand.
 ///   - F49 — monorepo multi-team mode.
-///   - F51 — canonical routing template (cross-track with team_skills).
+///   - F51 — canonical routing template (cross-track with the upstream agent-context skill).
 ///   - F52 — scheduled re-run of acceptance tests.
 ///   - F53 — cross-file integrity check.
 ///   - F54 — difficulty floor for acceptance tests.
@@ -4170,8 +4170,8 @@ fn build_manifest(
     // P11 / F36: forensic tooling-version fields.
     // `chorus_version` pins the sealing tool; `verifier_sha256` is the hash
     // of the binary that sealed it (when available). `skill_version` is
-    // reserved for the team_skills track to populate — we leave it null here
-    // so a later chorus release or team_skills scaffolder can fill it in.
+    // reserved for the the upstream agent-context skill track to populate — we leave it null here
+    // so a later chorus release or the upstream agent-context skill scaffolder can fill it in.
     let chorus_version = env!("CARGO_PKG_VERSION");
     let verifier_sha256 = match current_exe_sha256() {
         Some(hash) => Value::String(hash),
@@ -6965,7 +6965,7 @@ fi"#
 // P2 — Structural verifier
 //
 // Extends `verify` with structural checks that complement Pass-0's byte-level
-// integrity. Ported from team_skills' `scripts/verify_context_pack.py` (the
+// integrity. Ported from the upstream agent-context skill' `scripts/verify_context_pack.py` (the
 // machine-checkable pack-author contract) and extended with four P1-baseline
 // drift checks:
 //
@@ -6974,7 +6974,7 @@ fi"#
 //   3. `shortcut_signatures`   — re-parse signatures, `SIGNATURE_DRIFT` per fn
 //   4. `dependencies_snapshot` — re-hash deps files, point at 40_OPERATIONS
 //
-// Ported from team_skills:
+// Ported from the upstream agent-context skill:
 //   a. Template-marker absence in pack JSON ({name}, {domain}, {module}, REPLACE, <!-- AGENT:)
 //   b. `completeness_contract.json` glob existence + cardinality >=1
 //   c. `search_scope.json` verification_shortcuts `look_for` present in file
@@ -7014,7 +7014,7 @@ struct StructuralWarning {
 }
 
 /// P2 — template markers that must never appear in sealed pack JSON. Matches
-/// the team_skills reference + the Claude-specific scaffolding tag we emit.
+/// the the upstream agent-context skill reference + the Claude-specific scaffolding tag we emit.
 fn template_marker_candidates() -> &'static [&'static str] {
     &["{name}", "{domain}", "{module}", "REPLACE", "<!-- AGENT:"]
 }
@@ -7071,7 +7071,7 @@ fn check_contract_files_exist(
     let Ok(Some(contract)) = read_json(&contract_path) else {
         return;
     };
-    // Support both the flat `contracts` shape (team_skills reference) and
+    // Support both the flat `contracts` shape (the upstream agent-context skill reference) and
     // the `task_families` shape (chorus scaffolding). Walk whichever is
     // present so the check stays agnostic.
     let mut entries: Vec<(String, &serde_json::Map<String, Value>)> = Vec::new();
@@ -7294,7 +7294,7 @@ fn path_extension(rel: &str) -> String {
 /// referenced file AFTER comments are stripped for supported languages.
 ///
 /// Handles both shortcut shapes:
-/// - team_skills: `verification_shortcuts: [{file, look_for, [look_for_regex]}]`
+/// - the upstream agent-context skill: `verification_shortcuts: [{file, look_for, [look_for_regex]}]`
 /// - chorus default scaffold: `verification_shortcuts: { "path": "hint" }`
 ///   (no `look_for` — we silently skip; there's nothing to verify).
 ///
@@ -7314,7 +7314,7 @@ fn check_verification_shortcuts_look_for(
         return;
     };
     for (family, data) in families {
-        // Array form (team_skills).
+        // Array form (the upstream agent-context skill).
         if let Some(arr) = data.get("verification_shortcuts").and_then(|v| v.as_array()) {
             for shortcut in arr {
                 let Some(obj) = shortcut.as_object() else { continue };
@@ -8045,7 +8045,7 @@ fn run_structural_checks(
 //         - file: src/lib.rs
 //           line: 42
 //           line_contains: "fn compute"
-// - The compact form is what the team_skills fixtures use and is preserved
+// - The compact form is what the the upstream agent-context skill fixtures use and is preserved
 //   across seals; we parse it as `<path>:<line>: <substring>` (first colon
 //   ends the path, second colon ends the line number).
 // - Fewer than 2 of N tests verified → emit a non-fatal `warning` (warn
@@ -9380,7 +9380,7 @@ After cleanup there are 32 tests today.\n\
             "def compute_lift(data):\n    return 1\n",
         )
         .unwrap();
-        // team_skills-shape verification_shortcuts (array of {file, look_for}).
+        // the upstream agent-context skill-shape verification_shortcuts (array of {file, look_for}).
         fs::write(
             current.join("search_scope.json"),
             r#"{

@@ -3,7 +3,7 @@
 These tests were run during pack creation to verify the agent-chorus context pack
 actually helps agents on real tasks. Each test compares a pack-only answer against
 grep-verified ground truth in this repo. All grep commands below are run from the
-repo root (`/Users/e059303/sandbox/play/agent-chorus`).
+repo root (`<repo root>`).
 
 ## Test 1: Lookup
 
