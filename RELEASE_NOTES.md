@@ -219,7 +219,7 @@ These items from the P13 plan are **intentionally deferred** and carry a `TODO(P
 
 - **F48** — `explain-diff` subcommand (new command surface).
 - **F49** — Monorepo multi-team mode (structural change).
-- **F51** — Canonical routing template (better coordinated via the the team skills repo track).
+- **F51** — Canonical routing template (better coordinated via the team skills repo track).
 - **F52** — Scheduled job to re-run acceptance tests.
 - **F53** — Cross-file integrity check.
 - **F54** — Difficulty floor for acceptance tests.
