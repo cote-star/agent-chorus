@@ -70,6 +70,25 @@ jobs:
           name: node-package
           path: '*.tgz'
 
+
+  publish-npm:
+    # Sibling of publish-crate, on purpose: a registry auth failure must be
+    # a red job, not a green job with a swallowed step. v0.16.1's npm publish
+    # failed with E404 (token lacked publish scope) and went unnoticed because
+    # the step was continue-on-error inside package-node. create-release does
+    # not depend on this job, so a broken token still cannot strand binaries.
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
       - name: Check npm version availability
         id: npm_package_check
         run: |
@@ -84,12 +103,11 @@ jobs:
 
       - name: Publish to npm
         if: ${{ github.event_name == 'push' && github.ref_type == 'tag' && steps.npm_package_check.outputs.exists != 'true' }}
-        continue-on-error: true
         env:
-          # Uses AGENT_CHORUS_CI (npm "Automation" token, 2FA-bypassed,
-          # scoped to the agent-chorus package). Historical NPM_TOKEN
-          # secret returned 404 on publish because its scope did not
-          # cover this package on the owning npm account.
+          # AGENT_CHORUS_CI: npm "Automation" token (2FA-bypassed), scoped to
+          # the agent-chorus package. An E404 on PUT here means the token does
+          # not have publish rights on the package, not that the package is
+          # missing.
           NODE_AUTH_TOKEN: ${{ secrets.AGENT_CHORUS_CI }}
         run: npm publish --access public
 
