@@ -100,7 +100,7 @@ bash scripts/check_package_contents.sh
 
 Requirements:
 
-- `puppeteer` in `node_modules`
+- `puppeteer` in `node_modules` (a devDependency; v25+ requires Node >= 22, and `scripts/record_demo.js` is its only consumer)
 - `img2webp` on PATH (`brew install webp`)
 - Recorder defaults are tuned for README clarity (`1080x640`, lossless WebP).
 
