@@ -223,13 +223,21 @@ for f in "$T13/.agent-context/current/"*.md; do
 done
 run_node_seal "$T13" >/dev/null 2>&1
 
-# Verify should pass (integrity ok, freshness ok — no changed files)
+# Verify should pass: integrity ok, and freshness must not be a failure.
+# Freshness has three non-failure states in both implementations:
+#   pass    - changed files checked, pack is fresh
+#   skip    - nothing changed since base, nothing to check
+#   skipped - check could not run (non-git, shallow clone, initial-commit);
+#             carries skipped_reason. This fixture is an initial-commit repo,
+#             so "skipped" with skipped_reason=initial-commit is the expected
+#             answer here, not a defect.
 NODE_VERIFY=$(node "$ROOT/scripts/agent_context/verify.cjs" --pack-dir "$T13/.agent-context" --ci --cwd "$T13" 2>/dev/null || true)
 
 check "verify-ci-mode-json" '
   echo "$NODE_VERIFY" | node -e "
     const d = JSON.parse(require(\"fs\").readFileSync(\"/dev/stdin\",\"utf8\"));
-    process.exit(d.integrity === \"pass\" && (d.freshness === \"pass\" || d.freshness === \"skip\") ? 0 : 1);
+    const ok = [\"pass\", \"skip\", \"skipped\"].includes(d.freshness);
+    process.exit(d.integrity === \"pass\" && ok && d.exit_code === 0 ? 0 : 1);
   "
 '
 
