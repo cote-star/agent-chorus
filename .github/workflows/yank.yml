@@ -1,0 +1,45 @@
+name: Yank crate version
+
+# Manual, one version at a time. Exists so a published crate version that
+# turns out to carry content we cannot leave public can be pulled from
+# dependency resolution without anyone holding the crates.io token locally.
+# Yanking is reversible (cargo yank --undo) and does not delete the .crate
+# file; real removal is a crates.io support request.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Exact crate version to yank, e.g. 0.16.0"
+        required: true
+        type: string
+      reason:
+        description: "Why (recorded in the run log only)"
+        required: true
+        type: string
+
+jobs:
+  yank:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Refuse to yank the current release
+        env:
+          TARGET: ${{ inputs.version }}
+        run: |
+          CURRENT="$(grep -m1 '^version' cli/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          if [[ "$TARGET" == "$CURRENT" ]]; then
+            echo "::error::Refusing to yank $TARGET: it is the version in cli/Cargo.toml. Publish a newer release first."
+            exit 1
+          fi
+          echo "Yanking $TARGET (current release is $CURRENT). Reason: ${{ inputs.reason }}"
+
+      - name: Yank
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo yank --version "${{ inputs.version }}" agent-chorus
