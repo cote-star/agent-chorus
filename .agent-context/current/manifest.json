@@ -1,26 +1,26 @@
 {
   "schema_version": 1,
-  "chorus_version": "0.16.0",
+  "chorus_version": "0.16.1",
   "skill_version": null,
   "verifier_sha256": "7f9f70493e84021556f8bd89b85d52a5c8668b9137846e275b751d52266fd48e",
-  "generated_at": "2026-06-04T11:58:01.953Z",
+  "generated_at": "2026-09-28T18:16:52.396Z",
   "repo_name": "agent-chorus",
   "repo_root": ".",
   "branch": "main",
   "detached": false,
-  "head_sha": "be761a504b0667201a87c81738e0debb79d774b0",
-  "head_sha_at_seal": "be761a504b0667201a87c81738e0debb79d774b0",
+  "head_sha": "41632f274ad26a4b8ebbe44561f501677c8dc156",
+  "head_sha_at_seal": "41632f274ad26a4b8ebbe44561f501677c8dc156",
   "post_commit_sha": null,
-  "last_known_good_sha": null,
+  "last_known_good_sha": "41632f274ad26a4b8ebbe44561f501677c8dc156",
   "aliases": {},
-  "build_reason": "v0.16.0 refresh + README discipline note: bumps version to 0.16.0, captures invariants 20-26 (cursor IDE, --history, cwd_mismatch, doctor severity, read⊆search, --help, checkpoint silence), adds README structure rules under Negative Guidance, documents v0.16.1 pending defects, updates file families for cursor's two surfaces + new fixtures.",
+  "build_reason": "manual-seal",
   "base_sha": null,
   "changed_files": [],
   "files_count": 8,
-  "words_total": 7458,
-  "bytes_total": 61075,
-  "pack_checksum": "bfe533c3d131d3170ab367b23e50b557652a7cd490b0b97e7093c6adcef25f5e",
-  "stable_checksum": "1c76104983c8cca6d4d4b158b229f57c45ad6b347cf234e09a508034d017ca86",
+  "words_total": 7588,
+  "bytes_total": 62178,
+  "pack_checksum": "b04e988724752bb065068453df52c4dea360b35a7cf545f207913ca5dfaf7d79",
+  "stable_checksum": "7d939e2ba3a5dce5d5cec793eaf5364739111d01590393b3987d719df330183d",
   "files": [
     {
       "path": "00_START_HERE.md",
@@ -53,9 +53,9 @@
     {
       "path": "40_OPERATIONS_AND_RELEASE.md",
       "path_lower": "40_operations_and_release.md",
-      "sha256": "8bc210d33fe1ad840c921bb061cc1410fb5c72bfc580debccae593e9033ca3b0",
-      "bytes": 5583,
-      "words": 769
+      "sha256": "dd2c4671f1a6fb34bc0923b49c4705e234be588e76b96fc912d9de44185b58a0",
+      "bytes": 6686,
+      "words": 899
     },
     {
       "path": "routes.json",
@@ -107,7 +107,7 @@
   ],
   "shortcut_signatures": {},
   "dependencies_snapshot": {
-    "npm": "c97e0a01beacc0a59f868501d6cf2946eca94245892003bbbe15986ee62b27b9"
+    "npm": "1fc15cb6ec1d1c51e04c7a3fbdc6ad2cccfffe60bd151d43372a309c330c4e4b"
   },
   "tool_hashes": {}
 }

@@ -70,7 +70,6 @@ jobs:
           name: node-package
           path: '*.tgz'
 
-
   publish-npm:
     # Sibling of publish-crate, on purpose: a registry auth failure must be
     # a red job, not a green job with a swallowed step. v0.16.1's npm publish
