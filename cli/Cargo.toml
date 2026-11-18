@@ -1,8 +1,8 @@
 [package]
 name = "agent-chorus"
-version = "0.16.1"
+version = "0.16.2"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.89"
 description = "Local-first CLI to read, compare, and hand off context across Codex, Claude, Gemini, and Cursor sessions."
 license = "MIT"
 repository = "https://github.com/cote-star/agent-chorus"
@@ -30,7 +30,7 @@ globset = "0.4.14"
 # SQLite dependency. Required by the Cursor IDE adapter (`~/.cursor/chats/
 # <hash>/<uuid>/store.db`) introduced in v0.16.0 — see N1 in
 # research/next-scopes-post-v0.15.0-2026-06-03.md.
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.10.9"

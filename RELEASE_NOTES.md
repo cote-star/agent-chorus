@@ -1,11 +1,30 @@
 # Release Notes
 
-## Unreleased
+## v0.16.2 — 2026-11-18
+
+**Setup and routing fixes, plus dependency updates that clear the open audit advisories. No change to read, list, search, summary or compare output.**
 
 **Setup template: `compare` example no longer names a Gemini source.**
 
 - The `chorus compare` example written by `chorus setup` into the managed block and the provider snippets is now `--source codex --source claude`, matching the README and the skill. Node and Rust generate identical text. Gemini remains a supported session source.
 - Existing projects keep the old line until `chorus setup --force` is run there; `chorus doctor` does not flag it.
+
+**Setup: no duplicate managed block when `CLAUDE.md` imports `AGENTS.md`.**
+
+- A `CLAUDE.md` with a line that is exactly `@AGENTS.md` already loads the `AGENTS.md` managed block. `chorus setup` no longer writes a second block there, which Claude was loading twice. An existing duplicate is left alone without `--force` and removed with it; the import and any other text are kept.
+- `chorus doctor`: `integration_claude` now passes when the import covers it, and a new `integration_claude_duplicate` check warns when a `CLAUDE.md` has both the import and its own block.
+
+**Context pack: the read-first routing block is scoped to repository tasks.**
+
+- The block that `chorus agent-context init` writes into `CLAUDE.md` and `GEMINI.md` now carries one scope line, after the freshness gate and before "BEFORE starting any task". The instruction stays imperative for tasks about the repository; questions that are not about the repository follow the enclosing workspace's instructions. The wording names no workstation path. The codex block was already conditional and is unchanged.
+- Existing repositories keep their current block. `init` does not rewrite a filled pack, so add the line there by hand.
+- Not measured: whether the scope line changes how often agents read the pack on repository tasks.
+
+**Dependencies.**
+
+- Rust: `rustls` 0.23.46, `rustls-webpki` 0.103.17, `webpki-roots` 1.0.12, `anyhow` 1.0.104, and `rusqlite` 0.43 (bundled `libsqlite3-sys` 0.40.0). `cargo audit` is clean; it reported 7 advisories and 1 warning before.
+- The minimum supported Rust version is now 1.89 (was declared as 1.74), because `rusqlite` 0.43 requires it. Prebuilt binaries and the npm package are not affected.
+- Node: dev-only `puppeteer` chain updated inside its existing range. `npm audit` is clean; the published package had no production advisories before or after.
 
 ## v0.16.1 — 2026-09-15
 
