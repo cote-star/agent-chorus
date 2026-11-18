@@ -243,7 +243,10 @@ run_parity_case() {
 # scrubber needs the original tempdir path to strip it out.
 DOCTOR_TMP_CWD="$(mktemp -d)"
 SETUP_TMP_CWD="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR" "$DOCTOR_TMP_CWD" "$SETUP_TMP_CWD"' EXIT
+IMPORT_TMP_CWD="$(mktemp -d)"
+IMPORT_NODE_CWD="$(mktemp -d)"
+IMPORT_RUST_CWD="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR" "$DOCTOR_TMP_CWD" "$SETUP_TMP_CWD" "$IMPORT_TMP_CWD" "$IMPORT_NODE_CWD" "$IMPORT_RUST_CWD"' EXIT
 
 # --- summary parity (codex, claude, gemini; cursor skipped — see fixture note) ---
 # --cwd is pinned to /workspace/demo so the gemini golden (which has no cwd
@@ -284,6 +287,59 @@ run_parity_case doctor doctor doctor.json \
 run_parity_case setup setup setup.json \
   setup --cwd="$SETUP_TMP_CWD" --dry-run --json :: \
   setup --cwd "$SETUP_TMP_CWD" --dry-run --json
+
+# --- CLAUDE.md that imports AGENTS.md: no duplicate managed block ---
+# A CLAUDE.md with a bare `@AGENTS.md` line already loads the AGENTS.md managed
+# block. setup must not add a second block there, removes an existing one only
+# under --force, and doctor reports the duplicate. No golden files: Node/Rust
+# parity plus the assertions below are the gate.
+mkdir -p "$IMPORT_TMP_CWD/.agent-chorus/providers"
+printf '%s\n' '<!-- agent-chorus:codex:start -->' 'History contract' '<!-- agent-chorus:codex:end -->' \
+  > "$IMPORT_TMP_CWD/AGENTS.md"
+printf '%s\n' '@AGENTS.md' '' '<!-- agent-chorus:claude:start -->' 'History contract' '<!-- agent-chorus:claude:end -->' \
+  > "$IMPORT_TMP_CWD/CLAUDE.md"
+
+run_parity_case setup setup-import-duplicate "" \
+  setup --cwd="$IMPORT_TMP_CWD" --dry-run --json :: \
+  setup --cwd "$IMPORT_TMP_CWD" --dry-run --json
+if ! grep -q 'duplicates the imported AGENTS.md block' "$TMP_DIR/parity-setup-import-duplicate-rust.scrubbed.json"; then
+  echo "FAIL setup-import-duplicate: setup did not report the duplicate CLAUDE.md block"
+  exit 1
+fi
+
+run_parity_case doctor doctor-import-duplicate "" \
+  doctor --cwd="$IMPORT_TMP_CWD" --json :: \
+  doctor --cwd "$IMPORT_TMP_CWD" --json
+if ! grep -q 'integration_claude_duplicate' "$TMP_DIR/parity-doctor-import-duplicate-rust.scrubbed.json"; then
+  echo "FAIL doctor-import-duplicate: doctor did not flag the duplicate CLAUDE.md block"
+  exit 1
+fi
+echo "PASS import-duplicate reported by setup and doctor"
+
+# Real run under --force: both runtimes must leave identical files, with the
+# import kept and the duplicate block gone. A real setup run also checks the
+# Claude Code plugin, so this case runs only where the claude CLI is absent
+# (CI); with the CLI present it is skipped to keep the test free of side effects.
+if command -v claude >/dev/null 2>&1; then
+  echo "SKIP import-duplicate-force (claude CLI on PATH; a real setup run would touch the Claude plugin)"
+else
+  for import_dir in "$IMPORT_NODE_CWD" "$IMPORT_RUST_CWD"; do
+    cp "$IMPORT_TMP_CWD/AGENTS.md" "$IMPORT_TMP_CWD/CLAUDE.md" "$import_dir/"
+  done
+  node "$ROOT/scripts/read_session.cjs" setup --cwd="$IMPORT_NODE_CWD" --force --json > /dev/null
+  cargo run --quiet --manifest-path "$ROOT/cli/Cargo.toml" -- setup --cwd "$IMPORT_RUST_CWD" --force --json > /dev/null
+  if ! diff -r "$IMPORT_NODE_CWD" "$IMPORT_RUST_CWD" >/dev/null; then
+    echo "FAIL import-duplicate-force: Node vs Rust files differ"
+    diff -r "$IMPORT_NODE_CWD" "$IMPORT_RUST_CWD" || true
+    exit 1
+  fi
+  if [[ "$(cat "$IMPORT_NODE_CWD/CLAUDE.md")" != "@AGENTS.md" ]]; then
+    echo "FAIL import-duplicate-force: CLAUDE.md should hold only the import"
+    cat "$IMPORT_NODE_CWD/CLAUDE.md"
+    exit 1
+  fi
+  echo "PASS import-duplicate-force (Node=Rust, duplicate removed, import kept)"
+fi
 
 # --- read --include-user parity (codex, claude, gemini, cursor) ---
 # Gemini --tool-calls is a no-op (no tool-call schema in fixture data).

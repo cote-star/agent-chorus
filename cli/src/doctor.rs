@@ -144,9 +144,28 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
         }
 
         let marker = format!("agent-chorus:{}:start", provider.agent);
-        let present = std::fs::read_to_string(&target_path)
-            .map(|s| s.contains(&marker))
-            .unwrap_or(false);
+        let content = std::fs::read_to_string(&target_path).unwrap_or_default();
+        let present = content.contains(&marker);
+        // A CLAUDE.md that imports AGENTS.md is wired through the AGENTS.md
+        // managed block; its own block is then a duplicate, not a requirement.
+        // Mirrors scripts/read_session.cjs::runDoctor.
+        let covered_by_import = provider.agent == "claude"
+            && crate::setup::imports_agents_md(&content)
+            && std::fs::read_to_string(cwd_path.join("AGENTS.md"))
+                .map(|s| s.contains("agent-chorus:codex:start"))
+                .unwrap_or(false);
+        if covered_by_import && !present {
+            push(
+                &mut checks,
+                &format!("integration_{}", provider.agent),
+                "pass",
+                &format!(
+                    "Covered by the @AGENTS.md import in {}",
+                    target_path.display()
+                ),
+            );
+            continue;
+        }
         push(
             &mut checks,
             &format!("integration_{}", provider.agent),
@@ -157,6 +176,17 @@ pub fn run_doctor(cwd: &str) -> Result<DoctorResult> {
                 format!("Managed block missing in {}", target_path.display())
             },
         );
+        if covered_by_import {
+            push(
+                &mut checks,
+                &format!("integration_{}_duplicate", provider.agent),
+                "warn",
+                &format!(
+                    "{} imports AGENTS.md and also carries its own managed block, so Claude loads the block twice. Run `chorus setup --force` to remove the duplicate.",
+                    target_path.display()
+                ),
+            );
+        }
     }
 
     // Session discovery per agent.

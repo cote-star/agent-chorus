@@ -144,6 +144,20 @@ pub fn run_setup(
 
         let target_path = cwd_path.join(provider.target_file);
         let marker_prefix = format!("agent-chorus:{}", provider.agent);
+        if provider.agent == "claude" && target_path.exists() {
+            let existing = fs::read_to_string(&target_path).unwrap_or_default();
+            if imports_agents_md(&existing) {
+                let dedupe =
+                    dedupe_imported_block(&target_path, &existing, &marker_prefix, force, dry_run);
+                operations.push(json!({
+                    "type": "integration",
+                    "path": target_path.to_string_lossy(),
+                    "status": dedupe.status,
+                    "note": dedupe.message,
+                }));
+                continue;
+            }
+        }
         let block = make_managed_block(provider.agent, &snippet_rel);
         let upsert = upsert_managed_block(&target_path, &block, &marker_prefix, force, dry_run)?;
         operations.push(json!({
@@ -368,6 +382,55 @@ fn trim_end(s: &str) -> &str {
 
 fn trim_start(s: &str) -> &str {
     s.trim_start_matches(|c: char| c.is_whitespace())
+}
+
+/// A CLAUDE.md that imports AGENTS.md (a line that is exactly `@AGENTS.md`,
+/// outside a fenced code block) already loads the AGENTS.md managed block.
+/// Writing a second block there makes Claude load the same text twice.
+/// Mirrors scripts/read_session.cjs::importsAgentsMd.
+pub(crate) fn imports_agents_md(content: &str) -> bool {
+    let mut in_fence = false;
+    for raw in content.split('\n') {
+        let line = raw.trim();
+        if line.starts_with("```") || line.starts_with("~~~") {
+            in_fence = !in_fence;
+            continue;
+        }
+        if !in_fence && line == "@AGENTS.md" {
+            return true;
+        }
+    }
+    false
+}
+
+/// Setup path for a CLAUDE.md that imports AGENTS.md: never add a block,
+/// and remove an existing duplicate only under `--force`.
+/// Mirrors scripts/read_session.cjs::dedupeImportedBlock.
+fn dedupe_imported_block(
+    file_path: &Path,
+    existing: &str,
+    marker_prefix: &str,
+    force: bool,
+    dry_run: bool,
+) -> UpsertResult {
+    let start_marker = format!("<!-- {}:start -->", marker_prefix);
+    if !existing.contains(&start_marker) {
+        return UpsertResult {
+            status: "unchanged",
+            message: "CLAUDE.md imports AGENTS.md; its managed block covers Claude",
+        };
+    }
+    if !force {
+        return UpsertResult {
+            status: "unchanged",
+            message: "Managed block duplicates the imported AGENTS.md block (use --force to remove)",
+        };
+    }
+    crate::teardown::remove_managed_block(file_path, marker_prefix, dry_run);
+    UpsertResult {
+        status: "updated",
+        message: "Removed managed block duplicated by the @AGENTS.md import",
+    }
 }
 
 fn upsert_managed_block(
@@ -782,6 +845,67 @@ mod tests {
             .iter()
             .any(|op| op.get("status").and_then(|s| s.as_str()) == Some("unchanged"));
         assert!(has_unchanged, "second run should mark some operations unchanged");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn claude_integration_note(result: &SetupResult, dir: &Path) -> String {
+        let claude = dir.join("CLAUDE.md").to_string_lossy().to_string();
+        result
+            .operations
+            .iter()
+            .find(|op| {
+                op.get("type").and_then(|t| t.as_str()) == Some("integration")
+                    && op.get("path").and_then(|p| p.as_str()) == Some(claude.as_str())
+            })
+            .and_then(|op| op.get("note").and_then(|n| n.as_str()))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn imports_agents_md_matches_only_a_bare_unfenced_line() {
+        assert!(imports_agents_md("@AGENTS.md\n"));
+        assert!(imports_agents_md("# Notes\r\n  @AGENTS.md  \r\nmore\r\n"));
+        assert!(!imports_agents_md("See @AGENTS.md for details\n"));
+        assert!(!imports_agents_md("```\n@AGENTS.md\n```\n"));
+        assert!(!imports_agents_md("@AGENTS.md.bak\n"));
+        assert!(!imports_agents_md(""));
+    }
+
+    #[test]
+    fn setup_does_not_add_claude_block_when_claude_md_imports_agents_md() {
+        let dir = test_dir("import_no_block");
+        fs::write(dir.join("CLAUDE.md"), "@AGENTS.md\n").unwrap();
+        let result = run_setup(&dir.to_string_lossy(), false, false, false).unwrap();
+
+        assert_eq!(fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
+        assert!(fs::read_to_string(dir.join("AGENTS.md"))
+            .unwrap()
+            .contains("<!-- agent-chorus:codex:start -->"));
+        assert!(claude_integration_note(&result, &dir).contains("imports AGENTS.md"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn setup_removes_duplicate_claude_block_only_under_force() {
+        let dir = test_dir("import_duplicate");
+        // First run wires all three files, then the repo adopts the import.
+        run_setup(&dir.to_string_lossy(), false, false, false).unwrap();
+        let wired = fs::read_to_string(dir.join("CLAUDE.md")).unwrap();
+        let with_import = format!("@AGENTS.md\n\n{}", wired);
+        fs::write(dir.join("CLAUDE.md"), &with_import).unwrap();
+
+        let plain = run_setup(&dir.to_string_lossy(), false, false, false).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), with_import);
+        assert!(claude_integration_note(&plain, &dir).contains("use --force to remove"));
+
+        let dry = run_setup(&dir.to_string_lossy(), true, true, false).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), with_import);
+        assert!(claude_integration_note(&dry, &dir).contains("Removed managed block"));
+
+        let forced = run_setup(&dir.to_string_lossy(), false, true, false).unwrap();
+        assert_eq!(fs::read_to_string(dir.join("CLAUDE.md")).unwrap(), "@AGENTS.md\n");
+        assert!(claude_integration_note(&forced, &dir).contains("Removed managed block"));
         let _ = fs::remove_dir_all(&dir);
     }
 }

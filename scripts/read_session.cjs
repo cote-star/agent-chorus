@@ -672,6 +672,38 @@ function upsertManagedBlock(filePath, block, markerPrefix, force, dryRun) {
   return { status, message: status === 'created' ? 'Created file with managed block' : 'Managed block written' };
 }
 
+// A CLAUDE.md that imports AGENTS.md (a line that is exactly `@AGENTS.md`,
+// outside a fenced code block) already loads the AGENTS.md managed block.
+// Writing a second block there makes Claude load the same text twice.
+// Mirrors cli/src/setup.rs::imports_agents_md.
+function importsAgentsMd(content) {
+  let inFence = false;
+  for (const raw of content.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('```') || line.startsWith('~~~')) {
+      inFence = !inFence;
+      continue;
+    }
+    if (!inFence && line === '@AGENTS.md') return true;
+  }
+  return false;
+}
+
+// Setup path for a CLAUDE.md that imports AGENTS.md: never add a block,
+// and remove an existing duplicate only under --force.
+// Mirrors cli/src/setup.rs::dedupe_imported_block.
+function dedupeImportedBlock(filePath, markerPrefix, force, dryRun) {
+  const existing = fs.readFileSync(filePath, 'utf-8');
+  if (!existing.includes(`<!-- ${markerPrefix}:start -->`)) {
+    return { status: 'unchanged', message: 'CLAUDE.md imports AGENTS.md; its managed block covers Claude' };
+  }
+  if (!force) {
+    return { status: 'unchanged', message: 'Managed block duplicates the imported AGENTS.md block (use --force to remove)' };
+  }
+  removeManagedBlock(filePath, markerPrefix, dryRun);
+  return { status: 'updated', message: 'Removed managed block duplicated by the @AGENTS.md import' };
+}
+
 function removeManagedBlock(filePath, markerPrefix, dryRun) {
   if (!fs.existsSync(filePath)) {
     return { status: 'unchanged', message: 'File does not exist' };
@@ -2132,6 +2164,20 @@ function runSetup(inputArgs) {
 
     const targetPath = path.join(cwd, provider.targetFile);
     const markerPrefix = `agent-chorus:${provider.agent}`;
+    if (
+      provider.agent === 'claude' &&
+      fs.existsSync(targetPath) &&
+      importsAgentsMd(fs.readFileSync(targetPath, 'utf-8'))
+    ) {
+      const dedupe = dedupeImportedBlock(targetPath, markerPrefix, force, dryRun);
+      operations.push({
+        type: 'integration',
+        path: targetPath,
+        status: dedupe.status,
+        note: dedupe.message,
+      });
+      continue;
+    }
     const block = makeManagedBlock(provider, snippetRelPath);
     const upsert = upsertManagedBlock(targetPath, block, markerPrefix, force, dryRun);
     operations.push({
@@ -2452,11 +2498,36 @@ function runDoctor(inputArgs) {
 
     const content = fs.readFileSync(targetPath, 'utf-8');
     const marker = `agent-chorus:${provider.agent}:start`;
+    // A CLAUDE.md that imports AGENTS.md is wired through the AGENTS.md
+    // managed block; its own block is then a duplicate, not a requirement.
+    // Mirrors cli/src/doctor.rs.
+    let coveredByImport = false;
+    if (provider.agent === 'claude' && importsAgentsMd(content)) {
+      const agentsPath = path.join(cwd, 'AGENTS.md');
+      coveredByImport =
+        fs.existsSync(agentsPath) &&
+        fs.readFileSync(agentsPath, 'utf-8').includes('agent-chorus:codex:start');
+    }
+    if (coveredByImport && !content.includes(marker)) {
+      addCheck(
+        `integration_${provider.agent}`,
+        'pass',
+        `Covered by the @AGENTS.md import in ${targetPath}`
+      );
+      continue;
+    }
     addCheck(
       `integration_${provider.agent}`,
       content.includes(marker) ? 'pass' : absentStatus,
       content.includes(marker) ? `Managed block present in ${targetPath}` : `Managed block missing in ${targetPath}`
     );
+    if (coveredByImport) {
+      addCheck(
+        `integration_${provider.agent}_duplicate`,
+        'warn',
+        `${targetPath} imports AGENTS.md and also carries its own managed block, so Claude loads the block twice. Run \`chorus setup --force\` to remove the duplicate.`
+      );
+    }
   }
 
   // Single-surface agents. Hermes is handled below with surface
