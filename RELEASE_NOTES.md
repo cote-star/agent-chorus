@@ -1,5 +1,12 @@
 # Release Notes
 
+## Unreleased
+
+**Setup template: `compare` example no longer names a Gemini source.**
+
+- The `chorus compare` example written by `chorus setup` into the managed block and the provider snippets is now `--source codex --source claude`, matching the README and the skill. Node and Rust generate identical text. Gemini remains a supported session source.
+- Existing projects keep the old line until `chorus setup --force` is run there; `chorus doctor` does not flag it.
+
 ## v0.16.1 — 2026-09-15
 
 **Hygiene patch. No behaviour change.**
