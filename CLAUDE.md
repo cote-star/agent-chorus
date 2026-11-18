@@ -81,7 +81,7 @@ Session routing and defaults:
 Support commands:
 - `chorus list --agent <agent> --cwd <project-path> --json`
 - `chorus search "<query>" --agent <agent> --cwd <project-path> --json`
-- `chorus compare --source codex --source gemini --source claude --cwd <project-path> --json`
+- `chorus compare --source codex --source claude --cwd <project-path> --json`
 - `chorus diff --agent <agent> --from <id1> --to <id2> --cwd <project-path> --json`
 - `chorus read --agent <agent> --cwd <project-path> --audit-redactions --json`
 - `chorus relevance --list --cwd <project-path> --json`
