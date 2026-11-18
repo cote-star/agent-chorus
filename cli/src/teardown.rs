@@ -192,7 +192,7 @@ pub fn run_teardown(cwd: &str, dry_run: bool, global: bool) -> Result<TeardownRe
 
 // --- Helper types and functions ---
 
-struct BlockResult {
+pub(crate) struct BlockResult {
     status: &'static str,
     message: &'static str,
 }
@@ -203,7 +203,11 @@ struct HookResult {
     message: &'static str,
 }
 
-fn remove_managed_block(file_path: &Path, marker_prefix: &str, dry_run: bool) -> BlockResult {
+pub(crate) fn remove_managed_block(
+    file_path: &Path,
+    marker_prefix: &str,
+    dry_run: bool,
+) -> BlockResult {
     if !file_path.exists() {
         return BlockResult {
             status: "unchanged",

@@ -1036,6 +1036,7 @@ Catalogue" above.
 
 **Notes:**
 - Safe to re-run — existing managed blocks and snippets are left unchanged unless `--force` is given
+- A `CLAUDE.md` that imports `AGENTS.md` (a line that is exactly `@AGENTS.md`) already loads the `AGENTS.md` managed block, so `setup` does not add a second block there. If one is already present, `setup --force` removes it and keeps the import
 - The Claude Code plugin install is global (user scope). It is not reversed by `teardown`. To uninstall: `claude plugin uninstall agent-chorus`
 - If `claude` CLI is not found, plugin installation is skipped with a `skipped` status and manual instructions
 
@@ -1139,6 +1140,7 @@ entries in v0.16.0 are marked `[v0.16.0]`.
 | `env_override_dangling` `[v0.16.0]` | `warn` | Emitted (potentially multiple times) for each `CHORUS_*` / `BRIDGE_*` env var that points at a non-existent directory. Sessions from that adapter would be invisible until the var is cleared or the directory exists; doctor surfaces it instead of silently hiding adapter output. |
 | `snippet_<agent>_stale` `[v0.16.0]` | `warn` | Emitted when `.agent-chorus/providers/<agent>.md` exists but lacks the load-bearing "History contract" section introduced in v0.16.0. Remediation: `chorus setup --force`. |
 | `integration_<agent>_stale` `[v0.16.0]` | `warn` | Emitted when the managed block inside `AGENTS.md` / `CLAUDE.md` / `GEMINI.md` exists but predates the v0.16.0 history contract. Remediation: `chorus setup --force`. |
+| `integration_claude_duplicate` | `warn` | Emitted when `CLAUDE.md` imports `AGENTS.md` with a bare `@AGENTS.md` line and also carries its own managed block, so Claude loads the block twice. Remediation: `chorus setup --force`. When the import is present without a second block, `integration_claude` reports `pass` ("Covered by the @AGENTS.md import"). |
 | `context_pack_state` | `pass` / `warn` | `SEALED_VALID` / `TEMPLATE` / `UNINITIALIZED`. |
 | `context_pack_guidance` | `warn` | Present only when the pack state is `UNINITIALIZED` or `TEMPLATE`. |
 | `context_pack_hooks_path` `[v0.16.0]` | `info` | Reports the effective git hooks path (`configured` via `git config core.hooksPath`, else `default` = `.git/hooks`). When the cwd is **not a git repo**, this check reports `info` ("cwd is not a git repository; git hooks checks skipped") rather than falsely reporting a global hooks path as if it applied to this cwd. |
