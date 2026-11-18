@@ -6284,10 +6284,17 @@ fn build_context_pack_routing_block(agent_kind: &str) -> String {
              If `.agent-context/current/routes.json` is missing, fall back to the markdown pack only."
         )
     } else {
+        // Scope line for the read-first variant. The read-first instruction
+        // stays imperative, but only for tasks about the repository. Wording
+        // is host-neutral: no workstation paths. Must stay in lockstep with
+        // scripts/agent_context/init.cjs::ROUTING_SCOPE.
+        let routing_scope = "Scope: this section applies to tasks about this repository's code, data or behavior. For questions that are not about this repository (for example the workstation, agent setup or authoring standards), follow the enclosing workspace's instructions instead; its identity and approval rules still apply.";
         format!(
             "## Context Pack\n\
              \n\
              {freshness_gate}\n\
+             \n\
+             {routing_scope}\n\
              \n\
              **BEFORE starting any task**, read the context pack in this order:\n\
              \n\
@@ -11489,6 +11496,32 @@ Current count is {{counts.files_py}}.\n";
             );
         }
         let _ = fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn read_first_routing_blocks_carry_a_scope_line_before_the_imperative() {
+        // The read-first variant (claude, gemini) is mandatory for repository
+        // tasks only. The scope line sits after the freshness gate and before
+        // the imperative, and names no workstation path.
+        for agent in ["claude", "gemini"] {
+            let block = build_context_pack_routing_block(agent);
+            let gate = block.find("Before any reasoning").expect("freshness gate");
+            let scope = block.find("\nScope: ").expect("scope line");
+            let imperative = block
+                .find("**BEFORE starting any task**")
+                .expect("read-first imperative");
+            assert!(gate < scope, "{agent}: scope line must follow the freshness gate");
+            assert!(scope < imperative, "{agent}: scope line must precede the imperative");
+            assert_eq!(block.matches("Scope: ").count(), 1, "{agent}: one scope line");
+            for forbidden in ["work/", "play/", "WORKSTATION_NAVIGATION"] {
+                assert!(!block.contains(forbidden), "{agent}: host-specific text {forbidden}");
+            }
+        }
+        // The codex variant is already conditional ("When asked to understand
+        // this repository") and stays as it was.
+        let codex = build_context_pack_routing_block("codex");
+        assert!(!codex.contains("Scope: "));
+        assert!(codex.contains("When asked to understand this repository"));
     }
 
     #[test]

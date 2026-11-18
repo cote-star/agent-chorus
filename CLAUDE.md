@@ -10,6 +10,8 @@ Then open only files .agent-context identifies as relevant to your task.
 <!-- agent-chorus:context-pack:claude:start -->
 ## Context Pack
 
+Scope: this section applies to tasks about this repository's code, data or behavior. For questions that are not about this repository (for example the workstation, agent setup or authoring standards), follow the enclosing workspace's instructions instead; its identity and approval rules still apply.
+
 **BEFORE starting any task**, read the context pack in this order:
 
 1. `.agent-context/current/00_START_HERE.md` — entrypoint, routing, stop rules
