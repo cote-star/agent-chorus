@@ -488,6 +488,13 @@ function templateSearchScopeJson() {
 const FRESHNESS_GATE =
   '**Before any reasoning, check `.agent-context/current/manifest.json`\'s `head_sha_at_seal` vs `git rev-parse HEAD`. If they diverge, warn the user.**';
 
+// Scope line for the read-first variant. The read-first instruction stays
+// imperative, but only for tasks about the repository. Wording is host-neutral:
+// no workstation paths. Must stay in lockstep with
+// cli/src/agent_context.rs::build_context_pack_routing_block.
+const ROUTING_SCOPE =
+  'Scope: this section applies to tasks about this repository\'s code, data or behavior. For questions that are not about this repository (for example the workstation, agent setup or authoring standards), follow the enclosing workspace\'s instructions instead; its identity and approval rules still apply.';
+
 function buildContextPackRoutingBlock(agentKind) {
   if (agentKind === 'codex') {
     return `## Context Pack
@@ -511,6 +518,8 @@ If \`.agent-context/current/routes.json\` is missing, fall back to the markdown 
   return `## Context Pack
 
 ${FRESHNESS_GATE}
+
+${ROUTING_SCOPE}
 
 **BEFORE starting any task**, read the context pack in this order:
 
