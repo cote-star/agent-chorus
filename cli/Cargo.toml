@@ -1,8 +1,8 @@
 [package]
 name = "agent-chorus"
-version = "0.16.1"
+version = "0.16.2"
 edition = "2021"
-rust-version = "1.74"
+rust-version = "1.89"
 description = "Local-first CLI to read, compare, and hand off context across Codex, Claude, Gemini, and Cursor sessions."
 license = "MIT"
 repository = "https://github.com/cote-star/agent-chorus"
